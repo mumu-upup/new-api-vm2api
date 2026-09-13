@@ -19,7 +19,7 @@ import (
 const (
 	AccessTokenTTL        = 15 * time.Minute
 	SecurityProofTTL      = time.Minute
-	LoginSessionTTL       = 30 * 24 * time.Hour
+	LoginSessionTTL       = 90 * 24 * time.Hour
 	RefreshReplayWindow   = 30 * time.Second
 	accessTokenUse        = "access"
 	securityProofTokenUse = "security_proof"

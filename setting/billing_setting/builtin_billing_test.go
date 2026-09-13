@@ -110,6 +110,95 @@ func TestGPT6AstraBuiltinBilling(t *testing.T) {
 	}
 }
 
+func TestGPT56BuiltinBillingTiers(t *testing.T) {
+	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
+	saved := *settings
+	savedRatios, savedPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	savedOptions := common.OptionMap
+	t.Cleanup(func() {
+		*settings, common.OptionMap = saved, savedOptions
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	common.OptionMap = map[string]string{"billing_setting.billing_mode": `{}`, "billing_setting.billing_expr": `{}`}
+	require.NoError(t, config.GlobalConfig.LoadFromDB(common.OptionMap))
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+
+	tests := []struct {
+		model       string
+		shortQuota  int
+		longQuota   int
+		cacheQuota  int
+		shortInput  int
+		longInput   int
+		shortOutput int
+		longOutput  int
+	}{
+		{model: "gpt-5.6-sol", shortQuota: 3000, longQuota: 1089504, cacheQuota: 2845, shortInput: 1000, longInput: 272001, shortOutput: 100, longOutput: 100},
+		{model: "gpt-5.6-terra", shortQuota: 1600, longQuota: 544902, cacheQuota: 1523, shortInput: 1000, longInput: 272001, shortOutput: 100, longOutput: 100},
+		{model: "gpt-5.6-luna", shortQuota: 160, longQuota: 54490, cacheQuota: 152, shortInput: 1000, longInput: 272001, shortOutput: 100, longOutput: 100},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.model, func(t *testing.T) {
+			assert.Equal(t, billing_setting.BillingModeTieredExpr, billing_setting.GetBillingMode(tc.model))
+			expression, ok := billing_setting.GetBillingExpr(tc.model)
+			require.True(t, ok)
+
+			for _, vector := range []struct {
+				name, tier           string
+				input, output, quota int
+			}{
+				{name: "short context", tier: "standard", input: tc.shortInput, output: tc.shortOutput, quota: tc.shortQuota},
+				{name: "long context", tier: "long_context", input: tc.longInput, output: tc.longOutput, quota: tc.longQuota},
+			} {
+				t.Run(vector.name, func(t *testing.T) {
+					usage := &dto.Usage{PromptTokens: vector.input, CompletionTokens: vector.output}
+					params := service.BuildTieredTokenParams(usage, false, billingexpr.UsedVars(expression))
+					result, err := billingexpr.ComputeTieredQuota(&billingexpr.BillingSnapshot{
+						ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 1, QuotaPerUnit: 500000,
+					}, params)
+					require.NoError(t, err)
+					assert.Equal(t, vector.tier, result.MatchedTier)
+					assert.Equal(t, vector.quota, result.ActualQuotaAfterGroup)
+				})
+			}
+
+			t.Run("cached input and cache write", func(t *testing.T) {
+				usage := &dto.Usage{PromptTokens: 1000, CompletionTokens: 100, PromptTokensDetails: dto.InputTokenDetails{
+					CachedTokens: 100, CacheWriteTokens: 50,
+				}}
+				params := service.BuildTieredTokenParams(usage, false, billingexpr.UsedVars(expression))
+				result, err := billingexpr.ComputeTieredQuota(&billingexpr.BillingSnapshot{
+					ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 1, QuotaPerUnit: 500000,
+				}, params)
+				require.NoError(t, err)
+				assert.Equal(t, "standard", result.MatchedTier)
+				assert.Equal(t, tc.cacheQuota, result.ActualQuotaAfterGroup)
+			})
+		})
+	}
+}
+
+func TestGPT56BuiltinBillingIsDefaultWithoutLegacyOverride(t *testing.T) {
+	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
+	saved := *settings
+	savedRatios, savedPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	t.Cleanup(func() {
+		*settings = saved
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+	})
+	*settings = billing_setting.BillingSetting{BillingMode: map[string]string{}, BillingExpr: map[string]string{}}
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(ratio_setting.DefaultModelRatio2JSONString()))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+
+	for _, model := range []string{"gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
+		assert.Equal(t, billing_setting.BillingModeTieredExpr, billing_setting.GetBillingMode(model), model)
+	}
+}
+
 func TestImageModelBuiltinPricesAndOverrides(t *testing.T) {
 	settings := config.GlobalConfig.Get("billing_setting").(*billing_setting.BillingSetting)
 	saved := *settings

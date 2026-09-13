@@ -132,6 +132,18 @@ func TestCreateLoginSessionEnforcesActiveLimitAcrossAuthVersions(t *testing.T) {
 	assert.Equal(t, int64(50), count)
 }
 
+func TestNewLoginSessionUsesExtendedLoginSessionTTL(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	now := time.Now()
+	session, _, err := newLoginSession(user.Id, user.AuthVersion, "password", "127.0.0.1", "test-agent")
+	require.NoError(t, err)
+	remaining := time.Until(time.Unix(session.ExpiresAt, 0))
+	assert.InDelta(t, LoginSessionTTL.Seconds(), remaining.Seconds(), 2)
+	assert.Greater(t, LoginSessionTTL, 30*24*time.Hour)
+	assert.GreaterOrEqual(t, session.ExpiresAt, now.Add(LoginSessionTTL-time.Second).Unix())
+}
+
 func TestCreateLoginSessionEnforcesIssuanceLimitAcrossAllStatuses(t *testing.T) {
 	useTestSessionSecret(t)
 	user := setupAuthSessionTestDB(t)
