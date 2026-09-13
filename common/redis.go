@@ -69,6 +69,19 @@ func RedisSet(key string, value string, expiration time.Duration) error {
 	return RDB.Set(ctx, key, value, expiration).Err()
 }
 
+// RedisSetNX stores value only when key does not already exist. The expiry is
+// applied as part of the Redis SET command, making the operation atomic and
+// preventing an abandoned key when a process exits after SETNX.
+func RedisSetNX(key string, value string, expiration time.Duration) (bool, error) {
+	if DebugEnabled {
+		SysLog(fmt.Sprintf("Redis SETNX: key=%s, expiration=%v", key, expiration))
+	}
+	if RDB == nil {
+		return false, errors.New("redis client is not initialized")
+	}
+	return RDB.SetNX(context.Background(), key, value, expiration).Result()
+}
+
 func RedisGet(key string) (string, error) {
 	if DebugEnabled {
 		SysLog(LogText("Redis GET: key=%s", key))
@@ -104,13 +117,13 @@ func RedisDelKey(key string) error {
 	return RDB.Del(ctx, key).Err()
 }
 
-func RedisHSetObj(key string, obj any, expiration time.Duration) error {
+func RedisHSetObj(key string, obj interface{}, expiration time.Duration) error {
 	if DebugEnabled {
 		SysLog(LogText("Redis HSET: key=%s, obj=%+v, expiration=%v", key, obj, expiration))
 	}
 	ctx := context.Background()
 
-	data := make(map[string]any)
+	data := make(map[string]interface{})
 
 	// 使用反射遍历结构体字段
 	v := reflect.ValueOf(obj).Elem()
@@ -125,7 +138,7 @@ func RedisHSetObj(key string, obj any, expiration time.Duration) error {
 		}
 
 		// 处理指针类型
-		if value.Kind() == reflect.Pointer {
+		if value.Kind() == reflect.Ptr {
 			if value.IsNil() {
 				data[field.Name] = ""
 				continue
@@ -158,7 +171,7 @@ func RedisHSetObj(key string, obj any, expiration time.Duration) error {
 	return nil
 }
 
-func RedisHGetObj(key string, obj any) error {
+func RedisHGetObj(key string, obj interface{}) error {
 	if DebugEnabled {
 		SysLog(LogText("Redis HGETALL: key=%s", key))
 	}
@@ -175,7 +188,7 @@ func RedisHGetObj(key string, obj any) error {
 
 	// Handle both pointer and non-pointer values
 	val := reflect.ValueOf(obj)
-	if val.Kind() != reflect.Pointer {
+	if val.Kind() != reflect.Ptr {
 		return fmt.Errorf("obj must be a pointer to a struct, got %T", obj)
 	}
 
@@ -192,7 +205,7 @@ func RedisHGetObj(key string, obj any) error {
 			fieldValue := v.Field(i)
 
 			// Handle pointer types
-			if fieldValue.Kind() == reflect.Pointer {
+			if fieldValue.Kind() == reflect.Ptr {
 				if value == "" {
 					continue
 				}
@@ -299,7 +312,7 @@ func RedisHIncrBy(key, field string, delta int64) error {
 	return nil
 }
 
-func RedisHSetField(key, field string, value any) error {
+func RedisHSetField(key, field string, value interface{}) error {
 	if DebugEnabled {
 		SysLog(LogText("Redis HSET field: key=%s, field=%s, value=%v", key, field, value))
 	}

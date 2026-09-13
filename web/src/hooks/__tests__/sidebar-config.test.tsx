@@ -74,7 +74,24 @@ function sidebarFor(admin?: object, user?: object, canConfigure = true) {
 }
 
 describe('security sidebar visibility', () => {
-  it('old configurations show Security & Access immediately after Profile and keep API Keys', () => {
+  it('places the external Store link directly below Wallet', () => {
+    const { result } = sidebarFor()
+    const items =
+      result.current.find((group) => group.id === 'personal')?.items ?? []
+    expect(items.map((item) => item.title)).toEqual([
+      'Wallet',
+      'Store',
+      'Profile',
+      'Security & Access',
+    ])
+    expect(items[1]).toMatchObject({
+      title: 'Store',
+      url: 'https://wzyp.cn/shop/OFYRDROX',
+      external: true,
+    })
+  })
+
+  it('old configurations show Store below Wallet and keep Security & Access and API Keys', () => {
     const { result } = sidebarFor(
       { personal: { enabled: true, personal: true, topup: true } },
       { personal: { enabled: true, personal: true } }
@@ -83,7 +100,7 @@ describe('security sidebar visibility', () => {
       result.current
         .find((group) => group.id === 'personal')
         ?.items.map((item) => item.title)
-    ).toEqual(['Wallet', 'Profile', 'Security & Access'])
+    ).toEqual(['Wallet', 'Store', 'Profile', 'Security & Access'])
     expect(
       result.current
         .flatMap((group) => group.items)
