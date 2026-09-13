@@ -36,4 +36,9 @@ var builtinBillingExpr = map[string]string{
 	// requests each, the same pricing page. The calls carry no tokens.
 	constant.DeepSeekSearchModel: `tier("request", fixed(0.00075))`,
 	constant.DeepSeekFetchModel:  `tier("request", fixed(0.00075))`,
+	// https://developers.openai.com/api/docs/pricing (Short context <=272K input tokens).
+	// Long-context rates apply to the whole request once the input exceeds 272K.
+	"gpt-5.6-sol":   `len <= 272000 ? tier("standard", p * 4 + c * 20 + cr * 0.4 + cc * 5) : tier("long_context", p * 8 + c * 30 + cr * 0.8 + cc * 10)`,
+	"gpt-5.6-terra": `len <= 272000 ? tier("standard", p * 2 + c * 12 + cr * 0.2 + cc * 2.5) : tier("long_context", p * 4 + c * 18 + cr * 0.4 + cc * 5)`,
+	"gpt-5.6-luna":  `len <= 272000 ? tier("standard", p * 0.2 + c * 1.2 + cr * 0.02 + cc * 0.25) : tier("long_context", p * 0.4 + c * 1.8 + cr * 0.04 + cc * 0.5)`,
 }

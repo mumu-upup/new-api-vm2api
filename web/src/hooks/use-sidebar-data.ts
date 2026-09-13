@@ -32,6 +32,7 @@ import {
   ServerCog,
   Settings,
   ShieldCheck,
+  Store as StoreIcon,
   Ticket,
   User,
   Users,
@@ -115,6 +116,12 @@ export function useSidebarData(): SidebarData {
             title: t('Wallet'),
             url: '/wallet',
             icon: Wallet,
+          },
+          {
+            title: t('Store'),
+            url: 'https://wzyp.cn/shop/OFYRDROX',
+            icon: StoreIcon,
+            external: true,
           },
           {
             title: t('Profile'),
