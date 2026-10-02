@@ -132,6 +132,38 @@ func TestCreateLoginSessionEnforcesActiveLimitAcrossAuthVersions(t *testing.T) {
 	assert.Equal(t, int64(50), count)
 }
 
+func TestCreateLoginSessionSkipsActiveLimitForRootButKeepsIssuanceLimit(t *testing.T) {
+	useTestSessionSecret(t)
+	user := setupAuthSessionTestDB(t)
+	common.UserSessionActiveLimit = 50
+	common.UserSessionIssuanceLimit = 100
+	require.NoError(t, model.DB.Model(user).Update("role", common.RoleRootUser).Error)
+	now := time.Now().Unix()
+	rows := make([]model.UserSession, 0, 50)
+	for i := range 50 {
+		rows = append(rows, model.UserSession{
+			SID:             fmt.Sprintf("root-active-limit-%02d", i),
+			UserID:          user.Id,
+			Version:         1,
+			UserAuthVersion: user.AuthVersion,
+			Status:          model.UserSessionStatusActive,
+			RefreshHash:     fmt.Sprintf("root-hash-%02d", i),
+			LoginMethod:     "password",
+			CreatedAt:       now - int64(i),
+			LastActiveAt:    now - int64(i),
+			ExpiresAt:       now + 3600,
+		})
+	}
+	require.NoError(t, model.DB.Create(&rows).Error)
+
+	_, err := CreateLoginSession(user.Id, "password", "127.0.0.1", "root-agent")
+	require.NoError(t, err, "root may exceed the active session limit")
+
+	common.UserSessionIssuanceLimit = 51
+	_, err = CreateLoginSession(user.Id, "password", "127.0.0.1", "root-agent")
+	assert.ErrorIs(t, err, model.ErrUserSessionIssuanceLimit, "root must retain the issuance limit")
+}
+
 func TestNewLoginSessionUsesExtendedLoginSessionTTL(t *testing.T) {
 	useTestSessionSecret(t)
 	user := setupAuthSessionTestDB(t)
