@@ -27,6 +27,21 @@ var commonFalseVal string
 var logKeyCol string
 var logGroupCol string
 
+// jsonScanBytes normalizes JSON column values returned by different drivers.
+// The same column may be returned as []byte or string depending on the driver
+// and protocol mode; silently dropping strings would clear fields without an
+// error.
+func jsonScanBytes(value any) []byte {
+	switch v := value.(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
+	default:
+		return nil
+	}
+}
+
 func initCol() {
 	// init common column names
 	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
