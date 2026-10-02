@@ -72,7 +72,7 @@ func CreateUserSessionFromLoginFlow(token string, session *UserSession, validate
 		if err := tx.Model(&UserSession{}).Where("user_id = ? AND status = ? AND expires_at > ?", session.UserID, UserSessionStatusActive, now).Count(&activeCount).Error; err != nil {
 			return err
 		}
-		if activeCount >= int64(common.UserSessionActiveLimit) {
+		if state.Role < common.RoleRootUser && activeCount >= int64(common.UserSessionActiveLimit) {
 			return ErrUserSessionLimit
 		}
 		if err := tx.Model(&UserSession{}).Where("user_id = ? AND created_at > ?", session.UserID, now-common.UserSessionIssuanceWindowSeconds).Count(&issuanceCount).Error; err != nil {

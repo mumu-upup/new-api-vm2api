@@ -243,6 +243,38 @@ func TestUserSessionCreateListAndRevokeOne(t *testing.T) {
 	assert.Equal(t, second.SID, active.SID)
 }
 
+func TestCreateUserSessionFromLoginFlowSkipsActiveLimitForRoot(t *testing.T) {
+	setupUserSessionTest(t)
+	common.UserSessionActiveLimit = 1
+	common.UserSessionIssuanceLimit = 100
+	now := time.Now().Unix()
+	user := User{
+		Id:          1005,
+		Username:    "root-session-limit",
+		Password:    "unused",
+		Status:      common.UserStatusEnabled,
+		Role:        common.RoleRootUser,
+		Group:       "default",
+		AffCode:     "root-session-limit-aff",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	t.Cleanup(func() { _ = DB.Unscoped().Delete(&user).Error })
+	require.NoError(t, DB.AutoMigrate(&AuthFlow{}))
+	require.NoError(t, DB.Create(newTestUserSession("root-existing", user.Id, now)).Error)
+
+	token, _, err := CreateAuthFlow(AuthFlowCreate{
+		Purpose:   AuthFlowPurposeLoginVerification,
+		UserId:    user.Id,
+		ExpiresAt: time.Now().Add(time.Minute),
+	})
+	require.NoError(t, err)
+	newSession := newTestUserSession("root-new", user.Id, now)
+	require.NoError(t, CreateUserSessionFromLoginFlow(token, newSession, func(*gorm.DB, *AuthFlow, *UserVerificationState) error {
+		return nil
+	}))
+}
+
 func TestRotateUserSessionRefreshRaceAndReuse(t *testing.T) {
 	setupUserSessionTest(t)
 	now := time.Now().Unix()
