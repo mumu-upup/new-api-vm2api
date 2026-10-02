@@ -272,3 +272,83 @@ export interface FAQItem {
   question: string
   answer: string
 }
+
+// ============================================================================
+// Model Degradation (Response Model Mismatch) Types
+// ============================================================================
+
+export type DegradationRange = 'day' | 'week'
+
+export interface DegradationTimeRange {
+  start_timestamp: number
+  end_timestamp: number
+}
+
+export interface ResponseModelMismatchSummary {
+  start_timestamp: number
+  end_timestamp: number
+  retained_since: number
+  total_requests: number
+  mismatch_requests: number
+  mismatch_quota: number
+  affected_channels: number
+  affected_users: number
+  item_limit: number
+}
+
+export interface ResponseModelMismatchChannel {
+  channel_id: number
+  channel_name: string
+  total_requests: number
+  mismatch_requests: number
+  mismatch_quota: number
+  last_seen_at: number
+  returned_models: string[]
+}
+
+export interface ResponseModelMismatchPair {
+  requested_model: string
+  returned_model: string
+  requests: number
+  channels: number
+  last_seen_at: number
+}
+
+export interface ResponseModelMismatchBucket {
+  timestamp: number
+  requests: number
+}
+
+export interface ResponseModelMismatchItem {
+  id: number
+  created_at: number
+  request_id: string
+  user_id: number
+  username: string
+  token_name: string
+  channel_id: number
+  channel_name: string
+  group: string
+  requested_model: string
+  upstream_model: string
+  returned_model: string
+  quota: number
+  prompt_tokens: number
+  completion_tokens: number
+  use_time: number
+  is_stream: boolean
+}
+
+export interface ResponseModelMismatchStats {
+  summary: ResponseModelMismatchSummary
+  channels: ResponseModelMismatchChannel[]
+  pairs: ResponseModelMismatchPair[]
+  trend: ResponseModelMismatchBucket[]
+  items: ResponseModelMismatchItem[]
+}
+
+export interface DegradationTrendPoint {
+  timestamp: number
+  label: string
+  requests: number
+}

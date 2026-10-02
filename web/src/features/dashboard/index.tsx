@@ -107,6 +107,12 @@ const LazyUserCharts = lazy(() =>
   }))
 )
 
+const LazyDegradationDashboard = lazy(() =>
+  import('./components/degradation/degradation-dashboard').then((m) => ({
+    default: m.DegradationDashboard,
+  }))
+)
+
 const LazyFlowCharts = lazy(() =>
   import('./components/flow/flow-charts').then((m) => ({
     default: m.FlowCharts,
@@ -189,7 +195,15 @@ const SECTION_META: Record<DashboardSectionId, { titleKey: string }> = {
   users: {
     titleKey: 'User Analytics',
   },
+  degradation: {
+    titleKey: 'Model Degradation',
+  },
 }
+
+const ADMIN_ONLY_SECTIONS = new Set<DashboardSectionId>([
+  'users',
+  'degradation',
+])
 
 export function Dashboard() {
   const { t } = useTranslation()
@@ -248,7 +262,9 @@ export function Dashboard() {
   const visibleSections = useMemo(
     () =>
       DASHBOARD_SECTION_IDS.filter(
-        (section) => section !== 'overview' && (section !== 'users' || isAdmin)
+        (section) =>
+          section !== 'overview' &&
+          (isAdmin || !ADMIN_ONLY_SECTIONS.has(section))
       ),
     [isAdmin]
   )
@@ -398,6 +414,13 @@ export function Dashboard() {
                   filters={userChartsFilters}
                   onFiltersChange={setUserChartsFilters}
                 />
+              </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'degradation' && isAdmin && (
+            <FadeIn>
+              <Suspense fallback={<ModelChartsFallback />}>
+                <LazyDegradationDashboard />
               </Suspense>
             </FadeIn>
           )}

@@ -1113,6 +1113,35 @@ func GetChannelsByIds(ids []int) ([]*Channel, error) {
 	return channels, err
 }
 
+// GetChannelNamesByIds resolves channel display names for log views, reading
+// the memory cache when it is enabled. Deleted channels are absent from the
+// result so callers can choose their own fallback label.
+func GetChannelNamesByIds(ids []int) (map[int]string, error) {
+	names := make(map[int]string, len(ids))
+	if len(ids) == 0 {
+		return names, nil
+	}
+	if common.MemoryCacheEnabled {
+		for _, id := range ids {
+			if channel, err := CacheGetChannel(id); err == nil {
+				names[id] = channel.Name
+			}
+		}
+		return names, nil
+	}
+	var channels []struct {
+		Id   int    `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if err := DB.Table("channels").Select("id, name").Where("id IN ?", ids).Find(&channels).Error; err != nil {
+		return nil, err
+	}
+	for _, channel := range channels {
+		names[channel.Id] = channel.Name
+	}
+	return names, nil
+}
+
 func BatchSetChannelTag(ids []int, tag *string) error {
 	// 开启事务
 	tx := DB.Begin()
