@@ -542,7 +542,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 
-	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
+	consumeLog := model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,
 		CompletionTokens: summary.CompletionTokens,
@@ -555,6 +555,8 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
-	})
+	}
+	model.RecordConsumeLog(ctx, relayInfo.UserId, consumeLog)
+	RecordResponseModelMismatch(ctx, relayInfo, consumeLog)
 	relayInfo.PerformanceOutputTokens = int64(summary.CompletionTokens)
 }

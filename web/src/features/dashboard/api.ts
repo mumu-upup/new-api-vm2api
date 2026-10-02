@@ -19,8 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import { api } from '@/lib/api'
 
 import type {
+  DegradationTimeRange,
   FlowQuotaDataItem,
   QuotaDataItem,
+  ResponseModelMismatchStats,
   UptimeGroupResult,
 } from './types'
 
@@ -81,6 +83,18 @@ export async function getFlowQuotaDates(
     data?: FlowQuotaDataItem[]
     message?: string
   }>(endpoint, { params })
+  return res.data
+}
+
+// Admin only: requests whose upstream response declared a substituted model
+export async function getResponseModelMismatchStats(
+  params: DegradationTimeRange
+) {
+  const res = await api.get<{
+    success: boolean
+    message?: string
+    data: ResponseModelMismatchStats
+  }>('/api/log/response_model_mismatch', { params })
   return res.data
 }
 

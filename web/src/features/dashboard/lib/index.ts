@@ -42,3 +42,8 @@ export {
 } from './flow'
 export { safeDivide, calculateDashboardStats } from './stats'
 export { getPreviewText } from './text'
+export {
+  buildDegradationTrend,
+  getDegradationTimeRange,
+  getMismatchRatePercent,
+} from './degradation'
