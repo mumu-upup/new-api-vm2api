@@ -38,6 +38,7 @@ func TestResponseModelComparisonAndLog(t *testing.T) {
 		{name: "requested prefix", models: []string{"requested-2026-09-01"}, returned: "requested-2026-09-01"},
 		{name: "mapped case differs", models: []string{"MAPPED"}, returned: "MAPPED"},
 		{name: "mapped prefix", models: []string{"mapped-2026-09-01"}, returned: "mapped-2026-09-01"},
+		{name: "quality variant is a mismatch", models: []string{"requested-mini"}, returned: "requested-mini", mismatch: true},
 		{name: "reverse prefix still warns", models: []string{"request"}, returned: "request", mismatch: true},
 		{name: "suffix", models: []string{"other-requested"}, returned: "other-requested"},
 		{name: "provider path", models: []string{"vendor/requested"}, returned: "vendor/requested"},

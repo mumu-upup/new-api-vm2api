@@ -50,6 +50,7 @@ describe('isResponseModelMismatch', () => {
   })
 
   test.each([
+    ['requested-mini', 'quality variant of the requested model'],
     ['other', 'different model'],
     ['request', 'shorter name that the expected model extends'],
     ['vendor/other', 'different model behind a provider path'],
