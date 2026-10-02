@@ -219,6 +219,7 @@ type ChatCompletionsStreamResponseSimple struct {
 }
 
 type CompletionsStreamResponse struct {
+	Model   string `json:"model,omitempty"`
 	Choices []struct {
 		Text         string `json:"text"`
 		FinishReason string `json:"finish_reason"`

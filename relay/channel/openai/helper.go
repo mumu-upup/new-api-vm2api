@@ -151,6 +151,7 @@ func processTokenData(info *relaycommon.RelayInfo, data string, responseTextBuil
 		if err := common.UnmarshalJsonStr(data, &streamResponse); err != nil {
 			return err
 		}
+		info.ObserveResponseModel(streamResponse.Model)
 		processCompletionsStreamResponse(streamResponse, responseTextBuilder)
 	}
 	return nil

@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -162,7 +162,7 @@ describe('DegradationDashboard', () => {
     expect(link).toHaveAttribute('title', 'View in usage logs')
   })
 
-  it('shows the empty state instead of the tables when nothing was degraded', async () => {
+  it('explains that no recorded mismatch does not establish response quality', async () => {
     api.getResponseModelMismatchStats.mockResolvedValue({
       success: true,
       data: emptyStats,
@@ -170,7 +170,14 @@ describe('DegradationDashboard', () => {
 
     renderDashboard()
 
-    expect(await screen.findByText('No degraded requests')).toBeInTheDocument()
+    expect(
+      await screen.findByText('No model mismatches recorded')
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Matching or missing model names cannot establish response quality. No recorded mismatch does not mean no degradation.'
+      )
+    ).toBeInTheDocument()
     expect(screen.queryByText('Degraded Channels')).not.toBeInTheDocument()
   })
 
@@ -181,7 +188,7 @@ describe('DegradationDashboard', () => {
     })
 
     renderDashboard()
-    await screen.findByText('No degraded requests')
+    await screen.findByText('No model mismatches recorded')
     expect(api.getResponseModelMismatchStats).toHaveBeenLastCalledWith({
       start_timestamp: Math.floor(NOW.getTime() / 1000) - 24 * 3600,
       end_timestamp: Math.floor(NOW.getTime() / 1000),
@@ -199,6 +206,32 @@ describe('DegradationDashboard', () => {
       'aria-selected',
       'true'
     )
+  })
+
+  it('automatically displays new mismatches using a current time range', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(NOW)
+    api.getResponseModelMismatchStats
+      .mockResolvedValueOnce({ success: true, data: emptyStats })
+      .mockResolvedValue({ success: true, data: stats })
+
+    renderDashboard()
+    await screen.findByText('No model mismatches recorded')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+
+    expect(
+      await screen.findByRole('link', { name: 'req-degraded-1' })
+    ).toBeInTheDocument()
+    expect(api.getResponseModelMismatchStats).toHaveBeenLastCalledWith({
+      start_timestamp: Math.floor(NOW.getTime() / 1000) + 10 - 24 * 3600,
+      end_timestamp: Math.floor(NOW.getTime() / 1000) + 10,
+    })
+    expect(
+      screen.queryByText('No model mismatches recorded')
+    ).not.toBeInTheDocument()
   })
 
   it('offers a retry when the server rejects the request', async () => {

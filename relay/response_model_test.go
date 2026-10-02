@@ -251,6 +251,41 @@ func TestResponseModelSharedResponsesAccumulator(t *testing.T) {
 	assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
 }
 
+func TestResponseModelCompletionsStreamRetainsMismatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+
+	for _, terminalModel := range []string{"", "requested"} {
+		t.Run("terminal model "+terminalModel, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/completions", nil)
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "requested", RelayFormat: types.RelayFormatOpenAI,
+				RelayMode: relayconstant.RelayModeCompletions,
+				IsStream:  true, DisablePing: true, StartTime: time.Now(),
+				ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "requested"},
+			}
+			stream := "data: " + `{"id":"cmpl_1","model":"requested-mini","choices":[{"index":0,"text":"hello"}]}` +
+				"\n\ndata: " + `{"id":"cmpl_1","model":"` + terminalModel + `","choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}` +
+				"\n\ndata: [DONE]\n\n"
+			usage, apiErr := openai.OaiStreamHandler(c, info, &http.Response{
+				StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(stream)),
+			})
+
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, 5, usage.TotalTokens)
+			assert.Contains(t, recorder.Body.String(), `"text":"hello"`)
+			require.NotNil(t, info.ResponseModel)
+			assert.Equal(t, "requested-mini", info.ResponseModel.ReturnedModel)
+			assert.True(t, info.ResponseModel.Mismatch())
+		})
+	}
+}
+
 func TestResponseModelDoesNotRecordSynthesizedModel(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
