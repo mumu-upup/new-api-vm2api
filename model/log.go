@@ -552,32 +552,9 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 	}
 
 	if channelIds.Len() > 0 {
-		var channels []struct {
-			Id   int    `gorm:"column:id"`
-			Name string `gorm:"column:name"`
-		}
-		if common.MemoryCacheEnabled {
-			// Cache get channel
-			for _, channelId := range channelIds.Items() {
-				if cacheChannel, err := CacheGetChannel(channelId); err == nil {
-					channels = append(channels, struct {
-						Id   int    `gorm:"column:id"`
-						Name string `gorm:"column:name"`
-					}{
-						Id:   channelId,
-						Name: cacheChannel.Name,
-					})
-				}
-			}
-		} else {
-			// Bulk query channels from DB
-			if err = DB.Table("channels").Select("id, name").Where("id IN ?", channelIds.Items()).Find(&channels).Error; err != nil {
-				return logs, total, err
-			}
-		}
-		channelMap := make(map[int]string, len(channels))
-		for _, channel := range channels {
-			channelMap[channel.Id] = channel.Name
+		channelMap, err := GetChannelNamesByIds(channelIds.Items())
+		if err != nil {
+			return logs, total, err
 		}
 		for i := range logs {
 			logs[i].ChannelName = channelMap[logs[i].ChannelId]
@@ -585,6 +562,24 @@ func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int
 	}
 
 	return logs, total, err
+}
+
+// ChannelRequestCount is the number of consume logs a channel served.
+type ChannelRequestCount struct {
+	ChannelId int   `gorm:"column:channel_id"`
+	Total     int64 `gorm:"column:total"`
+}
+
+// CountConsumeLogsByChannel counts consume logs per channel within the time
+// range, giving dashboards a per-channel request denominator.
+func CountConsumeLogsByChannel(startTimestamp int64, endTimestamp int64) ([]ChannelRequestCount, error) {
+	var counts []ChannelRequestCount
+	err := LOG_DB.Model(&Log{}).
+		Select("logs.channel_id AS channel_id, COUNT(*) AS total").
+		Where("logs.type = ? AND logs.created_at >= ? AND logs.created_at <= ?", LogTypeConsume, startTimestamp, endTimestamp).
+		Group("logs.channel_id").
+		Scan(&counts).Error
+	return counts, err
 }
 
 const logSearchCountLimit = 10000
