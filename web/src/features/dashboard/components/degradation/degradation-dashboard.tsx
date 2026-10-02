@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
-import { Info, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Info, Loader2, RefreshCw } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -124,7 +124,7 @@ export function DegradationDashboard() {
         <Info className='mt-0.5 size-3.5 shrink-0' aria-hidden='true' />
         <span>
           {t(
-            'A request counts as degraded when the upstream response declares a model that matches neither the requested model nor the mapped upstream model.'
+            'Records completed requests whose upstream model name differs from both the requested and mapped models. Refreshes every 10 seconds while this page is visible; model names alone do not measure response quality.'
           )}{' '}
           {stats
             ? t(
@@ -150,10 +150,10 @@ export function DegradationDashboard() {
       {!loading && !statsQuery.isError && !hasMismatches && (
         <EmptyState
           bordered
-          icon={ShieldCheck}
-          title={t('No degraded requests')}
+          icon={Info}
+          title={t('No model mismatches recorded')}
           description={t(
-            'No upstream returned a substituted model in this period.'
+            'Matching or missing model names cannot establish response quality. No recorded mismatch does not mean no degradation.'
           )}
         />
       )}
