@@ -72,6 +72,19 @@ func TestResponsesUsageAccumulatorTerminalAccounting(t *testing.T) {
 	}
 }
 
+func TestResponsesUsageAccumulatorObservesTopLevelEventModel(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "requested",
+		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mapped"},
+	}
+	accumulator := NewResponsesUsageAccumulator(info)
+	accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.created", Model: "returned"})
+
+	require.NotNil(t, info.ResponseModel)
+	assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
+	assert.True(t, info.ResponseModel.Mismatch())
+}
+
 func TestResponsesUsageAccumulatorInterruptedTextFallback(t *testing.T) {
 	for _, withUsage := range []bool{false, true} {
 		name := "disconnect without terminal usage"

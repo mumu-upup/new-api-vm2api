@@ -47,21 +47,38 @@ export function DegradationDashboard() {
   const [range, setRange] = useState<DegradationRange>('day')
   const [requestedAt, setRequestedAt] = useState(() => Date.now())
 
-  const timeRange = useMemo(
+  const requestedTimeRange = useMemo(
     () => getDegradationTimeRange(range, new Date(requestedAt)),
     [range, requestedAt]
   )
 
   const statsQuery = useQuery({
-    queryKey: ['dashboard', 'response-model-mismatch', timeRange],
+    queryKey: ['dashboard', 'response-model-mismatch', range, requestedAt],
     queryFn: async () =>
-      requireServerSuccess(await getResponseModelMismatchStats(timeRange)),
+      requireServerSuccess(
+        await getResponseModelMismatchStats(getDegradationTimeRange(range))
+      ),
     select: (res) => res.data,
-    staleTime: 60_000,
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
   })
 
   const stats = statsQuery.data
   const loading = statsQuery.isLoading
+  const timeRange = useMemo(() => {
+    if (
+      stats &&
+      stats.summary.start_timestamp > 0 &&
+      stats.summary.end_timestamp > 0
+    ) {
+      return {
+        start_timestamp: stats.summary.start_timestamp,
+        end_timestamp: stats.summary.end_timestamp,
+      }
+    }
+    return requestedTimeRange
+  }, [requestedTimeRange, stats])
   const trend = useMemo(
     () => buildDegradationTrend(stats?.trend ?? [], range, timeRange),
     [stats, range, timeRange]
