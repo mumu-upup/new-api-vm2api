@@ -76,7 +76,7 @@ func createLoginSession(userID int, expectedAuthVersion int64, loginMethod, ip, 
 	if err != nil {
 		return nil, err
 	}
-	if activeCount >= int64(common.UserSessionActiveLimit) {
+	if user.Role < common.RoleRootUser && activeCount >= int64(common.UserSessionActiveLimit) {
 		return nil, model.ErrUserSessionLimit
 	}
 	issuanceCount, err := model.CountUserSessionsCreatedSince(userID, now-common.UserSessionIssuanceWindowSeconds)
