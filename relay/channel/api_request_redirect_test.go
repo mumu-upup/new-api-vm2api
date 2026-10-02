@@ -54,6 +54,7 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 				body, err := io.ReadAll(r.Body)
 				sourceResultCh <- sourceResult{body: body, err: err}
 				w.Header().Set("Location", target.URL+"/redirect-target")
+				w.Header().Set("OpenAI-Model", "returned")
 				w.WriteHeader(statusCode)
 				_, _ = io.WriteString(w, responseBody)
 			}))
@@ -65,7 +66,7 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 
 			req, err := http.NewRequest(http.MethodPost, source.URL, bytes.NewReader([]byte("request body")))
 			require.NoError(t, err)
-			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}}
+			info := &relaycommon.RelayInfo{OriginModelName: "requested", ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "mapped"}}
 
 			resp, err := doRequest(ctx, req, info)
 			require.NoError(t, err)
@@ -79,6 +80,8 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 			assert.Equal(t, target.URL+"/redirect-target", resp.Header.Get("Location"))
 			assert.Equal(t, responseBody, string(body))
 			assert.Equal(t, []byte("request body"), gotSource.body)
+			require.NotNil(t, info.ResponseModel)
+			assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
 			assert.EqualValues(t, 1, sourceRequests.Load())
 			assert.Zero(t, targetRequests.Load())
 		})

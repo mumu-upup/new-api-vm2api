@@ -13,18 +13,44 @@ type ResponseModel struct {
 }
 
 // matches reports whether an upstream declaration is compatible with the
-// requested or upstream model: equal ignoring case, a dated or variant name
-// that extends it, or the same name behind a provider path such as
-// "deepseek/deepseek-v4.1-flash".
+// requested or upstream model. Date-suffixed model IDs are compatible, while
+// quality variants such as "-mini" or "-nano" are deliberately distinct.
 func (r *ResponseModel) matches(model string) bool {
-	returned := strings.ToLower(model)
+	returned := strings.ToLower(strings.TrimSpace(model))
 	for _, expected := range []string{r.RequestedModel, r.UpstreamModel} {
-		expected = strings.ToLower(expected)
-		if expected != "" && (strings.HasPrefix(returned, expected) || strings.HasSuffix(returned, expected)) {
+		expected = strings.ToLower(strings.TrimSpace(expected))
+		if expected == "" {
+			continue
+		}
+		if returned == expected || strings.HasSuffix(returned, expected) {
+			return true
+		}
+		if strings.HasPrefix(returned, expected+"-") && isDateModelSuffix(strings.TrimPrefix(returned, expected)) {
 			return true
 		}
 	}
 	return false
+}
+
+func isDateModelSuffix(suffix string) bool {
+	suffix = strings.TrimPrefix(suffix, "-")
+	if len(suffix) < 8 {
+		return false
+	}
+	if len(suffix) >= 10 && suffix[4] == '-' && suffix[7] == '-' {
+		for _, index := range []int{0, 1, 2, 3, 5, 6, 8, 9} {
+			if suffix[index] < '0' || suffix[index] > '9' {
+				return false
+			}
+		}
+		return len(suffix) == 10 || suffix[10] == '-'
+	}
+	for index := range 8 {
+		if suffix[index] < '0' || suffix[index] > '9' {
+			return false
+		}
+	}
+	return len(suffix) == 8 || suffix[8] == '-'
 }
 
 // Mismatch reports whether the retained upstream declaration disagrees with
