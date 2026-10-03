@@ -133,14 +133,10 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 }
 
 func AppendResponseModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
-	if relayInfo == nil || other == nil {
+	if relayInfo == nil || other == nil || !relayInfo.ResponseModel.Mismatch() {
 		return
 	}
-	observation := relayInfo.ResponseModel
-	if observation == nil {
-		observation = &relaycommon.ResponseModel{RequestedModel: relayInfo.OriginModelName, UpstreamModel: relayInfo.GetUpstreamModelName()}
-	}
-	other.SetPublic("response_model", *observation)
+	other.SetPublic("response_model", *relayInfo.ResponseModel)
 }
 
 func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {

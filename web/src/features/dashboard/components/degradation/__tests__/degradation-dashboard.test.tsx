@@ -193,7 +193,7 @@ describe('DegradationDashboard', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows only model mismatches and explicit upstream degradation among recent requests', async () => {
+  it('shows only model mismatches even when matching names carry degradation flags', async () => {
     api.getResponseModelMismatchStats.mockResolvedValue({
       success: true,
       data: emptyStats,
@@ -207,7 +207,12 @@ describe('DegradationDashboard', () => {
         degrade_reason: 'capacity fallback',
       },
       { requestId: 'req-unknown' },
-      { requestId: 'req-returned-mismatch', returned_model: 'gpt-5-mini' },
+      {
+        requestId: 'req-returned-mismatch',
+        returned_model: 'gpt-5-mini',
+        degraded: true,
+        degrade_reason: 'model substitution',
+      },
       {
         requestId: 'req-actual-mismatch',
         returned_model: 'gpt-5',
@@ -244,13 +249,14 @@ describe('DegradationDashboard', () => {
     })
     renderDashboard()
     expect(
-      await screen.findByRole('link', { name: 'req-reported' })
+      await screen.findByRole('link', { name: 'req-returned-mismatch' })
     ).toBeInTheDocument()
     for (const requestId of ['req-returned-mismatch', 'req-actual-mismatch']) {
       expect(screen.getByRole('link', { name: requestId })).toBeInTheDocument()
     }
     for (const requestId of [
       'req-matched',
+      'req-reported',
       'req-unknown',
       'req-not-degraded',
     ]) {
@@ -260,7 +266,8 @@ describe('DegradationDashboard', () => {
     }
     expect(screen.queryByText('Model name matches')).not.toBeInTheDocument()
     expect(screen.queryByText('Insufficient evidence')).not.toBeInTheDocument()
-    expect(screen.getByText('capacity fallback')).toBeInTheDocument()
+    expect(screen.queryByText('capacity fallback')).not.toBeInTheDocument()
+    expect(screen.getByText('model substitution')).toBeInTheDocument()
   })
 
   it('shows an anomaly-specific empty state when recent logs contain no anomaly evidence', async () => {
@@ -302,7 +309,7 @@ describe('DegradationDashboard', () => {
 
     expect(
       await screen.findByText(
-        'No model mismatch or upstream-reported degradation in the latest completed request logs.'
+        'No model mismatches in the latest completed request logs.'
       )
     ).toBeInTheDocument()
     expect(

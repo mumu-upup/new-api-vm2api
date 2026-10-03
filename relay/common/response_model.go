@@ -65,7 +65,22 @@ func isDateModelSuffix(suffix string) bool {
 // Mismatch reports whether the retained upstream declaration disagrees with
 // both the requested and upstream models.
 func (r *ResponseModel) Mismatch() bool {
-	return r != nil && r.ReturnedModel != "" && !r.matches(r.ReturnedModel)
+	return r.MismatchModel() != ""
+}
+
+// MismatchModel returns the differing declared model, preferring an explicit
+// actual model over the protocol's model field. A degradation flag alone does
+// not establish a model-name mismatch.
+func (r *ResponseModel) MismatchModel() string {
+	if r == nil {
+		return ""
+	}
+	for _, model := range []string{r.ActualModel, r.ReturnedModel} {
+		if strings.TrimSpace(model) != "" && !r.matches(model) {
+			return model
+		}
+	}
+	return ""
 }
 
 // ObserveResponseModel retains the first differing model for inspection, with
@@ -83,7 +98,7 @@ func (info *RelayInfo) ObserveResponseModel(model string) {
 		}
 	}
 	observation := info.ResponseModel
-	if observation.Mismatch() {
+	if observation.ReturnedModel != "" && !observation.matches(observation.ReturnedModel) {
 		return
 	}
 	if observation.matches(model) && observation.ReturnedModel != "" &&
