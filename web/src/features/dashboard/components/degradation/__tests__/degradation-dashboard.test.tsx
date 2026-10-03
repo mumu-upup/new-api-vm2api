@@ -193,7 +193,77 @@ describe('DegradationDashboard', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows completed request evidence even without historical model mismatches', async () => {
+  it('shows only model mismatches and explicit upstream degradation among recent requests', async () => {
+    api.getResponseModelMismatchStats.mockResolvedValue({
+      success: true,
+      data: emptyStats,
+    })
+    const observations = [
+      { requestId: 'req-matched', returned_model: 'gpt-5' },
+      {
+        requestId: 'req-reported',
+        returned_model: 'gpt-5',
+        degraded: true,
+        degrade_reason: 'capacity fallback',
+      },
+      { requestId: 'req-unknown' },
+      { requestId: 'req-returned-mismatch', returned_model: 'gpt-5-mini' },
+      {
+        requestId: 'req-actual-mismatch',
+        returned_model: 'gpt-5',
+        actual_model: 'gpt-5-nano',
+        degraded: false,
+      },
+      {
+        requestId: 'req-not-degraded',
+        returned_model: 'gpt-5',
+        degraded: false,
+      },
+    ]
+    api.getAllLogs.mockResolvedValue({
+      success: true,
+      data: {
+        items: observations.map(({ requestId, ...observation }, index) => ({
+          id: index + 10,
+          type: 2,
+          model_name: 'gpt-5',
+          created_at: 1790769600,
+          request_id: requestId,
+          channel: 7,
+          channel_name: 'cpa',
+          other: JSON.stringify({
+            response_model: {
+              requested_model: 'gpt-5',
+              upstream_model: 'gpt-5',
+              ...observation,
+            },
+          }),
+        })),
+        total: observations.length,
+      },
+    })
+    renderDashboard()
+    expect(
+      await screen.findByRole('link', { name: 'req-reported' })
+    ).toBeInTheDocument()
+    for (const requestId of ['req-returned-mismatch', 'req-actual-mismatch']) {
+      expect(screen.getByRole('link', { name: requestId })).toBeInTheDocument()
+    }
+    for (const requestId of [
+      'req-matched',
+      'req-unknown',
+      'req-not-degraded',
+    ]) {
+      expect(
+        screen.queryByRole('link', { name: requestId })
+      ).not.toBeInTheDocument()
+    }
+    expect(screen.queryByText('Model name matches')).not.toBeInTheDocument()
+    expect(screen.queryByText('Insufficient evidence')).not.toBeInTheDocument()
+    expect(screen.getByText('capacity fallback')).toBeInTheDocument()
+  })
+
+  it('shows an anomaly-specific empty state when recent logs contain no anomaly evidence', async () => {
     api.getResponseModelMismatchStats.mockResolvedValue({
       success: true,
       data: emptyStats,
@@ -204,68 +274,43 @@ describe('DegradationDashboard', () => {
         items: [
           {
             id: 10,
-            type: 2,
             model_name: 'gpt-5',
             created_at: 1790769600,
-            request_id: 'req-matched',
             channel: 7,
-            channel_name: 'cpa',
-            other: JSON.stringify({
-              response_model: {
-                requested_model: 'gpt-5',
-                upstream_model: 'gpt-5',
-                returned_model: 'gpt-5',
-              },
-            }),
+            request_id: 'req-unknown',
+            other: '{}',
           },
           {
             id: 11,
-            type: 2,
             model_name: 'gpt-5',
             created_at: 1790769600,
-            request_id: 'req-reported',
             channel: 7,
-            channel_name: 'cpa',
+            request_id: 'req-matched',
             other: JSON.stringify({
               response_model: {
                 requested_model: 'gpt-5',
-                upstream_model: 'gpt-5',
                 returned_model: 'gpt-5',
-                degraded: true,
-                degrade_reason: 'capacity fallback',
               },
             }),
           },
-          {
-            id: 12,
-            type: 2,
-            model_name: 'gpt-5',
-            created_at: 1790769600,
-            request_id: 'req-unknown',
-            channel: 7,
-            channel_name: 'cpa',
-            other: '{}',
-          },
         ],
-        total: 3,
+        total: 2,
       },
     })
+
     renderDashboard()
+
     expect(
-      await screen.findByRole('link', { name: 'req-reported' })
+      await screen.findByText(
+        'No model mismatch or upstream-reported degradation in the latest completed request logs.'
+      )
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('link', { name: 'req-matched' })
-    ).toBeInTheDocument()
+      screen.queryByRole('link', { name: 'req-matched' })
+    ).not.toBeInTheDocument()
     expect(
-      screen.getByRole('link', { name: 'req-unknown' })
-    ).toBeInTheDocument()
-    expect(
-      screen.getAllByText('Upstream reported degradation').length
-    ).toBeGreaterThan(0)
-    expect(screen.getByText('Model name matches')).toBeInTheDocument()
-    expect(screen.getByText('Insufficient evidence')).toBeInTheDocument()
-    expect(screen.getByText('capacity fallback')).toBeInTheDocument()
+      screen.queryByRole('link', { name: 'req-unknown' })
+    ).not.toBeInTheDocument()
   })
 
   it('requests the range from local Monday 00:00 after switching to this week', async () => {
