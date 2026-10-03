@@ -1,15 +1,24 @@
 package common
 
-import "strings"
+import (
+	"net/http"
+	"strings"
+
+	"github.com/tidwall/gjson"
+)
 
 // ResponseModel records upstream declarations before response conversion. It is
 // diagnostic only: it must never change routing, pricing, or downstream output.
-// Only the three names are stored; whether they disagree is computed on demand
-// so every consumer applies the current comparison rule to old rows as well.
+// Missing declarations remain unknown; these fields do not measure answer quality.
 type ResponseModel struct {
-	RequestedModel string `json:"requested_model"`
-	UpstreamModel  string `json:"upstream_model"`
-	ReturnedModel  string `json:"returned_model"`
+	RequestedModel         string `json:"requested_model"`
+	UpstreamModel          string `json:"upstream_model"`
+	ReturnedModel          string `json:"returned_model"`
+	ActualModel            string `json:"actual_model,omitempty"`
+	ReportedRequestedModel string `json:"reported_requested_model,omitempty"`
+	Degraded               *bool  `json:"degraded,omitempty"`
+	DegradeReason          string `json:"degrade_reason,omitempty"`
+	DeclarationSource      string `json:"declaration_source,omitempty"`
 }
 
 // matches reports whether an upstream declaration is compatible with the
@@ -82,4 +91,96 @@ func (info *RelayInfo) ObserveResponseModel(model string) {
 		return
 	}
 	observation.ReturnedModel = model
+}
+
+// ObserveResponseModelHeaders reads only headers received from the upstream.
+// Client-supplied headers must never be used as model evidence.
+func (info *RelayInfo) ObserveResponseModelHeaders(headers http.Header) {
+	for _, name := range []string{"OpenAI-Model", "X-OpenAI-Model", "X-Served-Model", "X-Model-Name", "X-Model", "Model"} {
+		if model := headers.Get(name); model != "" {
+			info.ObserveResponseModel(model)
+			break
+		}
+	}
+	var degraded *bool
+	switch strings.ToLower(strings.TrimSpace(headers.Get("X-Model-Degraded"))) {
+	case "true", "1":
+		value := true
+		degraded = &value
+	case "false", "0":
+		value := false
+		degraded = &value
+	}
+	info.observeModelDeclaration(headers.Get("X-Actual-Model"), headers.Get("X-Requested-Model"), degraded, headers.Get("X-Model-Degrade-Reason"), "upstream_header")
+}
+
+// ObserveModelDiagnostics accepts optional gateway declarations in JSON or SSE.
+// It deliberately does not traverse generated content, tool arguments or metadata.
+func (info *RelayInfo) ObserveModelDiagnostics(data string) {
+	if !strings.Contains(data, `"actual_model"`) && !strings.Contains(data, `"model_degraded"`) &&
+		!strings.Contains(data, `"model_degrade_reason"`) && !strings.Contains(data, `"requested_model"`) {
+		return
+	}
+	if !gjson.Valid(data) {
+		return
+	}
+	root := gjson.Parse(data)
+	for _, envelope := range []gjson.Result{root, root.Get("response"), root.Get("message")} {
+		var degraded *bool
+		flag := envelope.Get("model_degraded")
+		if flag.Type == gjson.True || flag.Type == gjson.False {
+			value := flag.Bool()
+			degraded = &value
+		}
+		info.observeModelDeclaration(envelope.Get("actual_model").Str, envelope.Get("requested_model").Str, degraded, envelope.Get("model_degrade_reason").Str, "upstream_body")
+	}
+}
+
+func (info *RelayInfo) observeModelDeclaration(actual, requested string, degraded *bool, reason, source string) {
+	if info == nil {
+		return
+	}
+	actual, requested, reason = strings.TrimSpace(actual), strings.TrimSpace(requested), strings.TrimSpace(reason)
+	if actual == "" && requested == "" && degraded == nil && reason == "" {
+		return
+	}
+	if info.ResponseModel == nil {
+		info.ResponseModel = &ResponseModel{RequestedModel: info.OriginModelName, UpstreamModel: info.GetUpstreamModelName()}
+	}
+	observation := info.ResponseModel
+	// Retain the first alert and its context across later stream frames. A later
+	// downgrade may supersede a matching or negative declaration.
+	hasAlert := (observation.Degraded != nil && *observation.Degraded) ||
+		(observation.ActualModel != "" && !observation.matches(observation.ActualModel))
+	incomingAlert := (degraded != nil && *degraded) || (actual != "" && !observation.matches(actual))
+	updated := false
+	replace := incomingAlert && !hasAlert
+	actualMismatch := observation.ActualModel != "" && !observation.matches(observation.ActualModel)
+	incomingActualMismatch := actual != "" && !observation.matches(actual)
+	if actual != "" && (observation.ActualModel == "" || (!actualMismatch && incomingActualMismatch)) {
+		updated = true
+		observation.ActualModel = string([]rune(actual)[:min(len([]rune(actual)), 256)])
+	}
+	if requested != "" && (observation.ReportedRequestedModel == "" || replace) {
+		updated = true
+		observation.ReportedRequestedModel = string([]rune(requested)[:min(len([]rune(requested)), 256)])
+	}
+	if degraded != nil && (observation.Degraded == nil || !*observation.Degraded) {
+		updated = observation.Degraded == nil || *observation.Degraded != *degraded || updated
+		observation.Degraded = degraded
+	}
+	if replace {
+		observation.DegradeReason = ""
+	}
+	if reason != "" && observation.DegradeReason == "" {
+		updated = true
+		observation.DegradeReason = string([]rune(reason)[:min(len([]rune(reason)), 512)])
+	}
+	if updated {
+		if observation.DeclarationSource == "" {
+			observation.DeclarationSource = source
+		} else if observation.DeclarationSource != source {
+			observation.DeclarationSource = "upstream_header_and_body"
+		}
+	}
 }

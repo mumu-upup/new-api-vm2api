@@ -133,14 +133,12 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 }
 
 func AppendResponseModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
-	if relayInfo == nil || relayInfo.ResponseModel == nil || other == nil {
+	if relayInfo == nil || other == nil {
 		return
 	}
 	observation := relayInfo.ResponseModel
-	if observation.ReturnedModel == observation.RequestedModel &&
-		(observation.UpstreamModel == "" || observation.UpstreamModel == observation.RequestedModel) &&
-		(relayInfo.ChannelMeta == nil || !relayInfo.IsModelMapped) {
-		return
+	if observation == nil {
+		observation = &relaycommon.ResponseModel{RequestedModel: relayInfo.OriginModelName, UpstreamModel: relayInfo.GetUpstreamModelName()}
 	}
 	other.SetPublic("response_model", *observation)
 }

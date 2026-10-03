@@ -421,6 +421,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
+	info.ObserveModelDiagnostics(string(responseBody))
 	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
 	var grounding geminiGroundingCounter
 	grounding.observe(&geminiResponse)
