@@ -112,7 +112,7 @@ func RecordResponseModelMismatch(ctx *gin.Context, relayInfo *relaycommon.RelayI
 		Group:            params.Group,
 		RequestedModel:   requestedModel,
 		UpstreamModel:    observation.UpstreamModel,
-		ReturnedModel:    observation.ReturnedModel,
+		ReturnedModel:    observation.MismatchModel(),
 		Quota:            params.Quota,
 		PromptTokens:     params.PromptTokens,
 		CompletionTokens: params.CompletionTokens,

@@ -69,9 +69,8 @@ func TestResponseModelComparisonAndLog(t *testing.T) {
 				ResponseModel *relaycommon.ResponseModel `json:"response_model"`
 			}
 			require.NoError(t, common.UnmarshalJsonStr(other.JSONString(), &stored))
-			if tc.returned == "" {
-				require.NotNil(t, stored.ResponseModel)
-				assert.Empty(t, stored.ResponseModel.ReturnedModel)
+			if !tc.mismatch {
+				assert.Nil(t, stored.ResponseModel)
 				return
 			}
 			require.NotNil(t, stored.ResponseModel)
@@ -85,7 +84,7 @@ func TestResponseModelComparisonAndLog(t *testing.T) {
 	}
 }
 
-func TestResponseModelLogKeepsEveryObservation(t *testing.T) {
+func TestResponseModelLogKeepsOnlyMismatches(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		upstream string
@@ -93,12 +92,12 @@ func TestResponseModelLogKeepsEveryObservation(t *testing.T) {
 		mapped   bool
 		record   bool
 	}{
-		{name: "same model", upstream: "requested", returned: "requested", record: true},
-		{name: "no upstream name", returned: "requested", record: true},
-		{name: "mapped model", upstream: "mapped", returned: "mapped", mapped: true, record: true},
-		{name: "mapped response echoes request", upstream: "mapped", returned: "requested", mapped: true, record: true},
-		{name: "prefix difference", upstream: "requested", returned: "requested-2026-09-01", record: true},
-		{name: "case difference", upstream: "requested", returned: "REQUESTED", record: true},
+		{name: "same model", upstream: "requested", returned: "requested"},
+		{name: "no upstream name", returned: "requested"},
+		{name: "mapped model", upstream: "mapped", returned: "mapped", mapped: true},
+		{name: "mapped response echoes request", upstream: "mapped", returned: "requested", mapped: true},
+		{name: "prefix difference", upstream: "requested", returned: "requested-2026-09-01"},
+		{name: "case difference", upstream: "requested", returned: "REQUESTED"},
 		{name: "mismatch", upstream: "requested", returned: "other", record: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,7 +317,7 @@ func TestResponseModelDiagnosticEvidence(t *testing.T) {
 	info.ObserveResponseModel("requested")
 	info.ObserveModelDiagnostics(`{"response":{"actual_model":"requested","model_degraded":false}}`)
 	require.NotNil(t, info.ResponseModel)
-	assert.False(t, info.ResponseModel.Mismatch())
+	assert.True(t, info.ResponseModel.Mismatch())
 	assert.Equal(t, "requested", info.ResponseModel.RequestedModel)
 	assert.Equal(t, "requested", info.ResponseModel.ReturnedModel)
 	assert.Equal(t, "reported-request", info.ResponseModel.ReportedRequestedModel)
