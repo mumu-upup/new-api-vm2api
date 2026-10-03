@@ -36,6 +36,7 @@ import {
 } from '@/features/usage-logs/components/model-badge'
 import type { UsageLog } from '@/features/usage-logs/data/schema'
 import { parseLogOther } from '@/features/usage-logs/lib/format'
+import { getResponseModelStatus } from '@/features/usage-logs/lib/response-model'
 import { toIntlLocale } from '@/i18n/languages'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -61,12 +62,15 @@ export function RequestModelMonitor(props: {
           page_size: 100,
         })
       )
-      return ((response.data?.items as UsageLog[] | undefined) ?? []).map(
-        (log) => ({
+      return ((response.data?.items as UsageLog[] | undefined) ?? [])
+        .map((log) => ({
           log,
           observation: parseLogOther(log.other)?.response_model,
+        }))
+        .filter((item) => {
+          const status = getResponseModelStatus(item.observation)
+          return status === 'reported' || status === 'mismatch'
         })
-      )
     },
     staleTime: 5_000,
     refetchInterval: 10_000,
@@ -75,9 +79,9 @@ export function RequestModelMonitor(props: {
 
   return (
     <PanelWrapper
-      title={t('Recent request monitoring')}
+      title={t('Recent anomalous requests')}
       description={t(
-        'Latest {{count}} completed requests in this range, refreshed every 10 seconds. Requires consumption logging; running requests appear after completion.',
+        'Only model mismatches or upstream-reported degradation among the latest {{count}} completed requests in this range. Refreshes every 10 seconds; requires consumption logging.',
         { count: 100 }
       )}
       loading={query.isLoading}
@@ -92,7 +96,7 @@ export function RequestModelMonitor(props: {
           data={query.data ?? []}
           getRowKey={(item) => item.log.id}
           emptyContent={t(
-            'No completed request logs in this range. Check that consumption logging is enabled.'
+            'No model mismatch or upstream-reported degradation in the latest completed request logs.'
           )}
           columns={[
             {
