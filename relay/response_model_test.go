@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
@@ -19,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,7 +70,8 @@ func TestResponseModelComparisonAndLog(t *testing.T) {
 			}
 			require.NoError(t, common.UnmarshalJsonStr(other.JSONString(), &stored))
 			if tc.returned == "" {
-				assert.Nil(t, stored.ResponseModel)
+				require.NotNil(t, stored.ResponseModel)
+				assert.Empty(t, stored.ResponseModel.ReturnedModel)
 				return
 			}
 			require.NotNil(t, stored.ResponseModel)
@@ -82,7 +85,7 @@ func TestResponseModelComparisonAndLog(t *testing.T) {
 	}
 }
 
-func TestResponseModelLogOmitsUnchangedModel(t *testing.T) {
+func TestResponseModelLogKeepsEveryObservation(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		upstream string
@@ -90,8 +93,8 @@ func TestResponseModelLogOmitsUnchangedModel(t *testing.T) {
 		mapped   bool
 		record   bool
 	}{
-		{name: "same model", upstream: "requested", returned: "requested"},
-		{name: "no upstream name", returned: "requested"},
+		{name: "same model", upstream: "requested", returned: "requested", record: true},
+		{name: "no upstream name", returned: "requested", record: true},
 		{name: "mapped model", upstream: "mapped", returned: "mapped", mapped: true, record: true},
 		{name: "mapped response echoes request", upstream: "mapped", returned: "requested", mapped: true, record: true},
 		{name: "prefix difference", upstream: "requested", returned: "requested-2026-09-01", record: true},
@@ -225,12 +228,18 @@ func TestResponseModelHandlersCaptureBeforeConversion(t *testing.T) {
 				ChannelMeta:         &relaycommon.ChannelMeta{UpstreamModelName: "mapped"},
 				ThinkingContentInfo: relaycommon.ThinkingContentInfo{IsFirstThinkingContent: true},
 			}
-			usage, apiErr := tc.handler(c, info, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body))})
+			body := strings.ReplaceAll(tc.body, `"model":"returned"`, `"model":"returned","actual_model":"requested-mini","model_degraded":true,"model_degrade_reason":"capacity fallback"`)
+			body = strings.ReplaceAll(body, `"modelVersion":"returned"`, `"modelVersion":"returned","actual_model":"requested-mini","model_degraded":true,"model_degrade_reason":"capacity fallback"`)
+			usage, apiErr := tc.handler(c, info, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))})
 			require.Nil(t, apiErr)
 			require.NotNil(t, usage)
 			assert.Equal(t, 5, usage.TotalTokens)
 			require.NotNil(t, info.ResponseModel)
-			assert.Equal(t, &relaycommon.ResponseModel{RequestedModel: "requested", UpstreamModel: "mapped", ReturnedModel: "returned"}, info.ResponseModel)
+			assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
+			assert.Equal(t, "requested-mini", info.ResponseModel.ActualModel)
+			require.NotNil(t, info.ResponseModel.Degraded)
+			assert.True(t, *info.ResponseModel.Degraded)
+			assert.Equal(t, "capacity fallback", info.ResponseModel.DegradeReason)
 			assert.True(t, info.ResponseModel.Mismatch())
 			other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 0, 0, 1)
 			assert.Equal(t, *info.ResponseModel, other.Snapshot()["response_model"])
@@ -298,4 +307,91 @@ func TestResponseModelDoesNotRecordSynthesizedModel(t *testing.T) {
 	})
 	require.Nil(t, apiErr)
 	assert.Nil(t, info.ResponseModel)
+}
+
+func TestResponseModelDiagnosticEvidence(t *testing.T) {
+	info := &relaycommon.RelayInfo{OriginModelName: "requested", ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "requested"}}
+	info.ObserveResponseModelHeaders(http.Header{
+		"X-Requested-Model": {"reported-request"}, "X-Actual-Model": {"requested-mini"},
+		"X-Model-Degraded": {"true"}, "X-Model-Degrade-Reason": {"capacity fallback"},
+	})
+	info.ObserveResponseModel("requested")
+	info.ObserveModelDiagnostics(`{"response":{"actual_model":"requested","model_degraded":false}}`)
+	require.NotNil(t, info.ResponseModel)
+	assert.False(t, info.ResponseModel.Mismatch())
+	assert.Equal(t, "requested", info.ResponseModel.RequestedModel)
+	assert.Equal(t, "requested", info.ResponseModel.ReturnedModel)
+	assert.Equal(t, "reported-request", info.ResponseModel.ReportedRequestedModel)
+	assert.Equal(t, "requested-mini", info.ResponseModel.ActualModel)
+	require.NotNil(t, info.ResponseModel.Degraded)
+	assert.True(t, *info.ResponseModel.Degraded)
+	assert.Equal(t, "capacity fallback", info.ResponseModel.DegradeReason)
+	assert.Equal(t, "upstream_header", info.ResponseModel.DeclarationSource)
+}
+
+func TestResponseModelDiagnosticPayloadValidation(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name, payload string
+		degraded      *bool
+		reason        string
+	}{
+		{name: "same model explicitly degraded", payload: `{"actual_model":"requested","model_degraded":true,"model_degrade_reason":"quota fallback"}`, degraded: &yes, reason: "quota fallback"},
+		{name: "explicit false", payload: `{"response":{"model_degraded":false}}`, degraded: &no},
+		{name: "invalid flag ignored", payload: `{"model_degraded":"false"}`},
+		{name: "content cannot spoof diagnostics", payload: `{"choices":[{"message":{"content":"test","actual_model":"mini","model_degraded":true}}]}`},
+		{name: "reason alone", payload: `{"model_degrade_reason":"undocumented signal"}`, reason: "undocumented signal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{OriginModelName: "requested", ChannelMeta: &relaycommon.ChannelMeta{}}
+			info.ObserveModelDiagnostics(tc.payload)
+			info.ObserveResponseModel("requested")
+			require.NotNil(t, info.ResponseModel)
+			assert.Equal(t, tc.degraded, info.ResponseModel.Degraded)
+			assert.Equal(t, tc.reason, info.ResponseModel.DegradeReason)
+			assert.False(t, info.ResponseModel.Mismatch())
+		})
+	}
+	info := &relaycommon.RelayInfo{OriginModelName: "requested", ChannelMeta: &relaycommon.ChannelMeta{}}
+	info.ObserveResponseModelHeaders(http.Header{"X-Model-Degraded": {"invalid"}, "X-Model-Degrade-Reason": {strings.Repeat("界", 600)}})
+	require.NotNil(t, info.ResponseModel)
+	assert.Nil(t, info.ResponseModel.Degraded)
+	assert.Len(t, []rune(info.ResponseModel.DegradeReason), 512)
+}
+
+func TestResponseModelSplitDiagnosticEvidence(t *testing.T) {
+	info := &relaycommon.RelayInfo{OriginModelName: "requested", ChannelMeta: &relaycommon.ChannelMeta{}}
+	info.ObserveResponseModelHeaders(http.Header{"X-Model-Degraded": {"true"}, "X-Actual-Model": {"requested"}})
+	info.ObserveModelDiagnostics(`{"response":{"model_degrade_reason":"capacity fallback","requested_model":"upstream-request","actual_model":"requested-mini"}}`)
+	info.ObserveModelDiagnostics(`{"model_degraded":false,"actual_model":"requested"}`)
+	require.NotNil(t, info.ResponseModel)
+	require.NotNil(t, info.ResponseModel.Degraded)
+	assert.True(t, *info.ResponseModel.Degraded)
+	assert.Equal(t, "capacity fallback", info.ResponseModel.DegradeReason)
+	assert.Equal(t, "upstream-request", info.ResponseModel.ReportedRequestedModel)
+	assert.Equal(t, "requested-mini", info.ResponseModel.ActualModel)
+	assert.Equal(t, "upstream_header_and_body", info.ResponseModel.DeclarationSource)
+}
+
+func TestResponseModelWebSocketHandshakeEvidence(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(w, r, http.Header{"X-Model-Degraded": {"true"}, "X-Actual-Model": {"requested-mini"}})
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+	}))
+	defer upstream.Close()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	info := &relaycommon.RelayInfo{OriginModelName: "requested", RequestURLPath: "/v1/responses", RelayMode: relayconstant.RelayModeResponses,
+		ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: upstream.URL, ChannelType: constant.ChannelTypeOpenAI}}
+	conn, err := channel.DoWssRequest(&openai.Adaptor{}, c, info, nil)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NotNil(t, info.ResponseModel)
+	assert.Equal(t, "requested-mini", info.ResponseModel.ActualModel)
+	require.NotNil(t, info.ResponseModel.Degraded)
+	assert.True(t, *info.ResponseModel.Degraded)
 }

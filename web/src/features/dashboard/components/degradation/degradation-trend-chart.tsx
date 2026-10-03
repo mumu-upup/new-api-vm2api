@@ -39,7 +39,7 @@ export function DegradationTrendChart(props: DegradationTrendChartProps) {
   const { t, i18n } = useTranslation()
   const { resolvedTheme, themeReady } = useChartTheme()
   const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
-  const seriesName = t('Degraded Requests')
+  const seriesName = t('Model Mismatches')
 
   const spec = useMemo(() => {
     const textColor =
@@ -110,7 +110,7 @@ export function DegradationTrendChart(props: DegradationTrendChartProps) {
           <IconBadge tone='warning' size='sm'>
             <TrendingUp />
           </IconBadge>
-          {t('Degraded Requests Trend')}
+          {t('Model Mismatch Trend')}
         </span>
       }
       loading={props.loading}

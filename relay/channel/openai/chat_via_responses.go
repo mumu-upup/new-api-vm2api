@@ -41,6 +41,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		return nil, types.WithOpenAIError(*oaiError, resp.StatusCode)
 	}
 
+	info.ObserveModelDiagnostics(string(body))
 	info.ObserveResponseModel(responsesResp.Model)
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, &responsesResp)
 	if err != nil {
@@ -83,6 +84,7 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 			continue
 		}
 
+		info.ObserveModelDiagnostics(data)
 		var streamResp dto.ResponsesStreamResponse
 		if err := common.UnmarshalJsonStr(data, &streamResp); err != nil {
 			logger.LogError(c, common.LogText("failed to unmarshal buffered responses stream event: %s", err.Error()))

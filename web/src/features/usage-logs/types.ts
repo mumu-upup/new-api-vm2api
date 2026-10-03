@@ -211,6 +211,11 @@ export interface LogOtherData {
     requested_model: string
     upstream_model: string
     returned_model: string
+    actual_model?: string
+    reported_requested_model?: string
+    degraded?: boolean
+    degrade_reason?: string
+    declaration_source?: string
   }
   audio_ratio?: number
   audio_completion_ratio?: number

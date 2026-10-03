@@ -55,6 +55,8 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 				sourceResultCh <- sourceResult{body: body, err: err}
 				w.Header().Set("Location", target.URL+"/redirect-target")
 				w.Header().Set("OpenAI-Model", "returned")
+				w.Header().Set("X-Actual-Model", "actual")
+				w.Header().Set("X-Model-Degraded", "false")
 				w.WriteHeader(statusCode)
 				_, _ = io.WriteString(w, responseBody)
 			}))
@@ -63,6 +65,8 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			ctx.Request = httptest.NewRequest(http.MethodPost, "/relay", nil)
+			ctx.Request.Header.Set("X-Model-Degraded", "true")
+			ctx.Request.Header.Set("X-Model-Degrade-Reason", "spoofed")
 
 			req, err := http.NewRequest(http.MethodPost, source.URL, bytes.NewReader([]byte("request body")))
 			require.NoError(t, err)
@@ -82,6 +86,10 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 			assert.Equal(t, []byte("request body"), gotSource.body)
 			require.NotNil(t, info.ResponseModel)
 			assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
+			assert.Equal(t, "actual", info.ResponseModel.ActualModel)
+			require.NotNil(t, info.ResponseModel.Degraded)
+			assert.False(t, *info.ResponseModel.Degraded)
+			assert.Empty(t, info.ResponseModel.DegradeReason)
 			assert.EqualValues(t, 1, sourceRequests.Load())
 			assert.Zero(t, targetRequests.Load())
 		})

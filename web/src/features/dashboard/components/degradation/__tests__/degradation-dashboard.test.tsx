@@ -25,8 +25,12 @@ import type { ResponseModelMismatchStats } from '@/features/dashboard/types'
 
 import { DegradationDashboard } from '../degradation-dashboard'
 
-const api = vi.hoisted(() => ({ getResponseModelMismatchStats: vi.fn() }))
+const api = vi.hoisted(() => ({
+  getResponseModelMismatchStats: vi.fn(),
+  getAllLogs: vi.fn(),
+}))
 vi.mock('@/features/dashboard/api', () => api)
+vi.mock('@/features/usage-logs/api', () => api)
 vi.mock('@visactor/react-vchart', () => ({ VChart: () => null }))
 vi.mock('@visactor/vchart', () => ({
   ThemeManager: { setCurrentTheme: vi.fn() },
@@ -122,6 +126,10 @@ const emptyStats: ResponseModelMismatchStats = {
 
 let client: QueryClient
 beforeEach(() => {
+  api.getAllLogs.mockResolvedValue({
+    success: true,
+    data: { items: [], total: 0 },
+  })
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
   client = new QueryClient({
@@ -151,8 +159,10 @@ describe('DegradationDashboard', () => {
     renderDashboard()
 
     const link = await screen.findByRole('link', { name: 'req-degraded-1' })
-    expect(screen.getByText('Degraded Channels')).toBeInTheDocument()
-    expect(screen.getByText('Model Substitutions')).toBeInTheDocument()
+    expect(
+      screen.getByText('Channels with Model Mismatches')
+    ).toBeInTheDocument()
+    expect(screen.getByText('Model Name Differences')).toBeInTheDocument()
     expect(screen.getAllByText('75%').length).toBeGreaterThan(0)
     expect(screen.getAllByText('relay-a').length).toBeGreaterThan(0)
     expect(link).toHaveAttribute(
@@ -178,7 +188,84 @@ describe('DegradationDashboard', () => {
         'Matching or missing model names cannot establish response quality. No recorded mismatch does not mean no degradation.'
       )
     ).toBeInTheDocument()
-    expect(screen.queryByText('Degraded Channels')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Channels with Model Mismatches')
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows completed request evidence even without historical model mismatches', async () => {
+    api.getResponseModelMismatchStats.mockResolvedValue({
+      success: true,
+      data: emptyStats,
+    })
+    api.getAllLogs.mockResolvedValue({
+      success: true,
+      data: {
+        items: [
+          {
+            id: 10,
+            type: 2,
+            model_name: 'gpt-5',
+            created_at: 1790769600,
+            request_id: 'req-matched',
+            channel: 7,
+            channel_name: 'cpa',
+            other: JSON.stringify({
+              response_model: {
+                requested_model: 'gpt-5',
+                upstream_model: 'gpt-5',
+                returned_model: 'gpt-5',
+              },
+            }),
+          },
+          {
+            id: 11,
+            type: 2,
+            model_name: 'gpt-5',
+            created_at: 1790769600,
+            request_id: 'req-reported',
+            channel: 7,
+            channel_name: 'cpa',
+            other: JSON.stringify({
+              response_model: {
+                requested_model: 'gpt-5',
+                upstream_model: 'gpt-5',
+                returned_model: 'gpt-5',
+                degraded: true,
+                degrade_reason: 'capacity fallback',
+              },
+            }),
+          },
+          {
+            id: 12,
+            type: 2,
+            model_name: 'gpt-5',
+            created_at: 1790769600,
+            request_id: 'req-unknown',
+            channel: 7,
+            channel_name: 'cpa',
+            other: '{}',
+          },
+        ],
+        total: 3,
+      },
+    })
+    renderDashboard()
+    expect(
+      await screen.findByRole('link', { name: 'req-reported' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'req-matched' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'req-unknown' })
+    ).toBeInTheDocument()
+    expect(
+      screen.getAllByText('Upstream reported degradation').length
+    ).toBeGreaterThan(0)
+    expect(screen.getByText('Model name matches')).toBeInTheDocument()
+    expect(screen.getByText('Insufficient evidence')).toBeInTheDocument()
+    expect(screen.getByText('capacity fallback')).toBeInTheDocument()
   })
 
   it('requests the range from local Monday 00:00 after switching to this week', async () => {
@@ -245,6 +332,8 @@ describe('DegradationDashboard', () => {
     expect(
       await screen.findByRole('button', { name: 'Retry' })
     ).toBeInTheDocument()
-    expect(screen.queryByText('Degraded Channels')).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Channels with Model Mismatches')
+    ).not.toBeInTheDocument()
   })
 })
