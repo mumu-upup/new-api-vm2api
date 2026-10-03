@@ -56,3 +56,29 @@ export function isResponseModelMismatch(
   }
   return true
 }
+
+export function getResponseModelStatus(
+  observation: ResponseModelObservation | undefined
+): 'reported' | 'mismatch' | 'matched' | 'unknown' {
+  if (!observation) return 'unknown'
+  if (observation.degraded === true) return 'reported'
+  if (getResponseModelMismatchName(observation)) return 'mismatch'
+  if (observation.actual_model?.trim()) return 'matched'
+  return observation.returned_model?.trim() ? 'matched' : 'unknown'
+}
+
+export function getResponseModelMismatchName(
+  observation: ResponseModelObservation | undefined
+): string {
+  if (!observation) return ''
+  if (
+    observation.actual_model &&
+    isResponseModelMismatch({
+      ...observation,
+      returned_model: observation.actual_model,
+    })
+  ) {
+    return observation.actual_model
+  }
+  return isResponseModelMismatch(observation) ? observation.returned_model : ''
+}

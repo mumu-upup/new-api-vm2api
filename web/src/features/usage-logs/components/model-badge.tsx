@@ -31,7 +31,10 @@ import { getLobeIcon } from '@/lib/lobe-icon'
 import { resolveModelProvider } from '@/lib/model-provider'
 import { cn } from '@/lib/utils'
 
-import { isResponseModelMismatch } from '../lib/response-model'
+import {
+  getResponseModelStatus,
+  getResponseModelMismatchName,
+} from '../lib/response-model'
 import type { LogOtherData } from '../types'
 import { DetailRow } from './dialogs/log-detail-layout'
 
@@ -92,25 +95,16 @@ function ModelBadgeContent(props: ModelBadgeProps & { copyable: boolean }) {
 
 export function ModelBadge(props: ModelBadgeProps) {
   const { t } = useTranslation()
-  const mismatch = isResponseModelMismatch(props.responseModel)
+  const mismatchModel = getResponseModelMismatchName(props.responseModel)
+  const mismatch = !!mismatchModel
   const responseModelLabel =
     mismatch && props.responseModel
       ? t('Response model: {{model}}', {
-          model: props.responseModel.returned_model,
+          model: mismatchModel,
         })
       : ''
   const modelLabel = `${t('Model')}: ${props.modelName}${responseModelLabel ? `, ${responseModelLabel}` : ''}`
-  const hasDetails =
-    !!props.actualModel ||
-    !!(
-      props.responseModel &&
-      (mismatch ||
-        props.responseModel.returned_model !==
-          props.responseModel.requested_model ||
-        (props.responseModel.upstream_model &&
-          props.responseModel.upstream_model !==
-            props.responseModel.requested_model))
-    )
+  const hasDetails = !!props.actualModel || !!props.responseModel
 
   if (!hasDetails) {
     if (props.onInspect) {
@@ -136,6 +130,14 @@ export function ModelBadge(props: ModelBadgeProps) {
         <StatusBadge
           icon={AlertTriangle}
           label={responseModelLabel}
+          variant='warning'
+          copyable={false}
+        />
+      )}
+      {!mismatch && props.responseModel?.degraded === true && (
+        <StatusBadge
+          icon={AlertTriangle}
+          label={t('Upstream reported degradation')}
           variant='warning'
           copyable={false}
         />
@@ -208,15 +210,24 @@ export function ResponseModelDetails(props: {
   observation: NonNullable<LogOtherData['response_model']>
 }) {
   const { t } = useTranslation()
-  const mismatch = isResponseModelMismatch(props.observation)
+  const mismatchModel = getResponseModelMismatchName(props.observation)
+  const mismatch = !!mismatchModel
+  let sourceLabel = t('Upstream response body')
+  if (props.observation.declaration_source === 'upstream_header') {
+    sourceLabel = t('Upstream response headers')
+  }
+  if (props.observation.declaration_source === 'upstream_header_and_body') {
+    sourceLabel = t('Upstream response headers and body')
+  }
 
   return (
     <div className='min-w-0 space-y-2'>
+      <ResponseModelStatus observation={props.observation} />
       {mismatch && (
         <StatusBadge
           icon={AlertTriangle}
           label={t('Response model: {{model}}', {
-            model: props.observation.returned_model,
+            model: mismatchModel,
           })}
           variant='warning'
           copyable={false}
@@ -237,9 +248,43 @@ export function ResponseModelDetails(props: {
       />
       <DetailRow
         label={t('Response Model')}
-        value={props.observation.returned_model}
+        value={props.observation.returned_model || t('Not reported')}
         mono
       />
+      {props.observation.actual_model && (
+        <DetailRow
+          label={t('Upstream declared actual model')}
+          value={props.observation.actual_model}
+          mono
+        />
+      )}
+      {props.observation.reported_requested_model && (
+        <DetailRow
+          label={t('Upstream declared request model')}
+          value={props.observation.reported_requested_model}
+          mono
+        />
+      )}
+      {props.observation.degraded !== undefined && (
+        <DetailRow
+          label={t('Upstream degradation flag')}
+          value={props.observation.degraded ? t('Yes') : t('No')}
+        />
+      )}
+      {props.observation.degrade_reason && (
+        <DetailRow
+          label={t('Degradation reason')}
+          value={props.observation.degrade_reason}
+        />
+      )}
+      {props.observation.declaration_source && (
+        <DetailRow label={t('Evidence source')} value={sourceLabel} />
+      )}
+      <p className='text-muted-foreground text-xs'>
+        {t(
+          'Upstream declarations do not verify answer quality. Missing evidence remains unknown.'
+        )}
+      </p>
       {mismatch && (
         <p className='text-muted-foreground text-xs'>
           {t(
@@ -248,5 +293,46 @@ export function ResponseModelDetails(props: {
         </p>
       )}
     </div>
+  )
+}
+
+export function ResponseModelStatus(props: {
+  observation?: LogOtherData['response_model']
+}) {
+  const { t } = useTranslation()
+  const status = getResponseModelStatus(props.observation)
+  if (status === 'reported') {
+    return (
+      <StatusBadge
+        copyable={false}
+        variant='warning'
+        label={t('Upstream reported degradation')}
+      />
+    )
+  }
+  if (status === 'mismatch') {
+    return (
+      <StatusBadge
+        copyable={false}
+        variant='warning'
+        label={t('Model name mismatch')}
+      />
+    )
+  }
+  if (status === 'matched') {
+    return (
+      <StatusBadge
+        copyable={false}
+        variant='info'
+        label={t('Model name matches')}
+      />
+    )
+  }
+  return (
+    <StatusBadge
+      copyable={false}
+      variant='neutral'
+      label={t('Insufficient evidence')}
+    />
   )
 }

@@ -435,6 +435,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 							}
 							info.StreamStatus.MarkFailed(code, rejection.Error.Type, rejection.Status)
 						}
+						info.ObserveModelDiagnostics(string(incoming.body))
 						accumulator.Observe(&event.ResponsesStreamResponse, incoming.body)
 						info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 						s.lastResponseID = responseID
@@ -466,6 +467,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 						responseID = event.Response.ID
 					}
 				}
+				info.ObserveModelDiagnostics(string(incoming.body))
 				accumulator.Observe(&event.ResponsesStreamResponse, incoming.body)
 			}
 			switch event.Type {

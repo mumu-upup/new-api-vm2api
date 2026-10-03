@@ -53,7 +53,7 @@ export function DegradationChannelTable(props: DegradationChannelTableProps) {
           <IconBadge tone='chart-2' size='sm'>
             <Radio />
           </IconBadge>
-          {t('Degraded Channels')}
+          {t('Channels with Model Mismatches')}
         </span>
       }
       loading={props.loading}
@@ -82,14 +82,14 @@ export function DegradationChannelTable(props: DegradationChannelTableProps) {
           },
           {
             id: 'requests',
-            header: t('Degraded / Total'),
+            header: t('Mismatches / Total'),
             cellClassName: 'tabular-nums whitespace-nowrap',
             cell: (channel) =>
               `${formatNumber(channel.mismatch_requests, locale)} / ${formatNumber(channel.total_requests, locale)}`,
           },
           {
             id: 'rate',
-            header: t('Degradation Rate'),
+            header: t('Model Mismatch Rate'),
             cellClassName: 'tabular-nums font-medium',
             cell: (channel) =>
               formatPercent(
@@ -149,7 +149,7 @@ export function DegradationPairTable(props: DegradationPairTableProps) {
           <IconBadge tone='chart-1' size='sm'>
             <Shuffle />
           </IconBadge>
-          {t('Model Substitutions')}
+          {t('Model Name Differences')}
         </span>
       }
       loading={props.loading}

@@ -52,7 +52,7 @@ export function DegradationRecentTable(props: DegradationRecentTableProps) {
           <IconBadge tone='warning' size='sm'>
             <History />
           </IconBadge>
-          {t('Recent Degraded Requests')}
+          {t('Recent Model Mismatches')}
         </span>
       }
       description={t('Showing up to the latest {{count}} records', {

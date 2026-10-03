@@ -350,7 +350,7 @@ it('opens the mismatch evidence with the keyboard and shows all three models', a
 })
 
 it.each([false, true])(
-  'copies the model without opening details when there is no mapping or difference (response observed: %s)',
+  'opens recorded evidence when present and retains copy behavior for legacy logs (response observed: %s)',
   async (observed) => {
     const user = userEvent.setup()
     const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
@@ -368,6 +368,14 @@ it.each([false, true])(
         }
       />
     )
+    if (observed) {
+      await user.click(
+        screen.getByRole('button', { name: 'Model: requested-model' })
+      )
+      expect(await screen.findByText('Model name matches')).toBeVisible()
+      expect(screen.getByText('Response Model')).toBeVisible()
+      return
+    }
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
     await user.click(screen.getByText('requested-model'))
     expect(copy).toHaveBeenCalledWith('requested-model')
@@ -430,3 +438,40 @@ it.each([
     ).not.toBeInTheDocument()
   }
 )
+
+it('shows a missing model as unknown with the upstream reason', async () => {
+  const user = userEvent.setup()
+  render(
+    <ModelBadge
+      modelName='gpt-5'
+      responseModel={{
+        requested_model: 'gpt-5',
+        upstream_model: 'gpt-5',
+        returned_model: '',
+        degrade_reason: 'No routing metadata',
+        declaration_source: 'upstream_header',
+      }}
+    />
+  )
+  await user.click(screen.getByRole('button', { name: 'Model: gpt-5' }))
+  expect(await screen.findByText('Insufficient evidence')).toBeVisible()
+  expect(screen.getByText('Not reported')).toBeVisible()
+  expect(screen.getByText('No routing metadata')).toBeVisible()
+  expect(screen.getByText('Upstream response headers')).toBeVisible()
+})
+
+it('warns on an actual model mismatch when the protocol echoes the requested model', () => {
+  render(
+    <ModelBadge
+      modelName='gpt-5'
+      responseModel={{
+        requested_model: 'gpt-5',
+        upstream_model: 'gpt-5',
+        returned_model: 'gpt-5',
+        actual_model: 'gpt-5-mini',
+        degraded: false,
+      }}
+    />
+  )
+  expect(screen.getByText('Response model: gpt-5-mini')).toBeVisible()
+})

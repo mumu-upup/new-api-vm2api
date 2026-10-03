@@ -20,6 +20,7 @@ import { describe, expect, test } from 'vitest'
 
 import {
   isResponseModelMismatch,
+  getResponseModelStatus,
   type ResponseModelObservation,
 } from '../response-model'
 
@@ -87,5 +88,31 @@ describe('isResponseModelMismatch', () => {
   test('returns false without an observation or a returned model', () => {
     expect(isResponseModelMismatch(undefined)).toBe(false)
     expect(isResponseModelMismatch(observation(''))).toBe(false)
+  })
+})
+
+describe('getResponseModelStatus', () => {
+  test('keeps missing declarations and old unrecorded requests unknown', () => {
+    expect(getResponseModelStatus(undefined)).toBe('unknown')
+    expect(getResponseModelStatus(observation(''))).toBe('unknown')
+    expect(getResponseModelStatus(observation('', { degraded: false }))).toBe(
+      'unknown'
+    )
+  })
+  test('a matching name does not erase explicit degradation', () => {
+    expect(
+      getResponseModelStatus(observation('requested', { degraded: true }))
+    ).toBe('reported')
+    expect(getResponseModelStatus(observation('requested'))).toBe('matched')
+  })
+  test('uses the declared actual model even when the protocol model is echoed', () => {
+    expect(
+      getResponseModelStatus(
+        observation('requested', {
+          actual_model: 'requested-mini',
+          degraded: false,
+        })
+      )
+    ).toBe('mismatch')
   })
 })

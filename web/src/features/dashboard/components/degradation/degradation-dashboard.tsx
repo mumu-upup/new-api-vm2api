@@ -41,6 +41,7 @@ import {
   DegradationPairTable,
 } from './degradation-tables'
 import { DegradationTrendChart } from './degradation-trend-chart'
+import { RequestModelMonitor } from './request-model-monitor'
 
 export function DegradationDashboard() {
   const { t } = useTranslation()
@@ -134,6 +135,8 @@ export function DegradationDashboard() {
             : null}
         </span>
       </p>
+
+      <RequestModelMonitor range={range} requestedAt={requestedAt} />
 
       <DegradationSummary
         summary={stats?.summary}

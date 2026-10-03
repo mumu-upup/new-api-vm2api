@@ -424,6 +424,11 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		}
 		return nil, types.NewErrorWithStatusCode(fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), err), types.ErrorCodeDoRequestFailed, statusCode)
 	}
+	// Handshake declarations belong to this initial request. Later requests on
+	// a persistent connection get fresh RelayInfo and must supply their own evidence.
+	if resp != nil {
+		info.ObserveResponseModelHeaders(resp.Header)
+	}
 	return targetConn, nil
 }
 
@@ -574,12 +579,7 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	if resp == nil {
 		return nil, errors.New("resp is nil")
 	}
-	for _, headerName := range []string{"OpenAI-Model", "X-OpenAI-Model", "X-Served-Model", "X-Model-Name", "X-Model", "Model"} {
-		if modelName := resp.Header.Get(headerName); modelName != "" {
-			info.ObserveResponseModel(modelName)
-			break
-		}
-	}
+	info.ObserveResponseModelHeaders(resp.Header)
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
 		logger.LogDebug(c, "http transport negotiated: host=%s protocol=%s shards=%d policy=%s negotiated=%s",
