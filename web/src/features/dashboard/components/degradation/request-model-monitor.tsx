@@ -36,7 +36,7 @@ import {
 } from '@/features/usage-logs/components/model-badge'
 import type { UsageLog } from '@/features/usage-logs/data/schema'
 import { parseLogOther } from '@/features/usage-logs/lib/format'
-import { getResponseModelStatus } from '@/features/usage-logs/lib/response-model'
+import { getResponseModelMismatchName } from '@/features/usage-logs/lib/response-model'
 import { toIntlLocale } from '@/i18n/languages'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
@@ -67,10 +67,7 @@ export function RequestModelMonitor(props: {
           log,
           observation: parseLogOther(log.other)?.response_model,
         }))
-        .filter((item) => {
-          const status = getResponseModelStatus(item.observation)
-          return status === 'reported' || status === 'mismatch'
-        })
+        .filter((item) => getResponseModelMismatchName(item.observation) !== '')
     },
     staleTime: 5_000,
     refetchInterval: 10_000,
@@ -79,9 +76,9 @@ export function RequestModelMonitor(props: {
 
   return (
     <PanelWrapper
-      title={t('Recent anomalous requests')}
+      title={t('Recent Model Mismatches')}
       description={t(
-        'Only model mismatches or upstream-reported degradation among the latest {{count}} completed requests in this range. Refreshes every 10 seconds; requires consumption logging.',
+        'Only model mismatches among the latest {{count}} completed requests in this range. Refreshes every 10 seconds; requires consumption logging.',
         { count: 100 }
       )}
       loading={query.isLoading}
@@ -96,7 +93,7 @@ export function RequestModelMonitor(props: {
           data={query.data ?? []}
           getRowKey={(item) => item.log.id}
           emptyContent={t(
-            'No model mismatch or upstream-reported degradation in the latest completed request logs.'
+            'No model mismatches in the latest completed request logs.'
           )}
           columns={[
             {
@@ -139,10 +136,7 @@ export function RequestModelMonitor(props: {
             {
               id: 'actual',
               header: t('Upstream declared actual model'),
-              cell: (item) =>
-                item.observation?.actual_model ||
-                item.observation?.returned_model ||
-                t('Not reported'),
+              cell: (item) => getResponseModelMismatchName(item.observation),
             },
             {
               id: 'reason',
