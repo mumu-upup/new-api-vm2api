@@ -4,19 +4,118 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+func TestModelPricingRoutesRequireRootSession(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedis, previousSecret := common.RedisEnabled, common.SessionSecret
+	previousMaster, previousSQLite := common.IsMasterNode, common.SQLitePath
+	databasePath := filepath.Join(t.TempDir(), "pricing-routes.db")
+	db, err := gorm.Open(sqlite.Open(databasePath), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Option{}, &model.AuditLog{}))
+	require.NoError(t, sqlDB.Close())
+	t.Setenv("SQL_DSN", "local")
+	t.Setenv("LOG_SQL_DSN", "")
+	common.IsMasterNode, common.SQLitePath = false, databasePath
+	require.NoError(t, model.InitDB())
+	db, model.LOG_DB = model.DB, model.DB
+	sqlDB, err = db.DB()
+	require.NoError(t, err)
+	common.RedisEnabled, common.SessionSecret = false, "model-pricing-route-test-secret"
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		common.RedisEnabled, common.SessionSecret = previousRedis, previousSecret
+		common.IsMasterNode, common.SQLitePath = previousMaster, previousSQLite
+		require.NoError(t, sqlDB.Close())
+	})
+	engine := newAccessTokenScopeTestEngine(t)
+	for _, actor := range []struct {
+		name    string
+		role    int
+		expired bool
+		status  int
+	}{
+		{name: "anonymous", status: http.StatusUnauthorized},
+		{name: "admin", role: common.RoleAdminUser, status: http.StatusForbidden},
+		{name: "expired-root", role: common.RoleRootUser, expired: true, status: http.StatusUnauthorized},
+		{name: "root", role: common.RoleRootUser},
+	} {
+		t.Run(actor.name, func(t *testing.T) {
+			var token string
+			if actor.role != 0 {
+				user := &model.User{Username: "pricing-" + actor.name, AffCode: actor.name, Role: actor.role, Status: common.UserStatusEnabled, AuthVersion: 1}
+				require.NoError(t, db.Create(user).Error)
+				expiresAt := time.Now().Add(time.Hour).Unix()
+				if actor.expired {
+					expiresAt = time.Now().Add(-time.Minute).Unix()
+				}
+				session := &model.UserSession{SID: "pricing-" + actor.name, UserID: user.Id, Version: 1, UserAuthVersion: 1,
+					Status: model.UserSessionStatusActive, RefreshHash: "unused-test-hash", LoginMethod: "password", ExpiresAt: expiresAt}
+				require.NoError(t, db.Create(session).Error)
+				token, _, err = service.IssueAccessToken(service.AuthIdentity{UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1})
+				require.NoError(t, err)
+			}
+			for _, endpoint := range []struct {
+				method, path string
+				rootStatus   int
+			}{
+				{http.MethodGet, "/api/option/model_pricing?model=route-test-model", http.StatusOK},
+				{http.MethodPatch, "/api/option/model_pricing", http.StatusBadRequest},
+				{http.MethodPost, "/api/option/model_pricing/convert", http.StatusBadRequest},
+				{http.MethodPost, "/api/option/model_pricing/preview", http.StatusBadRequest},
+			} {
+				t.Run(endpoint.method+" "+endpoint.path, func(t *testing.T) {
+					// Invalid JSON exercises write-handler validation without changing prices.
+					request := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader("{"))
+					if token != "" {
+						request.Header.Set("Authorization", "Bearer "+token)
+					}
+					recorder := httptest.NewRecorder()
+					engine.ServeHTTP(recorder, request)
+					wantStatus := actor.status
+					if wantStatus == 0 {
+						wantStatus = endpoint.rootStatus
+					}
+					require.Equal(t, wantStatus, recorder.Code, recorder.Body.String())
+					if wantStatus == http.StatusOK {
+						var response struct {
+							Success bool                       `json:"success"`
+							Data    model.ModelPricingSnapshot `json:"data"`
+						}
+						require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+						assert.True(t, response.Success)
+						require.Len(t, response.Data.Entries, 1)
+						assert.Equal(t, "route-test-model", response.Data.Entries[0].ModelName)
+					}
+				})
+			}
+		})
+	}
+}
 
 // accessTokenExemptRoutes are /api routes that never reach dashboard
 // authentication, so a personal access token has no rule to satisfy there.
