@@ -236,6 +236,9 @@ func InitLogDB() (err error) {
 		LOG_DB = DB
 		common.SetLogDatabaseType(common.MainDatabaseType())
 		initCol()
+		if common.IsMasterNode {
+			return MigrateAuditLogs()
+		}
 		return
 	}
 	db, dbType, err := chooseDB("LOG_SQL_DSN", true)
@@ -353,6 +356,7 @@ func migrateDB() error {
 		&TopUp{},
 		&QuotaData{},
 		&Task{},
+		&TaskPlugin{},
 		&Model{},
 		&Vendor{},
 		&PrefillGroup{},
@@ -427,6 +431,7 @@ func migrateDBFast() error {
 		{&TopUp{}, "TopUp"},
 		{&QuotaData{}, "QuotaData"},
 		{&Task{}, "Task"},
+		{&TaskPlugin{}, "TaskPlugin"},
 		{&Model{}, "Model"},
 		{&Vendor{}, "Vendor"},
 		{&PrefillGroup{}, "PrefillGroup"},
@@ -492,9 +497,12 @@ func migrateDBFast() error {
 
 func migrateLOGDB() error {
 	if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
-		return migrateClickHouseLogDB()
+		if err := migrateClickHouseLogDB(); err != nil {
+			return err
+		}
+		return MigrateAuditLogs()
 	}
-	return LOG_DB.AutoMigrate(&Log{})
+	return LOG_DB.AutoMigrate(&Log{}, &AuditLog{})
 }
 
 func migrateClickHouseLogDB() error {
