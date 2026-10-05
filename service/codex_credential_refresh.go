@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"gorm.io/gorm"
 )
+
+var codexRefreshLocks sync.Map
 
 type CodexCredentialRefreshOptions struct {
 	ResetCaches bool
@@ -40,6 +44,20 @@ func parseCodexOAuthKey(raw string) (*CodexOAuthKey, error) {
 }
 
 func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts CodexCredentialRefreshOptions) (*CodexOAuthKey, *model.Channel, error) {
+	lockValue, _ := codexRefreshLocks.LoadOrStore(channelID, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+	var managed model.GPTAccount
+	if err := model.DB.Where("channel_id = ?", channelID).First(&managed).Error; err == nil {
+		channel, err := model.GetChannelById(channelID, true)
+		if err != nil || channel.Status != common.ChannelStatusEnabled {
+			return nil, nil, errors.New("account_busy")
+		}
+		return refreshGPTAccountCredential(ctx, managed.ID, true)
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil, errors.New("managed account lookup failed")
+	}
 	ch, err := model.GetChannelById(channelID, true)
 	if err != nil {
 		return nil, nil, err
@@ -91,8 +109,12 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 		return nil, nil, err
 	}
 
-	if err := model.DB.Model(&model.Channel{}).Where("id = ?", ch.Id).Update("key", string(encoded)).Error; err != nil {
-		return nil, nil, err
+	result := model.DB.Model(&model.Channel{}).Where("id = ? AND key = ?", ch.Id, ch.Key).Update("key", string(encoded))
+	if result.Error != nil {
+		return nil, nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, nil, errors.New("channel credential changed during refresh")
 	}
 
 	if opts.ResetCaches {

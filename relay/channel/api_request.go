@@ -418,6 +418,9 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		statusCode := http.StatusInternalServerError
 		if resp != nil {
 			statusCode = resp.StatusCode
+			if statusCode == http.StatusUnauthorized && info.ChannelType == appconstant.ChannelTypeCodex && service.ScheduleGPTAccountRecovery(info.ChannelId, info.ApiKey) {
+				c.Set("gpt_account_recovery_channel_id", info.ChannelId)
+			}
 			if resp.Body != nil {
 				_ = resp.Body.Close()
 			}

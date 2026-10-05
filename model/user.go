@@ -19,6 +19,8 @@ import (
 
 const UserNameMaxLength = 20
 
+const DefaultUserMaxConcurrentRequests = 5
+
 var userSortColumns = map[string]string{
 	"id":            "id",
 	"username":      "username",
@@ -624,6 +626,9 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
+	if user.MaxConcurrentRequests == 0 {
+		user.MaxConcurrentRequests = DefaultUserMaxConcurrentRequests
+	}
 	user.Email = NormalizeEmail(user.Email)
 	if err := ensureEmailAvailableWithTx(tx, user.Email, 0); err != nil {
 		return err

@@ -163,6 +163,26 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 	}
 	var normalized any
 	switch operation.Scope {
+	case "gpt_account.create":
+		var context struct {
+			Email string `json:"email"`
+		}
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &context) != nil {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		context.Email = strings.ToLower(strings.TrimSpace(context.Email))
+		if common.Validate.Var(context.Email, "required,email") != nil {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		normalized = context
+	case "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh":
+		var context struct {
+			AccountID int `json:"account_id"`
+		}
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &context) != nil || context.AccountID <= 0 {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		normalized = context
 	case VerificationScopeChannelKeyRead:
 		var context ChannelKeyReadContext
 		if len(fields) != 1 || common.Unmarshal(fields["channel_id"], &context.ChannelID) != nil || context.ChannelID <= 0 {
@@ -324,7 +344,8 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 		if !state.HasTwoFA {
 			return nil, model.ErrTwoFANotEnabled
 		}
-	case VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
+	case "gpt_account.create", "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh",
+		VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenUpdate, VerificationScopeAccessTokenRevoke,
 		VerificationScopeAccountBind, VerificationScopeAccountUnbind,
 		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
@@ -378,7 +399,7 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 	if scope == VerificationScopeChannelKeyRead && state.Role != common.RoleRootUser {
 		return nil, ErrVerificationForbidden
 	}
-	if strings.HasPrefix(scope, verificationScopeAdminUserPrefix) && state.Role < common.RoleAdminUser {
+	if (strings.HasPrefix(scope, verificationScopeAdminUserPrefix) || strings.HasPrefix(scope, "gpt_account.")) && state.Role < common.RoleAdminUser {
 		return nil, ErrVerificationForbidden
 	}
 	if err := requireAccessTokenVerificationScope(identity, scope); err != nil {

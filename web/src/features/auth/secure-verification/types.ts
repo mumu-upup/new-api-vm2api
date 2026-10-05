@@ -25,6 +25,12 @@ export type VerificationMethod =
   | 'oauth'
   | 'session'
 export type SecurityProofScope =
+  | 'gpt_account.create'
+  | 'gpt_account.update'
+  | 'gpt_account.delete'
+  | 'gpt_account.login'
+  | 'gpt_account.oauth'
+  | 'gpt_account.refresh'
   | 'channel.key.read'
   | 'passkey.register'
   | 'passkey.delete'
@@ -51,6 +57,11 @@ export type SecurityProofScope =
 export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'
 
 export type VerificationOperation =
+  | { scope: 'gpt_account.create'; context: { email: string } }
+  | {
+      scope: 'gpt_account.update' | 'gpt_account.delete' | 'gpt_account.login' | 'gpt_account.oauth' | 'gpt_account.refresh'
+      context: { account_id: number }
+    }
   | { scope: 'channel.key.read'; context: { channel_id: number } }
   | {
       scope: 'account.binding.bind'
@@ -98,6 +109,7 @@ export type VerificationOperation =
         | 'access_token.update'
         | 'access_token.revoke'
         | `admin.user.${string}`
+        | `gpt_account.${string}`
       >
       context?: Record<string, never>
     }
