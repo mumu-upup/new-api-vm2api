@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -97,11 +98,28 @@ func getCodexOAuthHTTPClient(proxyURL string) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if common.TLSInsecureSkipVerify {
+		var parsedProxy *url.URL
+		if strings.TrimSpace(proxyURL) != "" {
+			parsedProxy, _, err = common.ParseProxyURLRuntime(proxyURL)
+			if err != nil {
+				return nil, err
+			}
+		}
+		baseClient, err = newHTTPClientFromPolicy(defaultHTTPTransportPolicy(), parsedProxy, &tls.Config{MinVersion: tls.VersionTLS12})
+		if err != nil {
+			return nil, err
+		}
+		// This credential-only transport is short lived and must not retain an
+		// idle pool after the authorization operation finishes.
+		baseClient.Transport.(*http.Transport).DisableKeepAlives = true
+	}
 	if baseClient == nil {
-		return &http.Client{Timeout: defaultHTTPTimeout}, nil
+		baseClient = http.DefaultClient
 	}
 	clientCopy := *baseClient
 	clientCopy.Timeout = defaultHTTPTimeout
+	clientCopy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &clientCopy, nil
 }
 

@@ -1,0 +1,12 @@
+{
+  "name": "new-api-account-login-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}
