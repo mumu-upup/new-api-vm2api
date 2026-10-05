@@ -56,6 +56,7 @@ func runCodexCredentialAutoRefreshOnce() {
 		return
 	}
 	defer codexCredentialRefreshRunning.Store(false)
+	ScheduleGPTAccountRecoveries()
 
 	ctx := context.Background()
 	now := time.Now()

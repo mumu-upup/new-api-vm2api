@@ -88,13 +88,14 @@ func PostSetup(c *gin.Context) {
 			return
 		}
 		rootUser := model.User{
-			Username:    req.Username,
-			Password:    hashedPassword,
-			Role:        common.RoleRootUser,
-			Status:      common.UserStatusEnabled,
-			DisplayName: "Root User",
-			AccessToken: nil,
-			Quota:       100000000,
+			Username:              req.Username,
+			Password:              hashedPassword,
+			Role:                  common.RoleRootUser,
+			Status:                common.UserStatusEnabled,
+			DisplayName:           "Root User",
+			AccessToken:           nil,
+			Quota:                 100000000,
+			MaxConcurrentRequests: model.DefaultUserMaxConcurrentRequests,
 		}
 		err = model.DB.Create(&rootUser).Error
 		if err != nil {

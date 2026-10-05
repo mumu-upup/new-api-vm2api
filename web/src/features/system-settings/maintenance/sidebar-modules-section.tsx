@@ -138,6 +138,10 @@ export function SidebarModulesSection({
       },
     },
     admin: {
+      gpt_accounts: {
+        title: t('GPT Accounts'),
+        description: t('Manage GPT accounts and their Codex channels.'),
+      },
       channel: {
         title: t('Channels'),
         description: t('Configure upstream providers and routing.'),

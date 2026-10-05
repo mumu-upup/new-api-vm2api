@@ -18,12 +18,14 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 
@@ -728,6 +730,103 @@ func TestUpdateUserSettingKeepsWhatTheRequestLeavesOut(t *testing.T) {
 			assert.Equal(t, tc.want, user.GetSetting())
 		})
 	}
+}
+
+func TestUserConcurrencyNewAccountDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		password    string
+		transaction bool
+		limit       int
+		want        int
+	}{
+		{name: "password account", password: "new-account-password", want: 5},
+		{name: "passwordless account", transaction: true, want: 5},
+		{name: "explicit limit", password: "new-account-password", limit: 7, want: 7},
+		{name: "explicit transaction limit", transaction: true, limit: 7, want: 7},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupManageUserTestDB(t)
+			existing := model.User{Username: "existing-unlimited", Password: "existing-hash", AffCode: "existing-aff"}
+			require.NoError(t, db.Create(&existing).Error)
+			user := model.User{Username: "new-account", Password: tc.password, MaxConcurrentRequests: tc.limit}
+			if tc.transaction {
+				require.NoError(t, db.Transaction(func(tx *gorm.DB) error { return user.InsertWithTx(tx, 0) }))
+			} else {
+				require.NoError(t, user.Insert(0))
+			}
+			var stored model.User
+			require.NoError(t, db.First(&stored, user.Id).Error)
+			assert.Equal(t, tc.want, stored.MaxConcurrentRequests)
+			if tc.password == "" {
+				assert.Empty(t, stored.Password)
+			} else {
+				assert.True(t, common.ValidatePasswordAndHash(tc.password, stored.Password))
+			}
+			require.NoError(t, db.First(&existing, existing.Id).Error)
+			assert.Zero(t, existing.MaxConcurrentRequests)
+		})
+	}
+}
+
+func TestUserConcurrencyNewAccountHandlers(t *testing.T) {
+	previousRegister, previousPasswordRegister := common.RegisterEnabled, common.PasswordRegisterEnabled
+	previousEmailVerification, previousDefaultToken := common.EmailVerificationEnabled, constant.GenerateDefaultToken
+	common.RegisterEnabled, common.PasswordRegisterEnabled = true, true
+	common.EmailVerificationEnabled, constant.GenerateDefaultToken = false, false
+	t.Cleanup(func() {
+		common.RegisterEnabled, common.PasswordRegisterEnabled = previousRegister, previousPasswordRegister
+		common.EmailVerificationEnabled, constant.GenerateDefaultToken = previousEmailVerification, previousDefaultToken
+	})
+	for _, tc := range []struct {
+		name    string
+		handler gin.HandlerFunc
+		role    int
+	}{
+		{name: "register", handler: Register},
+		{name: "admin create", handler: CreateUser, role: common.RoleAdminUser},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupManageUserTestDB(t)
+			for i, suppliedLimit := range []string{"", `,"max_concurrent_requests":0`, `,"max_concurrent_requests":99`} {
+				username := fmt.Sprintf("new-cap-%d", i)
+				body := fmt.Sprintf(`{"username":%q,"password":"new-account-password","role":1%s}`, username, suppliedLimit)
+				recorder := adminUserRequest(http.MethodPost, "/api/user/", body, "", service.AuthIdentity{}, tc.role, nil, tc.handler)
+				require.Equal(t, http.StatusOK, recorder.Code)
+				require.Contains(t, recorder.Body.String(), `"success":true`)
+				var user model.User
+				require.NoError(t, db.Where("username = ?", username).First(&user).Error)
+				assert.Equal(t, 5, user.MaxConcurrentRequests)
+			}
+		})
+	}
+}
+
+func TestUserConcurrencySetupAccountDefault(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Option{}, &model.Setup{}))
+	previousSetup := constant.Setup
+	previousSelfUse, previousDemo := operation_setting.SelfUseModeEnabled, operation_setting.DemoSiteEnabled
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = make(map[string]string)
+	common.OptionMapRWMutex.Unlock()
+	constant.Setup = false
+	t.Cleanup(func() {
+		constant.Setup = previousSetup
+		operation_setting.SelfUseModeEnabled, operation_setting.DemoSiteEnabled = previousSelfUse, previousDemo
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	recorder := adminUserRequest(http.MethodPost, "/api/setup", `{"username":"initial-root","password":"new-account-password","confirmPassword":"new-account-password"}`, "", service.AuthIdentity{}, 0, nil, PostSetup)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"success":true`)
+	var user model.User
+	require.NoError(t, db.Where("username = ?", "initial-root").First(&user).Error)
+	assert.Equal(t, 5, user.MaxConcurrentRequests)
+	assert.Equal(t, common.RoleRootUser, user.Role)
 }
 
 func TestUserConcurrencyEndpointsAndPersistence(t *testing.T) {
