@@ -43,6 +43,10 @@ export function UserQuotaCell(props: UserQuotaCellProps) {
     showSymbol: false,
   })
 
+  let balanceVariant: 'success' | 'danger' | 'neutral' = 'success'
+  if (props.remaining < 0) balanceVariant = 'danger'
+  else if (props.remaining === 0) balanceVariant = 'neutral'
+
   return (
     <QuotaDetailsPopover
       title={`${t('Quota')} (${quotaUnit})`}
@@ -58,14 +62,18 @@ export function UserQuotaCell(props: UserQuotaCellProps) {
     >
       {hasQuota ? (
         <span className='grid min-w-0 grid-cols-1 gap-y-1 text-sm tabular-nums'>
-          <span
+          <StatusBadge
+            label={formattedRemaining}
+            variant={balanceVariant}
+            type='badge'
+            copyable={false}
             className={cn(
-              props.remaining < 0 && 'text-destructive',
-              props.remaining === 0 && 'text-muted-foreground'
+              '-ml-1.5 font-semibold',
+              props.remaining > 0 && 'bg-success/10',
+              props.remaining < 0 && 'bg-destructive/10',
+              props.remaining === 0 && 'bg-muted'
             )}
-          >
-            {formattedRemaining}
-          </span>
+          />
           <span
             data-table-text='secondary'
             className='text-muted-foreground flex items-baseline gap-1 text-xs font-normal'

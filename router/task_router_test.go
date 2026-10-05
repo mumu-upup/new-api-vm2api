@@ -20,6 +20,7 @@ package router
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -48,5 +49,22 @@ func TestSetTaskRouterRegistersWithoutConflict(t *testing.T) {
 	assert.Contains(t, actual, http.MethodHead+" /v1/tasks/:key/artifacts/:artifact_key/content")
 	for route := range actual {
 		assert.NotContains(t, route, "/native/")
+	}
+}
+
+func TestTaskLogRoutesAcceptDashboardURLWithoutRedirect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.RedirectTrailingSlash = false
+	SetApiRouter(engine)
+
+	for _, path := range []string{"/api/task", "/api/task/", "/api/task/self"} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path+"?p=1&page_size=20", nil))
+			require.Equal(t, http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+			assert.Contains(t, recorder.Body.String(), "AUTH_UNAUTHORIZED")
+			assert.Empty(t, recorder.Header().Get("Location"))
+		})
 	}
 }

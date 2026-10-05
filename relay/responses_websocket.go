@@ -238,6 +238,9 @@ func (s *responsesWSSession) runRequest(state *responsesWSCallState, message []b
 }
 
 func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState, create responsesWSCreateRequest) (apiErr *types.NewAPIError) {
+	if apiErr = service.CheckPromptAttackRequest(c, &create.Request); apiErr != nil {
+		return apiErr
+	}
 	policy := service.RequestPolicy(c)
 	modelName := create.Request.Model
 	started := time.Now()

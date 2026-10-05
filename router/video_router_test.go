@@ -1,13 +1,16 @@
 package router
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -94,8 +97,10 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 	require.NoError(t, database.Create(task).Error)
 
 	engine := gin.New()
+	SetRelayRouter(engine)
 	SetVideoRouter(engine)
 	SetTaskPluginProtocolRouter(engine)
+	SetTaskRouter(engine)
 	request := httptest.NewRequest(http.MethodGet, "/v1/videos/task_jimeng_public", nil)
 	request.Header.Set("Authorization", "Bearer sk-jimengfetch")
 	recorder := httptest.NewRecorder()
@@ -148,4 +153,55 @@ func TestGetOpenAIVideoRouteRendersJimengTask(t *testing.T) {
 			}
 		})
 	}
+	t.Run("shared concurrency cap covers all create surfaces and preserves reads", func(t *testing.T) {
+		require.NoError(t, database.Model(&model.User{}).Where("id = ?", 91).Update("max_concurrent_requests", 1).Error)
+		require.NoError(t, database.Create(&model.Token{Id: 2, UserId: 91, Key: "secondconcurrencykey", Status: common.TokenStatusEnabled, Name: "second key", ExpiredTime: -1, UnlimitedQuota: true}).Error)
+		lease, err := service.AcquireRelayConcurrency(context.Background(), 91, 1, 1)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, lease.Release(context.Background())) }()
+		for _, endpoint := range []struct{ method, path string }{
+			{http.MethodPost, "/v1/chat/completions"},
+			{http.MethodPost, "/v1/responses"},
+			{http.MethodGet, "/v1/responses"},
+			{http.MethodGet, "/v1/realtime"},
+			{http.MethodPost, "/v1/images/generations"},
+			{http.MethodPost, "/v1/images/edits"},
+			{http.MethodPost, "/v1/videos"},
+			{http.MethodPost, "/v1/video/generations"},
+			{http.MethodPost, "/v1/videos/task_jimeng_public/remix"},
+			{http.MethodPost, "/v1/tasks/jimeng"},
+			{http.MethodPost, "/v1beta/models/gemini-pro:generateContent"},
+			{http.MethodPost, "/mj/submit/imagine"},
+		} {
+			t.Run(endpoint.method+endpoint.path, func(t *testing.T) {
+				for _, authorized := range []bool{false, true} {
+					request := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader(`{}`))
+					request.Header.Set("Content-Type", "application/json")
+					want := http.StatusUnauthorized
+					if authorized {
+						request.Header.Set("Authorization", "Bearer sk-secondconcurrencykey")
+						want = http.StatusTooManyRequests
+					}
+					response := httptest.NewRecorder()
+					engine.ServeHTTP(response, request)
+					assert.Equal(t, want, response.Code, response.Body.String())
+				}
+			})
+		}
+		for _, path := range []string{"/v1/videos/task_jimeng_public", "/v1/videos/task_jimeng_public/content", "/v1/tasks/task_jimeng_public", "/v1/tasks/task_jimeng_public/artifacts"} {
+			t.Run("read "+path, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodGet, path, nil)
+				request.Header.Set("Authorization", "Bearer sk-secondconcurrencykey")
+				response := httptest.NewRecorder()
+				engine.ServeHTTP(response, request)
+				assert.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			})
+		}
+		snapshot, err := service.GetRelayConcurrency(context.Background(), 91, []int{1, 2})
+		require.NoError(t, err)
+		assert.Equal(t, 1, snapshot.Current)
+		assert.Equal(t, 1, snapshot.Tokens[1])
+		assert.Zero(t, snapshot.Tokens[2])
+	})
+
 }

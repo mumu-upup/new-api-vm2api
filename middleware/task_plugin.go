@@ -101,6 +101,12 @@ func PrepareTaskPluginRoute() gin.HandlerFunc {
 			abortTaskPluginRouteErrorDetail(c, status, err.Error())
 			return
 		}
+		if pinned.Route.Type != pluginruntime.RouteTypeQuery {
+			if apiErr := service.CheckPromptAttackTaskBody(c, requestContext.Body); apiErr != nil {
+				c.AbortWithStatusJSON(apiErr.StatusCode, gin.H{"error": apiErr.ToOpenAIError()})
+				return
+			}
+		}
 		bodyObject, _ := requestContext.Body.(map[string]any)
 		bodyKind, _ := bodyObject["kind"].(string)
 		// Submit routes hand JSON and multipart bodies to the decoder, which
@@ -653,6 +659,10 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 				detail = "this route requires a JSON body"
 			}
 			abortWithOpenAiMessage(c, http.StatusUnsupportedMediaType, detail)
+			return
+		}
+		if apiErr := service.CheckPromptAttackTaskBody(c, requestContext.Body); apiErr != nil {
+			c.AbortWithStatusJSON(apiErr.StatusCode, gin.H{"error": apiErr.ToOpenAIError()})
 			return
 		}
 		stream := false

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -51,6 +52,16 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 					if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 						errChan <- fmt.Errorf("error reading from client: %v", err)
 					}
+					close(clientClosed)
+					return
+				}
+
+				if apiErr := service.CheckPromptAttackJSON(c, message); apiErr != nil {
+					// Control writes may run concurrently with the upstream reader's
+					// client data writes. Stop before forwarding or counting this
+					// message; previously accepted usage still settles below.
+					_ = clientConn.WriteControl(websocket.CloseMessage,
+						websocket.FormatCloseMessage(websocket.ClosePolicyViolation, string(apiErr.GetErrorCode())), time.Now().Add(time.Second))
 					close(clientClosed)
 					return
 				}
