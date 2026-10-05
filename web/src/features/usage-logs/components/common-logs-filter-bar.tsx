@@ -87,7 +87,6 @@ function getLogTypeValue(value: unknown): LogTypeValue {
 function buildSearchSourceKey(values: {
   startTime?: unknown
   endTime?: unknown
-  channel?: unknown
   model?: unknown
   token?: unknown
   group?: unknown
@@ -99,7 +98,6 @@ function buildSearchSourceKey(values: {
   return [
     values.startTime,
     values.endTime,
-    values.channel,
     values.model,
     values.token,
     values.group,
@@ -151,7 +149,6 @@ export function CommonLogsFilterBar<TData>(
     const sourceValues = {
       startTime: searchParams.startTime,
       endTime: searchParams.endTime,
-      channel: searchParams.channel,
       model: searchParams.model,
       token: searchParams.token,
       group: searchParams.group,
@@ -165,7 +162,6 @@ export function CommonLogsFilterBar<TData>(
         ? new Date(searchParams.startTime)
         : start,
       endTime: searchParams.endTime ? new Date(searchParams.endTime) : end,
-      channel: searchParams.channel || undefined,
       model: searchParams.model || undefined,
       token: searchParams.token || undefined,
       group: searchParams.group || undefined,
@@ -181,7 +177,6 @@ export function CommonLogsFilterBar<TData>(
   }, [
     searchParams.startTime,
     searchParams.endTime,
-    searchParams.channel,
     searchParams.model,
     searchParams.token,
     searchParams.group,
@@ -265,7 +260,6 @@ export function CommonLogsFilterBar<TData>(
   const hasExpandedFilters =
     !!filters.token ||
     !!filters.username ||
-    !!filters.channel ||
     !!filters.requestId ||
     !!filters.upstreamRequestId
 
@@ -276,7 +270,6 @@ export function CommonLogsFilterBar<TData>(
   const expandedFilterCount = [
     filters.token,
     isAdmin ? filters.username : undefined,
-    isAdmin ? filters.channel : undefined,
     filters.requestId,
     filters.upstreamRequestId,
   ].filter(Boolean).length
@@ -451,16 +444,6 @@ export function CommonLogsFilterBar<TData>(
             className={sensitiveInputClass}
             value={filters.username || ''}
             onChange={(e) => handleChange('username', e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
-        </LogsFilterField>
-      )}
-      {isAdmin && (
-        <LogsFilterField>
-          <LogsFilterInput
-            placeholder={t('Channel ID')}
-            value={filters.channel || ''}
-            onChange={(e) => handleChange('channel', e.target.value)}
             onKeyDown={handleKeyDown}
           />
         </LogsFilterField>

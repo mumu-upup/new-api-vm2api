@@ -11,6 +11,14 @@ export interface GptAccount {
   email: string
   channel_id?: number
   channel_name?: string
+  gateway_id?: number
+  gateway_name?: string
+  gateway_provider?: 'cpa' | 'sub2api'
+  gateway_channel_id?: number
+  gateway_channel_name?: string
+  gateway_sync_status?: '' | 'pending' | 'synced' | 'error'
+  gateway_error_code?: string
+  gateway_synced_at?: number
   status: GptAccountStatus
   last_error_code: string
   last_login_at: number
@@ -24,6 +32,7 @@ export interface GptAccount {
   totp_version: number
   totp_updated_at: number
   totp_status: '' | 'saved' | 'operator_confirmed'
+  totp_provider?: '' | 'local' | '2fa_cn'
   can_manage: boolean
   group: string
   models: string
@@ -34,10 +43,43 @@ export interface GptAccountInput {
   email: string
   password: string
   totp_secret: string
+  totp_provider: 'local' | '2fa_cn'
   auto_relogin: boolean
   group: string
   models: string
   channel_id?: number
+  gateway_id?: number
+}
+
+export interface GptAccountGateway {
+  id: number
+  name: string
+  provider: 'cpa' | 'sub2api'
+  management_version?: '' | 'v8' | 'legacy'
+  management_url?: string
+  relay_url?: string
+  allow_local_http?: boolean
+  remote_group_id?: number
+  group?: string
+  models?: string
+  channel_id?: number
+  channel_name?: string
+  has_management_key?: boolean
+  has_relay_key?: boolean
+}
+
+export interface GptAccountGatewayInput {
+  name: string
+  provider: 'cpa' | 'sub2api'
+  management_version: '' | 'v8' | 'legacy'
+  management_url: string
+  relay_url: string
+  allow_local_http: boolean
+  remote_group_id: number
+  group: string
+  models: string
+  management_key: string
+  relay_key: string
 }
 
 export interface GptAccountConfig {

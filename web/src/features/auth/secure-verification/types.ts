@@ -33,6 +33,9 @@ export type SecurityProofScope =
   | 'gpt_account.refresh'
   | 'gpt_account.totp.update'
   | 'gpt_account.totp.read'
+  | 'gpt_account.gateway.sync'
+  | 'gpt_account_gateway.create'
+  | 'gpt_account_gateway.update'
   | 'channel.key.read'
   | 'passkey.register'
   | 'passkey.delete'
@@ -60,6 +63,8 @@ export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'
 
 export type VerificationOperation =
   | { scope: 'gpt_account.create'; context: { email: string } }
+  | { scope: 'gpt_account_gateway.create'; context: { name: string } }
+  | { scope: 'gpt_account_gateway.update'; context: { gateway_id: number } }
   | {
       scope:
         | 'gpt_account.update'
@@ -69,6 +74,7 @@ export type VerificationOperation =
         | 'gpt_account.refresh'
         | 'gpt_account.totp.update'
         | 'gpt_account.totp.read'
+        | 'gpt_account.gateway.sync'
       context: { account_id: number }
     }
   | { scope: 'channel.key.read'; context: { channel_id: number } }
@@ -119,6 +125,7 @@ export type VerificationOperation =
         | 'access_token.revoke'
         | `admin.user.${string}`
         | `gpt_account.${string}`
+        | `gpt_account_gateway.${string}`
       >
       context?: Record<string, never>
     }

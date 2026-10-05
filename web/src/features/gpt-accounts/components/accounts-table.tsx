@@ -15,7 +15,14 @@ import { formatTimestamp } from '@/lib/format'
 import { getAccountErrorMessage } from '../lib/account-error'
 import type { GptAccount } from '../types'
 
-export type AccountAction = 'edit' | 'login' | 'oauth' | 'refresh' | 'delete'
+export type AccountAction =
+  | 'edit'
+  | 'login'
+  | 'oauth'
+  | 'refresh'
+  | 'delete'
+  | 'totp'
+  | 'sync'
 interface AccountsTableProps {
   items: GptAccount[]
   total: number
@@ -24,6 +31,7 @@ interface AccountsTableProps {
   isLoading: boolean
   isFetching: boolean
   pending: boolean
+  encryptionAvailable: boolean
   onAction: (account: GptAccount, action: AccountAction) => void
 }
 
@@ -86,8 +94,37 @@ export function AccountsTable(props: AccountsTableProps) {
       {
         accessorKey: 'channel_id',
         header: t('Channel'),
-        cell: ({ row }) =>
-          row.original.channel_id ? (
+        cell: ({ row }) => {
+          if (row.original.gateway_id) {
+            let status = t('Gateway synchronization pending')
+            if (row.original.gateway_sync_status === 'synced') {
+              status = t('Gateway synchronized')
+            }
+            if (row.original.gateway_sync_status === 'error') {
+              status = t('Gateway synchronization failed')
+            }
+            return (
+              <div className='space-y-1'>
+                <p>
+                  {row.original.gateway_channel_name ||
+                    row.original.gateway_name ||
+                    `#${row.original.gateway_id}`}
+                </p>
+                <p className='text-muted-foreground text-xs'>{status}</p>
+                {row.original.gateway_error_code && (
+                  <p className='text-destructive max-w-64 text-xs'>
+                    {getAccountErrorMessage(row.original.gateway_error_code, t)}
+                  </p>
+                )}
+                {Boolean(row.original.gateway_synced_at) && (
+                  <p className='text-muted-foreground text-xs'>
+                    {formatTimestamp(row.original.gateway_synced_at ?? 0)}
+                  </p>
+                )}
+              </div>
+            )
+          }
+          return row.original.channel_id ? (
             <span>
               {row.original.channel_name || `#${row.original.channel_id}`}
             </span>
@@ -95,7 +132,8 @@ export function AccountsTable(props: AccountsTableProps) {
             <span className='text-muted-foreground'>
               {t('Created after authorization')}
             </span>
-          ),
+          )
+        },
       },
       {
         accessorKey: 'auto_relogin',
@@ -126,7 +164,31 @@ export function AccountsTable(props: AccountsTableProps) {
           const item = row.original
           const busy = props.pending || item.status === 'logging_in'
           return (
-            <div className='flex items-center gap-1'>
+            <div className='flex flex-wrap items-center gap-1'>
+              {Boolean(item.gateway_id) && (
+                <Button
+                  variant='outline'
+                  size='sm'
+                  aria-label={t('Sync gateway for {{name}}', {
+                    name: item.name,
+                  })}
+                  disabled={!item.can_manage || busy}
+                  onClick={() => props.onAction(item, 'sync')}
+                >
+                  {t('Sync gateway')}
+                </Button>
+              )}
+              <Button
+                variant='outline'
+                size='sm'
+                aria-label={t('Change 2FA for {{name}}', { name: item.name })}
+                disabled={
+                  !item.can_manage || busy || !props.encryptionAvailable
+                }
+                onClick={() => props.onAction(item, 'totp')}
+              >
+                {t('Change 2FA')}
+              </Button>
               <Button
                 variant='ghost'
                 size='icon-sm'

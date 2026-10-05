@@ -112,6 +112,10 @@ func releaseGPTAccountJob(account *model.GPTAccount, code string, countFailure b
 		switch code {
 		case "needs_attention", "identity_mismatch", "identity_verification_failed", "credentials_required", "automation_unavailable", "encryption_unavailable", "account_changed", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback", "authorization_invalid", "authorization_forbidden":
 			status = "needs_attention"
+		case "login_navigation_blocked", "login_screen_unrecognized", "totp_secret_required", "totp_provider_invalid_response", "invalid_totp_code":
+			status = "needs_attention"
+		case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_immutable", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required":
+			status = "needs_attention"
 		}
 		if code == "worker_busy" {
 			countFailure = false
@@ -285,6 +289,10 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 		return errors.New("authorization_forbidden")
 	}
 	key := CodexOAuthKey{IDToken: tokens.IDToken, AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken, AccountID: claims.Auth.AccountID, Email: account.Email, Type: "codex", LastRefresh: time.Now().Format(time.RFC3339), Expired: time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)}
+	if account.GatewayID != nil {
+		account.OAuthSubject = verified.Subject
+		return StoreVerifiedGPTAccountGatewayCredential(ctx, &account, key)
+	}
 	encoded, err := common.Marshal(key)
 	if err != nil {
 		return errors.New("authorization_failed")
@@ -353,7 +361,10 @@ func runGPTAccountLogin(account *model.GPTAccount, identity AuthIdentity, refres
 		ReleaseGPTAccountJob(account, "automation_unavailable")
 		return
 	}
-	body, err := common.Marshal(map[string]string{"authorization_url": authorization.AuthorizationURL, "state": state, "email": account.Email, "password": secrets.Password, "totp_secret": secrets.TOTPSecret})
+	if secrets.TOTPProvider == "" {
+		secrets.TOTPProvider = "local"
+	}
+	body, err := common.Marshal(map[string]string{"authorization_url": authorization.AuthorizationURL, "state": state, "email": account.Email, "password": secrets.Password, "totp_secret": secrets.TOTPSecret, "totp_provider": secrets.TOTPProvider})
 	if err != nil {
 		ReleaseGPTAccountJob(account, "authorization_failed")
 		return
@@ -456,6 +467,9 @@ func ScheduleGPTAccountRecoveries() {
 }
 
 func refreshManagedGPTAccountCredential(ctx context.Context, account *model.GPTAccount) (*CodexOAuthKey, *model.Channel, error) {
+	if account.GatewayID != nil {
+		return nil, nil, RefreshManagedGPTAccountGateway(ctx, account)
+	}
 	if account.ChannelID == nil {
 		return nil, nil, errors.New("channel_required")
 	}
@@ -513,6 +527,10 @@ func GPTAccountErrorCode(err error) string {
 		return ""
 	}
 	switch err.Error() {
+	case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_immutable", "gateway_unavailable", "gateway_import_failed", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required":
+		return err.Error()
+	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code":
+		return err.Error()
 	case "", "encryption_unavailable", "automation_unavailable", "account_busy", "account_changed", "authorization_invalid", "authorization_failed", "identity_verification_failed", "identity_mismatch", "credentials_required", "worker_unavailable", "worker_busy", "needs_attention", "refresh_failed", "channel_required", "authorization_forbidden", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback":
 		return err.Error()
 	default:

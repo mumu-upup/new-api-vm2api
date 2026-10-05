@@ -22,7 +22,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { render, screen, within, waitFor } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 
@@ -42,6 +42,7 @@ const log = usageLogSchema.parse({
   username: 'production-admin',
   channel: 372,
   channel_name: longName,
+  ip: '198.51.100.10',
   token_name: 'backend-production-token',
   group: 'enterprise-production',
   quota: 123456789,
@@ -126,28 +127,12 @@ it('shows model mismatch evidence when tapping the mobile model badge', async ()
   expect(within(dialog).getByText('unexpected-model')).toBeVisible()
 })
 
-it('opens long channel text on tap and copies the complete value', async () => {
-  const user = userEvent.setup()
-  const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+it('shows the request IP below the username and omits channel details', async () => {
   renderLogs()
-  await user.click(
-    screen.getByRole('button', { name: `Channel: ${longName} #372` })
-  )
-  const dialog = await screen.findByRole('dialog', { name: 'Channel' })
-  expect(within(dialog).getByText(`${longName} #372`)).toHaveClass(
-    '[overflow-wrap:anywhere]'
-  )
-  await user.click(
-    within(dialog).getByRole('button', { name: 'Copy to clipboard' })
-  )
-  expect(copy).toHaveBeenCalledWith(`${longName} #372`)
-  await user.keyboard('{Escape}')
-  await waitFor(() =>
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-  )
+  expect(screen.getByText('198.51.100.10')).toBeVisible()
   expect(
-    screen.getByRole('button', { name: `Channel: ${longName} #372` })
-  ).toHaveFocus()
+    screen.queryByRole('button', { name: /Channel:/ })
+  ).not.toBeInTheDocument()
 })
 
 it.each([false, true])(

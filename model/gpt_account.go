@@ -14,13 +14,22 @@ import (
 // GPTAccount contains management metadata. Recoverable login secrets never
 // participate in JSON responses; channels retain their existing OAuth format.
 type GPTAccount struct {
-	ID                int    `json:"id" gorm:"primaryKey"`
-	OwnerID           int    `json:"-" gorm:"not null;index"`
-	OwnerRole         int    `json:"-" gorm:"-"`
-	Name              string `json:"name" gorm:"type:varchar(128);not null"`
-	Email             string `json:"email" gorm:"type:varchar(254);not null;index"`
-	ChannelID         *int   `json:"channel_id" gorm:"uniqueIndex"`
-	ChannelName       string `json:"channel_name" gorm:"-"`
+	ID                 int    `json:"id" gorm:"primaryKey"`
+	OwnerID            int    `json:"-" gorm:"not null;index"`
+	OwnerRole          int    `json:"-" gorm:"-"`
+	Name               string `json:"name" gorm:"type:varchar(128);not null"`
+	Email              string `json:"email" gorm:"type:varchar(254);not null;index"`
+	ChannelID          *int   `json:"channel_id" gorm:"uniqueIndex"`
+	ChannelName        string `json:"channel_name" gorm:"-"`
+	GatewayID          *int   `json:"gateway_id" gorm:"index"`
+	GatewayName        string `json:"gateway_name" gorm:"-"`
+	GatewayProvider    string `json:"gateway_provider" gorm:"-"`
+	GatewayChannelID   *int   `json:"gateway_channel_id" gorm:"-"`
+	GatewayChannelName string `json:"gateway_channel_name" gorm:"-"`
+	GatewaySyncStatus  string `json:"gateway_sync_status" gorm:"type:varchar(32)"`
+	GatewayErrorCode   string `json:"gateway_error_code" gorm:"type:varchar(64)"`
+	GatewaySyncedAt    int64  `json:"gateway_synced_at"`
+
 	Group             string `json:"group" gorm:"column:account_group;type:varchar(64)"`
 	Models            string `json:"models" gorm:"type:text"`
 	AutoRelogin       bool   `json:"auto_relogin"`
@@ -33,6 +42,7 @@ type GPTAccount struct {
 	UpdatedAt         int64  `json:"updated_at" gorm:"autoUpdateTime"`
 	HasPassword       bool   `json:"has_password"`
 	HasTOTP           bool   `json:"has_totp"`
+	TOTPProvider      string `json:"totp_provider" gorm:"-"`
 	TOTPVersion       int64  `json:"totp_version"`
 	TOTPUpdatedAt     int64  `json:"totp_updated_at"`
 	TOTPStatus        string `json:"totp_status" gorm:"type:varchar(32)"`
@@ -60,6 +70,9 @@ func GPTChannelKeyHash(key string) string {
 // StoreGPTAccountCredential fences every external result against account edits,
 // job takeover, channel replacement and manual disabling in the same transaction.
 func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID string) error {
+	if snapshot.GatewayID != nil {
+		return ErrGPTAccountStale
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var owner User
 		if err := lockForUpdate(tx).First(&owner, snapshot.OwnerID).Error; err != nil || owner.Status != common.UserStatusEnabled || owner.Role < common.RoleAdminUser {
@@ -69,7 +82,7 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 		if err := lockForUpdate(tx).First(&account, snapshot.ID).Error; err != nil {
 			return err
 		}
-		if account.OwnerID != snapshot.OwnerID || account.Generation != snapshot.Generation || account.LeaseID != snapshot.LeaseID || account.LeaseUntil <= time.Now().Unix() || account.ChannelKeyHash != snapshot.ChannelKeyHash || (account.AccountID != "" && account.AccountID != externalAccountID) || (account.OAuthSubject != "" && account.OAuthSubject != snapshot.OAuthSubject) {
+		if account.GatewayID != nil || account.OwnerID != snapshot.OwnerID || account.Generation != snapshot.Generation || account.LeaseID != snapshot.LeaseID || account.LeaseUntil <= time.Now().Unix() || account.ChannelKeyHash != snapshot.ChannelKeyHash || (account.AccountID != "" && account.AccountID != externalAccountID) || (account.OAuthSubject != "" && account.OAuthSubject != snapshot.OAuthSubject) {
 			return ErrGPTAccountStale
 		}
 		var channel Channel

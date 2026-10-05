@@ -154,6 +154,116 @@ func TestGPTAccountWorkerInputLimits(t *testing.T) {
 	}
 }
 
+func TestGPTAccountTOTPProviderIsExplicitAndPreserved(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	for _, provider := range []string{"https://attacker.invalid", "2fa_CN", ""} {
+		body := fmt.Sprintf(`{"name":"Primary","email":"owner@example.com","totp_provider":%q}`, provider)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "gpt_account.create", CreateGPTAccount)
+		assert.Equal(t, http.StatusBadRequest, response.Code, "reject an explicitly invalid provider")
+	}
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"JBSWY3DPEHPK3PXP","totp_provider":"2fa_cn"}`, "gpt_account.create", CreateGPTAccount)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	assert.Contains(t, created.Body.String(), `"totp_provider":"2fa_cn"`)
+	assert.NotContains(t, created.Body.String(), "JBSWY3DPEHPK3PXP")
+	var account model.GPTAccount
+	require.NoError(t, model.DB.First(&account).Error)
+	for _, input := range []string{
+		`{"name":"Primary","email":"owner@example.com"}`,
+		`{"name":"Primary","email":"owner@example.com","totp_provider":"local"}`,
+	} {
+		updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, input, "gpt_account.update", UpdateGPTAccount)
+		require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
+		provider := "2fa_cn"
+		if strings.Contains(input, "local") {
+			provider = "local"
+		}
+		assert.Contains(t, updated.Body.String(), fmt.Sprintf(`"totp_provider":%q`, provider))
+		listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+		assert.Contains(t, listed.Body.String(), fmt.Sprintf(`"totp_provider":%q`, provider))
+		require.NoError(t, model.DB.First(&account, account.ID).Error)
+		secrets, err := service.DecryptGPTAccountSecrets(&account)
+		require.NoError(t, err)
+		assert.Equal(t, "private-password", secrets.Password)
+		assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
+		assert.Equal(t, provider, secrets.TOTPProvider)
+	}
+	legacy := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Legacy","email":"owner@example.com"}`, "gpt_account.create", CreateGPTAccount)
+	require.Equal(t, http.StatusOK, legacy.Code, legacy.Body.String())
+	assert.Contains(t, legacy.Body.String(), `"totp_provider":"local"`, "old clients must not opt into sending seeds to a third party")
+}
+
+func TestGPTAccountWorkerReceivesTOTPSourceAndReturnsSpecificError(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	received := make(chan map[string]string, 1)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		if common.DecodeJson(r.Body, &body) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- body
+		_, _ = io.WriteString(w, `{"status":"failed","error_code":"totp_provider_timeout"}`)
+	}))
+	defer worker.Close()
+	tokenFile := filepath.Join(t.TempDir(), "worker-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte(strings.Repeat("t", 32)), 0600))
+	t.Setenv("GPT_ACCOUNT_WORKER_URL", worker.URL)
+	t.Setenv("GPT_ACCOUNT_WORKER_TOKEN_FILE", tokenFile)
+	for _, provider := range []string{"", "2fa_cn"} {
+		account := model.GPTAccount{OwnerID: identity.UserID, Email: "owner@example.com", SecretID: "worker-source-" + provider, Generation: 1}
+		require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "fixture-password", TOTPSecret: "JBSWY3DPEHPK3PXP", TOTPProvider: provider}))
+		require.NoError(t, model.DB.Create(&account).Error)
+		require.NoError(t, service.StartGPTAccountLogin(account.ID, identity, false))
+		var body map[string]string
+		select {
+		case body = <-received:
+		case <-time.After(3 * time.Second):
+			t.Fatal("worker did not receive the login request")
+		}
+		expected := provider
+		if expected == "" {
+			expected = "local"
+		}
+		assert.Equal(t, expected, body["totp_provider"])
+		assert.Equal(t, "fixture-password", body["password"])
+		assert.Equal(t, "JBSWY3DPEHPK3PXP", body["totp_secret"])
+		require.Eventually(t, func() bool {
+			return model.DB.First(&account, account.ID).Error == nil && account.LeaseUntil == 0
+		}, 3*time.Second, 10*time.Millisecond)
+		assert.Equal(t, "error", account.Status)
+		assert.Equal(t, "totp_provider_timeout", account.LastErrorCode)
+	}
+}
+
+func TestGPTAccountGatewayProofScopes(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	for _, operation := range []service.VerificationOperation{
+		{Scope: "gpt_account_gateway.create", Context: []byte(`{"name":"Example"}`)},
+		{Scope: "gpt_account_gateway.update", Context: []byte(`{"gateway_id":1}`)},
+		{Scope: "gpt_account.gateway.sync", Context: []byte(`{"account_id":1}`)},
+	} {
+		binding, err := service.BindVerificationOperation(operation)
+		require.NoError(t, err, operation.Scope)
+		assert.Equal(t, operation.Scope, binding.Scope)
+		_, err = service.GetVerificationRequirements(identity, operation.Scope)
+		require.NoError(t, err, operation.Scope)
+	}
+	for _, operation := range []service.VerificationOperation{
+		{Scope: "gpt_account_gateway.create", Context: []byte(`{"name":""}`)},
+		{Scope: "gpt_account_gateway.update", Context: []byte(`{"gateway_id":0}`)},
+		{Scope: "gpt_account.gateway.sync", Context: []byte(`{"account_id":0}`)},
+		{Scope: "gpt_account_gateway.update", Context: []byte(`{"gateway_id":1,"extra":"unbound"}`)},
+	} {
+		_, err := service.BindVerificationOperation(operation)
+		assert.Error(t, err)
+	}
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", identity.UserID).Update("role", common.RoleAdminUser).Error)
+	for _, scope := range []string{"gpt_account_gateway.create", "gpt_account_gateway.update"} {
+		_, err := service.GetVerificationRequirements(identity, scope)
+		assert.ErrorIs(t, err, service.ErrVerificationForbidden)
+	}
+}
+
 func TestGPTAccountTokenTransportNeverFollowsRedirects(t *testing.T) {
 	client, err := service.GetHttpClientWithProxy("")
 	require.NoError(t, err)
@@ -374,7 +484,7 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 				require.NoError(t, db.AutoMigrate(&gptAccountBeforeTOTP{}))
 				legacy.ChannelID = &channel.Id
 				legacy.ChannelKeyHash = model.GPTChannelKeyHash(channel.Key)
-				require.NoError(t, db.Omit("totp_version", "totp_updated_at", "totp_status").Create(&legacy).Error)
+				require.NoError(t, db.Omit("totp_version", "totp_updated_at", "totp_status", "gateway_id", "gateway_sync_status", "gateway_error_code", "gateway_synced_at").Create(&legacy).Error)
 			}
 			for range 2 {
 				require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AuthFlow{}, &model.GPTAccount{}))

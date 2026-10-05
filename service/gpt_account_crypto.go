@@ -14,8 +14,13 @@ import (
 )
 
 type GPTAccountSecrets struct {
-	Password   string `json:"password"`
-	TOTPSecret string `json:"totp_secret"`
+	Password               string         `json:"password"`
+	TOTPSecret             string         `json:"totp_secret"`
+	TOTPProvider           string         `json:"totp_provider,omitempty"`
+	GatewayOAuth           *CodexOAuthKey `json:"gateway_oauth,omitempty"`
+	GatewayRemoteID        string         `json:"gateway_remote_id,omitempty"`
+	GatewayImportID        string         `json:"gateway_import_id,omitempty"`
+	GatewayImportAttempted bool           `json:"gateway_import_attempted,omitempty"`
 }
 
 var ErrGPTAccountEncryption = errors.New("encryption_unavailable")

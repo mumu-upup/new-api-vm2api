@@ -339,6 +339,8 @@ func migrateDB() error {
 
 	err := DB.AutoMigrate(
 		&Channel{},
+		&GPTAccount{},
+		&GPTAccountGateway{},
 		&Token{},
 		&User{},
 		&UserSession{},
@@ -414,6 +416,8 @@ func migrateDBFast() error {
 		name  string
 	}{
 		{&Channel{}, "Channel"},
+		{&GPTAccount{}, "GPTAccount"},
+		{&GPTAccountGateway{}, "GPTAccountGateway"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
 		{&UserSession{}, "UserSession"},

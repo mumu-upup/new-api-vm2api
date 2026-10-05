@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { generateTOTP } from './login.mjs'
+import { getLoginTOTP } from './login.mjs'
 
 const callbackOrigin = 'http://localhost:1455'
 const callbackPath = '/auth/callback'
@@ -38,13 +38,20 @@ export async function handleLoginRequest(route, guard) {
     if (!permittedRequest(url, method, mainNavigation)) break
     // Playwright does not route Chromium's redirect hops. Fetch exactly one hop
     // and inspect its destination before any follow-up can carry credentials.
-    const response = await route.fetch({ url: url.href, maxRedirects: 0, timeout: Math.max(1, Math.min(20000, guard.deadline - Date.now())) })
+    let response
+    try {
+      response = await route.fetch({ url: url.href, maxRedirects: 0, timeout: Math.max(1, Math.min(20000, guard.deadline - Date.now())) })
+    } catch {
+      if (mainNavigation) guard.setBlocked('login_navigation_failed')
+      await route.abort()
+      return
+    }
     const status = response.status()
     if (![301, 302, 303, 307, 308].includes(status)) {
       await route.fulfill({ response })
       return
     }
-    if (++guard.redirects > 12) break
+    if (mainNavigation && ++guard.redirects > 12) break
     const location = response.headers().location
     if (!location) break
     const next = new URL(location, url)
@@ -57,21 +64,25 @@ export async function handleLoginRequest(route, guard) {
     }
     if (!permittedRequest(next, nextMethod, mainNavigation) || !['GET', 'HEAD'].includes(nextMethod)) break
     if (mainNavigation) {
-      await route.fulfill({ status: 200, contentType: 'text/plain', body: 'Continuing authorization.' })
-      await guard.navigate(next.href, url.href)
+      // Register the navigation wait before Chromium can commit this response,
+      // including when a form POST uses the already-visible page URL.
+      await Promise.all([
+        guard.navigate(next.href, url.href),
+        route.fulfill({ status: 200, contentType: 'text/plain', body: 'Continuing authorization.' }),
+      ])
       return
     }
     // Preserve subresource semantics only for idempotent GET/HEAD requests.
     if (!['GET', 'HEAD'].includes(method) || next.origin !== url.origin) break
     url = next
   }
-  guard.setBlocked()
+  if (mainNavigation) guard.setBlocked('login_navigation_blocked')
   await route.abort()
 }
 
 export async function completeLoginPage(page, input, signal, options = {}) {
   const now = options.now || Date.now
-  const wait = options.wait || (() => delay(300, undefined, { signal }))
+  const wait = options.wait || (() => delay(300, undefined, { signal }).catch(() => {}))
   const deadline = options.deadline || now() + 150000
   const submitted = new Set()
   let previousKind = ''
@@ -79,13 +90,27 @@ export async function completeLoginPage(page, input, signal, options = {}) {
     if (signal.aborted) break
     const callback = parseCallback(page.url(), input.state)
     if (callback) return callback
+    let screen
+    try {
+      screen = await page.screen()
+    } catch (error) {
+      if (signal.aborted) break
+      if (!/execution context was destroyed|cannot find context with specified id/i.test(error?.message || '')) {
+        return { status: 'needs_attention', error_code: 'login_screen_unrecognized' }
+      }
+      // A form navigation may replace the document between locator reads.
+      screen = { kind: 'loading' }
+    }
+    if (screen.kind === 'navigation_error') {
+      return { status: 'needs_attention', error_code: screen.error_code === 'login_navigation_failed' ? 'login_navigation_failed' : 'login_navigation_blocked' }
+    }
     if (new URL(page.url()).origin !== loginOrigin) {
       return { status: 'needs_attention', error_code: 'additional_verification_required' }
     }
-    const screen = await page.screen()
     const attention = {
       captcha: 'captcha_required', email_code: 'email_verification_required',
       consent: 'consent_required', additional: 'additional_verification_required',
+      invalid_totp: 'invalid_totp_code',
     }[screen.kind]
     if (attention) return { status: 'needs_attention', error_code: attention }
     if (screen.kind === 'disabled') return { status: 'failed', error_code: 'account_unavailable' }
@@ -97,11 +122,22 @@ export async function completeLoginPage(page, input, signal, options = {}) {
           return { status: 'needs_attention', error_code: 'additional_verification_required' }
         }
       } else {
-        if (screen.kind === 'totp' && !input.totp_secret) {
-          return { status: 'needs_attention', error_code: 'additional_verification_required' }
+        let value = screen.kind === 'email' ? input.email : input.password
+        if (screen.kind === 'totp') {
+          const result = await getLoginTOTP(input, signal, options)
+          if (!result.code) return result
+          value = result.code
         }
-        const value = screen.kind === 'email' ? input.email : screen.kind === 'password' ? input.password : generateTOTP(input.totp_secret, now())
-        await page.fillAndContinue(screen.kind, value)
+        if (signal.aborted) break
+        try {
+          await page.fillAndContinue(screen.kind, value)
+        } catch (error) {
+          const callback = parseCallback(page.url(), input.state)
+          if (callback) return callback
+          if (signal.aborted) break
+          return { status: 'needs_attention', error_code: /untrusted_(?:login_origin|form_action)/.test(error?.message || '')
+            ? 'login_navigation_blocked' : `${screen.kind}_submission_failed` }
+        }
         submitted.add(screen.kind)
         previousKind = screen.kind
         continue
@@ -109,7 +145,8 @@ export async function completeLoginPage(page, input, signal, options = {}) {
     }
     await wait()
   }
-  return { status: 'needs_attention', error_code: 'login_timeout' }
+  return { status: 'needs_attention', error_code: signal.aborted ? 'login_timeout'
+    : previousKind ? `${previousKind}_step_timeout` : 'login_screen_unrecognized' }
 }
 
 const loginFields = {
@@ -118,8 +155,8 @@ const loginFields = {
   totp: 'input[autocomplete="one-time-code"], input[name="code"], input[name="otp"]',
 }
 
-export async function classifyLoginScreen(tab, blockedNavigation = false) {
-  if (blockedNavigation) return { kind: 'additional' }
+export async function classifyLoginScreen(tab, navigationError = '') {
+  if (navigationError) return { kind: 'navigation_error', error_code: navigationError }
   const text = await tab.locator('body').innerText()
   const path = new URL(tab.url()).pathname
   const headings = (await tab.getByRole('heading').allTextContents()).join(' ')
@@ -132,13 +169,20 @@ export async function classifyLoginScreen(tab, blockedNavigation = false) {
   if (await tab.locator('iframe[src*="challenges.cloudflare.com"], #challenge-running, #challenge-stage').filter({ visible: true }).count() || /verify you are human|complete the captcha|security check|人机验证/i.test(text)) return { kind: 'captcha' }
   if (/account (?:has been |is )?(?:deactivated|disabled|suspended)|account_deactivated|账号.{0,8}(?:停用|封禁)/i.test(text)) return { kind: 'disabled' }
   if (/incorrect password|wrong password|invalid (?:email or password|credentials)|密码错误/i.test(text)) return { kind: 'invalid' }
-  if (/check your email|code.{0,40}(?:email|inbox)|(?:emailed|sent).{0,40}code|检查.{0,4}邮箱/i.test(text)) return { kind: 'email_code' }
+  const emailCode = /check your email|code.{0,40}(?:email|inbox)|(?:emailed|sent).{0,40}code|检查.{0,4}邮箱/i
+  const authenticator = /authenticator|authentication app|验证器|身份验证应用/i
+  const hasOTP = await tab.locator(loginFields.totp).filter({ visible: true }).count()
+  // Alternative sign-in links must not override the active challenge heading.
+  if (emailCode.test(headings)) return { kind: 'email_code' }
+  if (hasOTP && authenticator.test(text) && /(?:incorrect|invalid|expired)\s+(?:(?:authentication|authenticator|verification|security|one[- ]time)\s+)?code|code (?:is |has )?(?:invalid|incorrect|expired)|验证码.{0,5}(?:错误|无效|过期)/i.test(text)) return { kind: 'invalid_totp' }
+  if (hasOTP && authenticator.test(headings)) return { kind: 'totp' }
+  if (emailCode.test(text)) return { kind: 'email_code' }
   if (/wants (?:to access|access to)|allow .{0,40}access|authorize .{0,40}(?:app|codex)|授权.{0,10}访问/i.test(text) || await tab.getByRole('button', { name: /^(?:Authorize|Allow access|Allow|授权|允许)$/i }).filter({ visible: true }).count()) return { kind: 'consent' }
   for (const kind of ['password', 'email']) {
     if (await tab.locator(loginFields[kind]).filter({ visible: true }).count()) return { kind }
   }
-  if (await tab.locator(loginFields.totp).filter({ visible: true }).count()) {
-    return { kind: /authenticator|authentication app|验证器|身份验证应用/i.test(text) ? 'totp' : 'additional' }
+  if (hasOTP) {
+    return { kind: authenticator.test(text) ? 'totp' : 'additional' }
   }
   return { kind: 'loading' }
 }
@@ -153,12 +197,12 @@ export async function createIsolatedLoginContext(browser) {
 
 // Only ordinary official login forms are automated. Unknown identity providers,
 // CAPTCHAs, email codes, consent and security challenges require a human.
-export async function browserLogin(input, signal) {
+export async function browserLogin(input, signal, options = {}) {
   const deadline = Date.now() + 150000
   if (signal.aborted) return { status: 'needs_attention', error_code: 'login_timeout' }
   const { chromium } = await import('playwright')
   if (signal.aborted) return { status: 'needs_attention', error_code: 'login_timeout' }
-  const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 20000 })
+  const browser = await (options.launch || chromium.launch.bind(chromium))({ headless: true, chromiumSandbox: true, timeout: 20000 })
   const stop = () => { void browser.close().catch(() => {}) }
   signal.addEventListener('abort', stop, { once: true })
   try {
@@ -166,33 +210,39 @@ export async function browserLogin(input, signal) {
     const context = await createIsolatedLoginContext(browser)
     const tab = await context.newPage()
     tab.setDefaultTimeout(5000)
-    let callback, blockedNavigation = false
+    let callback, navigationError = '', pendingNavigations = 0
     const guard = {
       state: input.state, mainFrame: tab.mainFrame(), deadline, redirects: 0,
       setCallback: result => { callback = result },
-      setBlocked: () => { blockedNavigation = true },
+      setBlocked: code => { navigationError ||= code },
       navigate: async (url, from) => {
-        // route.fulfill resolves before Chromium commits the original form's
-        // navigation. Starting the next page sooner can be overwritten by it.
-        await tab.waitForURL(from, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(20000, deadline - Date.now())) })
+        // A URL equality check can match the old document when a form posts to
+        // its own URL. Wait for the actual new document before following.
+        await tab.waitForEvent('framenavigated', { predicate: frame => frame === tab.mainFrame() && frame.url() === from,
+          timeout: Math.max(1, Math.min(20000, deadline - Date.now())) })
         await tab.goto(url, { waitUntil: 'domcontentloaded', timeout: Math.max(1, Math.min(20000, deadline - Date.now())) })
       },
     }
     await context.route('**/*', async route => {
+      const request = route.request()
+      const mainNavigation = request.isNavigationRequest() && request.frame() === guard.mainFrame
+      if (mainNavigation) pendingNavigations++
       try {
         await handleLoginRequest(route, guard)
       } catch {
-        blockedNavigation = true
+        if (mainNavigation) guard.setBlocked('login_navigation_failed')
         await route.abort().catch(() => {})
+      } finally {
+        if (mainNavigation) pendingNavigations--
       }
     })
     await tab.goto(input.authorization_url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {
       // A validated redirect can replace the initial navigation before it finishes.
-      if (!guard.redirects && !callback) blockedNavigation = true
+      if (!guard.redirects && !callback) guard.setBlocked('login_navigation_failed')
     })
     const page = {
       url: () => callback ? `${callbackOrigin}${callbackPath}?${new URLSearchParams({ state: callback.state || '', code: callback.code || '' })}` : tab.url(),
-      screen: () => classifyLoginScreen(tab, blockedNavigation),
+      screen: () => pendingNavigations && !navigationError ? { kind: 'loading' } : classifyLoginScreen(tab, navigationError),
       fillAndContinue: async (kind, value) => {
         if (new URL(tab.url()).origin !== loginOrigin) throw new Error('untrusted_login_origin')
         const field = tab.locator(loginFields[kind]).filter({ visible: true }).first()
@@ -205,8 +255,8 @@ export async function browserLogin(input, signal) {
         await field.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {})
       },
     }
-    const result = await completeLoginPage(page, input, signal, { deadline })
-    return callback || result
+    const result = await completeLoginPage(page, input, signal, { ...options, deadline })
+    return callback || (navigationError ? { status: 'needs_attention', error_code: navigationError } : result)
   } finally {
     signal.removeEventListener('abort', stop)
     await browser.close()

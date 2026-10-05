@@ -40,16 +40,37 @@ const account: GptAccount = {
   group: 'default',
   models: 'gpt-5.4',
 }
+const gateway = {
+  id: 5,
+  name: 'CPA pool',
+  provider: 'cpa',
+  management_version: 'v8',
+  management_url: 'https://cpa.example.com',
+  relay_url: 'https://relay.example.com',
+  allow_local_http: false,
+  remote_group_id: 0,
+  group: 'default',
+  models: 'gpt-5',
+  channel_id: 23,
+  channel_name: 'Shared CPA channel',
+  has_management_key: true,
+  has_relay_key: true,
+}
+let gateways: (typeof gateway)[]
 let items: GptAccount[]
 let client: QueryClient
 
 beforeEach(() => {
   items = [{ ...account }]
+  gateways = [{ ...gateway }]
   useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 100 })
   client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-account-gateways') {
+      return { data: { success: true, data: { items: gateways } } }
+    }
     if (url === '/api/gpt-accounts') {
       return { data: { success: true, data: { items, total: items.length } } }
     }
@@ -129,6 +150,9 @@ it('masks credential inputs and starts creation only after scoped admin verifica
     await screen.findByRole('button', { name: 'Add GPT account' })
   )
   const dialog = await screen.findByRole('dialog', { name: 'Add GPT account' })
+  await userEvent.click(
+    within(dialog).getByRole('tab', { name: 'Enter separately' })
+  )
   await userEvent.type(within(dialog).getByLabelText('Name'), 'Second account')
   await userEvent.type(
     within(dialog).getByLabelText('Email'),
@@ -154,6 +178,7 @@ it('masks credential inputs and starts creation only after scoped admin verifica
         email: 'second@example.com',
         password: 'upstream-password',
         totp_secret: 'JBSWY3DPEHPK3PXP',
+        totp_provider: 'local',
       }),
       expect.objectContaining({
         singleUseAuthorization: true,
@@ -868,7 +893,9 @@ it('requires a canonical seed and explicit completed-binding confirmation before
   expect(input).toHaveValue('')
   expect(input).toHaveAttribute('type', 'password')
   await userEvent.type(input, 'JBSWY3DPEHPK3PXP')
-  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+  )
   expect(
     await screen.findByText(
       'Confirm that official authenticator binding is complete.'
@@ -881,7 +908,9 @@ it('requires a canonical seed and explicit completed-binding confirmation before
   )
   await userEvent.clear(input)
   await userEvent.type(input, 'AAAAAAAAAAAAAAAAAB')
-  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+  )
   expect(await screen.findByText('Enter a Base32 TOTP secret')).toBeVisible()
   expect(api.get).not.toHaveBeenCalledWith(
     '/api/verify/methods',
@@ -916,7 +945,9 @@ it('saves a normalized replacement only with account-scoped proof and refreshes 
       name: 'I completed binding this secret on the official OpenAI website.',
     })
   )
-  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+  )
   await verify()
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
@@ -961,7 +992,9 @@ it('cancelling replacement verification clears the seed and confirmation without
       name: 'I completed binding this secret on the official OpenAI website.',
     })
   )
-  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+  )
   await screen.findByLabelText('Password', { selector: 'input' })
   await userEvent.keyboard('{Escape}')
   expect(await screen.findByLabelText('Replacement TOTP secret')).toHaveValue(
@@ -1181,7 +1214,9 @@ it.each([
         name: 'I completed binding this secret on the official OpenAI website.',
       })
     )
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: 'Save replacement secret' })
+    )
     await verify()
     expect(await screen.findByRole('alert')).toHaveTextContent(message)
     expect(screen.getByLabelText('Replacement TOTP secret')).toHaveValue('')
@@ -1212,6 +1247,628 @@ it('cancelling reveal verification never fetches a secret', async () => {
   expect(api.post).not.toHaveBeenCalledWith(
     '/api/gpt-accounts/1/totp/reveal',
     expect.anything(),
+    expect.anything()
+  )
+})
+
+it('submits a masked account line in one step with normalized credentials and the exact password after verification', async () => {
+  const user = userEvent.setup()
+  const password = '  password----with delimiter  '
+  const line = `MixedCase@example.com----${password}----jbsw y3dp ehpk 3pxp`
+  const mutationStates: unknown[] = []
+  const unsubscribe = client.getMutationCache().subscribe((event) => {
+    mutationStates.push(event.mutation?.state)
+  })
+  renderPage()
+  await user.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  const input = screen.getByLabelText('Account line')
+  expect(input).toHaveAttribute('type', 'password')
+  await user.click(input)
+  await user.paste(line)
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  expect(api.post).not.toHaveBeenCalled()
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      {
+        name: 'mixedcase@example.com',
+        email: 'mixedcase@example.com',
+        password,
+        totp_secret: 'JBSWY3DPEHPK3PXP',
+        totp_provider: '2fa_cn',
+        auto_relogin: true,
+        group: 'default',
+        models: '',
+        channel_id: undefined,
+        gateway_id: 0,
+      },
+      expect.objectContaining({
+        singleUseAuthorization: true,
+        headers: { 'X-Security-Proof': 'proof' },
+      })
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account.create',
+      context: { email: 'mixedcase@example.com' },
+    }),
+    expect.anything()
+  )
+  unsubscribe()
+  const cache = JSON.stringify({
+    queries: client
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.state),
+    mutations: mutationStates,
+  })
+  expect(cache).not.toContain(line)
+  expect(cache).not.toContain(password)
+  expect(cache).not.toContain('JBSWY3DPEHPK3PXP')
+})
+
+it.each([
+  ['missing delimiters', 'owner@example.com'],
+  ['missing email', '----password----JBSWY3DPEHPK3PXP'],
+  ['missing password', 'owner@example.com--------JBSWY3DPEHPK3PXP'],
+  ['missing seed', 'owner@example.com----password----'],
+  ['invalid email', 'owner----password----JBSWY3DPEHPK3PXP'],
+  ['invalid seed', 'owner@example.com----password----AAAAAAAAAAAAAAAAAB'],
+  [
+    'oversized password',
+    `owner@example.com----${'密'.repeat(342)}----JBSWY3DPEHPK3PXP`,
+  ],
+  [
+    'multiple lines',
+    'owner@example.com----password----JBSWY3DPEHPK3PXP\nother@example.com----password----JBSWY3DPEHPK3PXP',
+  ],
+])(
+  'rejects an account line with %s before verification or account mutation',
+  async (_reason, line) => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(
+      await screen.findByRole('button', { name: 'Add GPT account' })
+    )
+    await user.click(screen.getByLabelText('Account line'))
+    await user.paste(line)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Enter one account as email----password----TOTP secret.'
+    )
+    expect(screen.getByLabelText('Account line')).toHaveAttribute(
+      'aria-invalid',
+      'true'
+    )
+    expect(api.get).not.toHaveBeenCalledWith(
+      '/api/verify/methods',
+      expect.anything()
+    )
+    expect(api.post).not.toHaveBeenCalled()
+  }
+)
+
+it('keeps a supplied account name when applying a line and clears imported secrets after canceled verification', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  await user.type(screen.getByLabelText('Name'), 'My account')
+  await user.click(screen.getByLabelText('Account line'))
+  await user.paste('owner@example.com----password----JBSWY3DPEHPK3PXP')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByLabelText('Password', { selector: 'input' })
+  await user.keyboard('{Escape}')
+  expect(await screen.findByLabelText('Account password')).toHaveValue('')
+  expect(screen.getByLabelText('Name')).toHaveValue('My account')
+  expect(screen.getByLabelText('TOTP secret')).toHaveValue('')
+  await user.click(screen.getByRole('tab', { name: 'Paste account' }))
+  expect(screen.getByLabelText('Account line')).toHaveValue('')
+  expect(api.post).not.toHaveBeenCalled()
+})
+
+it.each(['cancel', 'identity'] as const)(
+  'discards a pasted account line after %s closes its editor',
+  async (reason) => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(
+      await screen.findByRole('button', { name: 'Add GPT account' })
+    )
+    await user.type(
+      screen.getByLabelText('Account line'),
+      'owner@example.com----password----JBSWY3DPEHPK3PXP'
+    )
+    if (reason === 'cancel') {
+      await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    } else {
+      act(() =>
+        useAuthStore
+          .getState()
+          .auth.setUser({ id: 7, username: 'other', role: 100 })
+      )
+    }
+    await user.click(
+      await screen.findByRole('button', { name: 'Add GPT account' })
+    )
+    expect(screen.getByLabelText('Account line')).toHaveValue('')
+    expect(api.post).not.toHaveBeenCalled()
+  }
+)
+
+it('opens the manual authenticator handoff from the main account row without mutating provider MFA', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  const action = await screen.findByRole('button', {
+    name: 'Change 2FA for Work account',
+  })
+  expect(action).toHaveTextContent('Change 2FA')
+  await user.click(action)
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Save replacement secret',
+  })
+  const link = within(dialog).getByRole('link', {
+    name: 'Open ChatGPT security settings',
+  })
+  expect(link).toHaveAttribute('href', 'https://chatgpt.com/#settings/Security')
+  expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  expect(
+    within(dialog).getByText(
+      'On the official website, replace the authenticator yourself. After binding the new secret, return here to save it.'
+    )
+  ).toBeVisible()
+  expect(
+    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+  ).toBeVisible()
+  expect(
+    within(dialog).getByRole('checkbox', {
+      name: 'I completed binding this secret on the official OpenAI website.',
+    })
+  ).not.toBeChecked()
+  expect(api.post).not.toHaveBeenCalled()
+})
+
+it.each([
+  { can_manage: false, status: 'ready' as const },
+  { can_manage: true, status: 'logging_in' as const },
+])(
+  'disables main-row 2FA replacement for permission=$can_manage and status=$status',
+  async (state) => {
+    items = [{ ...account, ...state }]
+    renderPage()
+    expect(
+      await screen.findByRole('button', { name: 'Change 2FA for Work account' })
+    ).toBeDisabled()
+  }
+)
+
+it('shows the third-party secret disclosure with 2fa.cn selected for pasted accounts and allows choosing local codes', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  expect(
+    screen.getByRole('radiogroup', { name: 'Sign-in code source' })
+  ).toBeVisible()
+  expect(screen.getByRole('radio', { name: '2fa.cn' })).toBeChecked()
+  expect(
+    screen.getByText(
+      '2fa.cn receives this account’s TOTP secret to generate sign-in codes.'
+    )
+  ).toBeVisible()
+  await user.click(screen.getByRole('radio', { name: 'Generate locally' }))
+  expect(screen.getByRole('radio', { name: 'Generate locally' })).toBeChecked()
+  expect(
+    screen.queryByText(
+      '2fa.cn receives this account’s TOTP secret to generate sign-in codes.'
+    )
+  ).not.toBeInTheDocument()
+  await user.click(screen.getByLabelText('Account line'))
+  await user.paste('owner@example.com----password----JBSWY3DPEHPK3PXP')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({ totp_provider: 'local' }),
+      expect.anything()
+    )
+  )
+})
+
+it.each([
+  { stored: undefined, selected: 'Generate locally', expected: 'local' },
+  { stored: '' as const, selected: 'Generate locally', expected: 'local' },
+  { stored: '2fa_cn' as const, selected: '2fa.cn', expected: '2fa_cn' },
+])(
+  'editing preserves the saved TOTP provider or defaults a legacy value ($stored) to local',
+  async (provider) => {
+    const user = userEvent.setup()
+    items = [{ ...account, totp_provider: provider.stored }]
+    vi.spyOn(api, 'put').mockResolvedValue({
+      data: { success: true, data: items[0] },
+    })
+    renderPage()
+    await user.click(
+      await screen.findByRole('button', { name: 'Edit Work account' })
+    )
+    expect(screen.getByRole('radio', { name: provider.selected })).toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await verify()
+    await waitFor(() =>
+      expect(api.put).toHaveBeenCalledWith(
+        '/api/gpt-accounts/1',
+        expect.objectContaining({ totp_provider: provider.expected }),
+        expect.anything()
+      )
+    )
+  }
+)
+
+it.each([
+  [
+    'captcha_required',
+    'The sign-in page requires a CAPTCHA. Complete it through browser sign-in.',
+  ],
+  [
+    'email_verification_required',
+    'The sign-in page requires email verification. Complete it through browser sign-in.',
+  ],
+  [
+    'consent_required',
+    'The sign-in page requires your consent. Complete it through browser sign-in.',
+  ],
+  [
+    'additional_verification_required',
+    'The sign-in page requires additional verification. Complete it through browser sign-in.',
+  ],
+  [
+    'login_navigation_blocked',
+    'The sign-in page blocked navigation. Try browser sign-in.',
+  ],
+  [
+    'login_navigation_failed',
+    'Could not open the sign-in page. Try again or use browser sign-in.',
+  ],
+  [
+    'email_submission_failed',
+    'Could not submit the account email on the sign-in page.',
+  ],
+  [
+    'password_submission_failed',
+    'Could not submit the account password on the sign-in page.',
+  ],
+  [
+    'totp_submission_failed',
+    'Could not submit the authenticator code on the sign-in page.',
+  ],
+  [
+    'email_step_timeout',
+    'The sign-in page did not continue after the email step. Try again.',
+  ],
+  [
+    'password_step_timeout',
+    'The sign-in page did not continue after the password step. Try again.',
+  ],
+  [
+    'totp_step_timeout',
+    'The sign-in page did not continue after the authenticator code step. Try again.',
+  ],
+  [
+    'login_screen_unrecognized',
+    'The sign-in page could not be recognized. Try browser sign-in.',
+  ],
+  [
+    'totp_secret_required',
+    'Add this account’s TOTP secret to generate sign-in codes.',
+  ],
+  [
+    'totp_provider_unavailable',
+    'The sign-in code provider is unavailable. Try again.',
+  ],
+  ['totp_provider_timeout', 'The sign-in code provider timed out. Try again.'],
+  [
+    'totp_provider_invalid_response',
+    'The sign-in code provider returned an invalid code. Try again.',
+  ],
+  [
+    'invalid_totp_code',
+    'The sign-in page rejected the authenticator code. Check the saved secret and try again.',
+  ],
+])(
+  'shows the specific sign-in failure for %s without changing the administrator session',
+  async (code, message) => {
+    items = [{ ...account, status: 'needs_attention', last_error_code: code }]
+    renderPage()
+    expect(await screen.findByText(message)).toBeVisible()
+    expect(useAuthStore.getState().auth.user?.id).toBe(1)
+  }
+)
+
+it('lets administrators choose a configured gateway during one-line creation without exposing gateway management', async () => {
+  useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 10 })
+  const user = userEvent.setup()
+  renderPage()
+  expect(
+    screen.queryByRole('tab', { name: 'Gateways' })
+  ).not.toBeInTheDocument()
+  await user.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Account destination' }),
+    '5'
+  )
+  expect(
+    screen.getByText(
+      'Accounts added to this gateway share its channel. Requests may use any available account in the gateway.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByLabelText('Existing Codex channel ID')
+  ).not.toBeInTheDocument()
+  await user.type(
+    screen.getByLabelText('Account line'),
+    'pool@example.com----password----JBSWY3DPEHPK3PXP'
+  )
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({ gateway_id: 5, channel_id: undefined }),
+      expect.anything()
+    )
+  )
+})
+
+it('shows gateway channel and sync status and retries import only after account-scoped verification', async () => {
+  items = [
+    {
+      ...account,
+      channel_id: undefined,
+      gateway_id: 5,
+      gateway_name: 'CPA pool',
+      gateway_provider: 'cpa',
+      gateway_channel_id: 23,
+      gateway_channel_name: 'Shared CPA channel',
+      gateway_sync_status: 'error',
+      gateway_error_code: 'gateway_unavailable',
+    },
+  ]
+  const user = userEvent.setup()
+  renderPage()
+  expect(await screen.findByText('Shared CPA channel')).toBeVisible()
+  expect(screen.getByText('Gateway synchronization failed')).toBeVisible()
+  await user.click(
+    screen.getByRole('button', { name: 'Sync gateway for Work account' })
+  )
+  expect(api.post).not.toHaveBeenCalledWith(
+    '/api/gpt-accounts/1/sync',
+    expect.anything(),
+    expect.anything()
+  )
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/sync',
+      {},
+      expect.objectContaining({
+        singleUseAuthorization: true,
+        headers: { 'X-Security-Proof': 'proof' },
+      })
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account.gateway.sync',
+      context: { account_id: 1 },
+    }),
+    expect.anything()
+  )
+})
+
+it('keeps the account destination immutable when editing a gateway account', async () => {
+  items = [
+    {
+      ...account,
+      channel_id: undefined,
+      gateway_id: 5,
+      gateway_name: 'CPA pool',
+    },
+  ]
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Edit Work account' })
+  )
+  expect(
+    screen.getByRole('combobox', { name: 'Account destination' })
+  ).toBeDisabled()
+  expect(
+    screen.getByRole('combobox', { name: 'Account destination' })
+  ).toHaveValue('5')
+  expect(
+    screen.queryByLabelText('Existing Codex channel ID')
+  ).not.toBeInTheDocument()
+})
+
+it('creates a gateway with masked keys only after name-scoped verification and keeps keys out of caches', async () => {
+  const user = userEvent.setup()
+  const mutationStates: unknown[] = []
+  const unsubscribe = client
+    .getMutationCache()
+    .subscribe((event) => mutationStates.push(event.mutation?.state))
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(screen.getByRole('button', { name: 'Add gateway' }))
+  const dialog = screen.getByRole('dialog', { name: 'Add gateway' })
+  await user.type(within(dialog).getByLabelText('Name'), 'Second pool')
+  await user.type(
+    within(dialog).getByLabelText('Management URL'),
+    'https://admin.example.com'
+  )
+  await user.type(
+    within(dialog).getByLabelText('Relay URL'),
+    'https://relay.example.com'
+  )
+  expect(within(dialog).getByLabelText('Management key')).toHaveAttribute(
+    'type',
+    'password'
+  )
+  expect(within(dialog).getByLabelText('Relay key')).toHaveAttribute(
+    'type',
+    'password'
+  )
+  await user.type(
+    within(dialog).getByLabelText('Management key'),
+    'gateway-management-secret'
+  )
+  await user.type(
+    within(dialog).getByLabelText('Relay key'),
+    'gateway-relay-secret'
+  )
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+  expect(api.post).not.toHaveBeenCalledWith(
+    '/api/gpt-account-gateways',
+    expect.anything(),
+    expect.anything()
+  )
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-account-gateways',
+      expect.objectContaining({
+        name: 'Second pool',
+        provider: 'cpa',
+        management_version: 'v8',
+        management_key: 'gateway-management-secret',
+        relay_key: 'gateway-relay-secret',
+      }),
+      expect.objectContaining({ singleUseAuthorization: true })
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account_gateway.create',
+      context: { name: 'Second pool' },
+    }),
+    expect.anything()
+  )
+  unsubscribe()
+  const cache = JSON.stringify({
+    queries: client
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.state),
+    mutations: mutationStates,
+  })
+  expect(cache).not.toContain('gateway-management-secret')
+  expect(cache).not.toContain('gateway-relay-secret')
+})
+
+it('edits gateway display settings without exposing saved keys or changing connection identity', async () => {
+  const user = userEvent.setup()
+  vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: true, data: gateway },
+  })
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(
+    await screen.findByRole('button', { name: 'Edit gateway CPA pool' })
+  )
+  const dialog = screen.getByRole('dialog', { name: 'Edit gateway' })
+  expect(within(dialog).getByLabelText('Management key')).toHaveValue('')
+  expect(within(dialog).getByLabelText('Relay key')).toHaveValue('')
+  expect(within(dialog).getByLabelText('Management URL')).toHaveAttribute(
+    'readonly'
+  )
+  expect(within(dialog).getByLabelText('Relay URL')).toHaveAttribute('readonly')
+  expect(
+    within(dialog).getByRole('combobox', { name: 'Provider' })
+  ).toBeDisabled()
+  await user.clear(within(dialog).getByLabelText('Name'))
+  await user.type(within(dialog).getByLabelText('Name'), 'Renamed pool')
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await verify()
+  await waitFor(() =>
+    expect(api.put).toHaveBeenCalledWith(
+      '/api/gpt-account-gateways/5',
+      expect.objectContaining({
+        name: 'Renamed pool',
+        management_key: '',
+        relay_key: '',
+        management_url: gateway.management_url,
+        relay_url: gateway.relay_url,
+      }),
+      expect.anything()
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account_gateway.update',
+      context: { gateway_id: 5 },
+    }),
+    expect.anything()
+  )
+})
+
+it('clears replacement gateway keys when verification is cancelled', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(
+    await screen.findByRole('button', { name: 'Edit gateway CPA pool' })
+  )
+  await user.type(screen.getByLabelText('Management key'), 'replacement-secret')
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  await screen.findByLabelText('Password', { selector: 'input' })
+  await waitFor(() =>
+    expect(
+      screen.getByRole('dialog', { name: 'Security verification' })
+    ).toContainElement(document.activeElement as HTMLElement)
+  )
+  await user.keyboard('{Escape}')
+  expect(await screen.findByLabelText('Management key')).toHaveValue('')
+  expect(screen.getByLabelText('Relay key')).toHaveValue('')
+  expect(api.post).not.toHaveBeenCalled()
+})
+
+it('requires both gateway keys and a valid Sub2API group before requesting verification', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(screen.getByRole('button', { name: 'Add gateway' }))
+  await user.type(screen.getByLabelText('Name'), 'Sub2API pool')
+  await user.selectOptions(
+    screen.getByRole('combobox', { name: 'Provider' }),
+    'sub2api'
+  )
+  await user.type(
+    screen.getByLabelText('Management URL'),
+    'https://admin.example.com'
+  )
+  await user.type(
+    screen.getByLabelText('Relay URL'),
+    'https://relay.example.com'
+  )
+  await user.click(screen.getByRole('button', { name: 'Save' }))
+  expect(await screen.findByText('Management key is required')).toBeVisible()
+  expect(screen.getByText('Relay key is required')).toBeVisible()
+  expect(
+    screen.getByText('Choose a Sub2API group ID greater than zero.')
+  ).toBeVisible()
+  expect(api.get).not.toHaveBeenCalledWith(
+    '/api/verify/methods',
     expect.anything()
   )
 })

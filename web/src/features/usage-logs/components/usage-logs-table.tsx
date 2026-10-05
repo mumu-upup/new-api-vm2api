@@ -146,11 +146,6 @@ export function UsageLogsTable({ logCategory }: UsageLogsTableProps) {
       ...(isAdmin
         ? [
             {
-              columnId: 'channel',
-              searchKey: 'channel',
-              type: 'string' as const,
-            },
-            {
               columnId: 'username',
               searchKey: 'username',
               type: 'string' as const,

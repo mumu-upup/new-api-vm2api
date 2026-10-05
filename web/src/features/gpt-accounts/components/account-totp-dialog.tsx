@@ -1,5 +1,5 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Loader2 } from 'lucide-react'
+import { ExternalLink, Loader2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -133,7 +133,7 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
                 disabled={operation.pending}
               >
                 {operation.pending && <Loader2 className='animate-spin' />}
-                {t('Save')}
+                {t('Save replacement secret')}
               </Button>
             )}
             {props.mode === 'reveal' && !revealed && (
@@ -162,55 +162,78 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
             </p>
           )}
           {props.mode === 'save' && (
-            <Form {...form}>
-              <form
-                id='gpt-account-totp-form'
-                onSubmit={form.handleSubmit(save)}
-                className='space-y-4'
+            <>
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'On the official website, replace the authenticator yourself. After binding the new secret, return here to save it.'
+                )}
+              </p>
+              <Button
+                nativeButton={false}
+                role='link'
+                variant='outline'
+                render={
+                  <a
+                    href='https://chatgpt.com/#settings/Security'
+                    target='_blank'
+                    rel='noopener noreferrer'
+                    referrerPolicy='no-referrer'
+                  />
+                }
               >
-                <FormField
-                  control={form.control}
-                  name='totp_secret'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Replacement TOTP secret')}</FormLabel>
-                      <FormControl>
-                        <PasswordInput
-                          {...field}
-                          disabled={operation.pending}
-                          autoComplete='new-password'
-                          spellCheck={false}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                <FormField
-                  control={form.control}
-                  name='confirmed_bound'
-                  render={({ field }) => (
-                    <FormItem>
-                      <div className='flex items-start gap-2'>
+                <ExternalLink />
+                {t('Open ChatGPT security settings')}
+              </Button>
+              <Form {...form}>
+                <form
+                  id='gpt-account-totp-form'
+                  onSubmit={form.handleSubmit(save)}
+                  className='space-y-4'
+                >
+                  <FormField
+                    control={form.control}
+                    name='totp_secret'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Replacement TOTP secret')}</FormLabel>
                         <FormControl>
-                          <Checkbox
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
+                          <PasswordInput
+                            {...field}
                             disabled={operation.pending}
+                            autoComplete='new-password'
+                            spellCheck={false}
                           />
                         </FormControl>
-                        <FormLabel>
-                          {t(
-                            'I completed binding this secret on the official OpenAI website.'
-                          )}
-                        </FormLabel>
-                      </div>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </form>
-            </Form>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='confirmed_bound'
+                    render={({ field }) => (
+                      <FormItem>
+                        <div className='flex items-start gap-2'>
+                          <FormControl>
+                            <Checkbox
+                              checked={field.value}
+                              onCheckedChange={field.onChange}
+                              disabled={operation.pending}
+                            />
+                          </FormControl>
+                          <FormLabel>
+                            {t(
+                              'I completed binding this secret on the official OpenAI website.'
+                            )}
+                          </FormLabel>
+                        </div>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </form>
+              </Form>
+            </>
           )}
           {props.mode === 'reveal' && (
             <p className='text-muted-foreground text-sm'>

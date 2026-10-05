@@ -29,6 +29,7 @@ import { translateServerText } from '@/lib/server-error-message'
 import type { UsageLog } from '../data/schema'
 import type { LogOtherData } from '../types'
 import { buildQuotaAuditOperation } from './quota-audit-operation'
+import { getResponseModelMismatchName } from './response-model'
 
 export { normalizeTierLabel }
 
@@ -248,12 +249,16 @@ export function formatModelName(log: UsageLog): {
     other?.upstream_model_name &&
     other.upstream_model_name !== ''
   )
+  const responseModel = other?.response_model
+  const showResponseModel =
+    responseModel?.degraded === true ||
+    !!getResponseModelMismatchName(responseModel)
 
   return {
     name: log.model_name,
     isMapped,
     actualModel: isMapped ? other.upstream_model_name : undefined,
-    responseModel: other?.response_model,
+    responseModel: showResponseModel ? responseModel : undefined,
   }
 }
 
