@@ -22,7 +22,16 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 		{http.MethodGet, "/:id/oauth", authz.GPTAccountManage, controller.StartGPTAccountOAuth},
 		{http.MethodPost, "/:id/callback", authz.GPTAccountManage, controller.CompleteGPTAccountOAuth},
 		{http.MethodPost, "/:id/refresh", authz.GPTAccountManage, controller.RefreshGPTAccount},
+		{http.MethodPost, "/:id/sync", authz.GPTAccountManage, controller.SyncGPTAccountGateway},
 	} {
 		handlePermissionRoute(group, route.method, route.path, route.permission, middleware.CriticalRateLimit(), route.handler)
+	}
+	gateways := api.Group("/gpt-account-gateways", middleware.AdminAuth(), middleware.DisableCache())
+	for _, route := range []permissionRoute{
+		{http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccountGateways},
+		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccountGateway},
+		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccountGateway},
+	} {
+		handlePermissionRoute(gateways, route.method, route.path, route.permission, middleware.CriticalRateLimit(), route.handler)
 	}
 }

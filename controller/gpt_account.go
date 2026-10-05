@@ -19,14 +19,16 @@ import (
 )
 
 type gptAccountInput struct {
-	Name        string `json:"name"`
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	TOTPSecret  string `json:"totp_secret"`
-	AutoRelogin *bool  `json:"auto_relogin"`
-	Group       string `json:"group"`
-	Models      string `json:"models"`
-	ChannelID   *int   `json:"channel_id"`
+	Name         string  `json:"name"`
+	Email        string  `json:"email"`
+	Password     string  `json:"password"`
+	TOTPSecret   string  `json:"totp_secret"`
+	TOTPProvider *string `json:"totp_provider"`
+	AutoRelogin  *bool   `json:"auto_relogin"`
+	Group        string  `json:"group"`
+	Models       string  `json:"models"`
+	ChannelID    *int    `json:"channel_id"`
+	GatewayID    *int    `json:"gateway_id"`
 }
 
 func gptAccountError(c *gin.Context, status int, code string) {
@@ -88,6 +90,12 @@ func gptAccountResponse(c *gin.Context, accountID int) {
 		return
 	}
 	account.CanManage = true
+	if secrets, err := service.DecryptGPTAccountSecrets(&account); err == nil {
+		account.TOTPProvider = secrets.TOTPProvider
+		if account.TOTPProvider == "" {
+			account.TOTPProvider = "local"
+		}
+	}
 	if account.HasTOTP && account.TOTPStatus == "" {
 		account.TOTPStatus = "saved"
 	}
@@ -100,7 +108,12 @@ func gptAccountResponse(c *gin.Context, accountID int) {
 			account.ChannelName = channel.Name
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": account})
+	items := []model.GPTAccount{account}
+	if service.PopulateGPTAccountGateways(items) != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": items[0]})
 }
 
 func ListGPTAccounts(c *gin.Context) {
@@ -135,6 +148,12 @@ func ListGPTAccounts(c *gin.Context) {
 	}
 	names, _ := model.GetChannelNamesByIds(ids)
 	for i := range items {
+		if secrets, err := service.DecryptGPTAccountSecrets(&items[i]); err == nil {
+			items[i].TOTPProvider = secrets.TOTPProvider
+			if items[i].TOTPProvider == "" {
+				items[i].TOTPProvider = "local"
+			}
+		}
 		if items[i].HasTOTP && items[i].TOTPStatus == "" {
 			items[i].TOTPStatus = "saved"
 		}
@@ -145,6 +164,10 @@ func ListGPTAccounts(c *gin.Context) {
 		if items[i].ChannelID != nil {
 			items[i].ChannelName = names[*items[i].ChannelID]
 		}
+	}
+	if service.PopulateGPTAccountGateways(items) != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"items": items, "total": total}})
 }
@@ -181,6 +204,10 @@ func normalizeGPTAccountInput(c *gin.Context) (*gptAccountInput, bool) {
 			gptAccountError(c, http.StatusBadRequest, "invalid_totp_secret")
 			return nil, false
 		}
+	}
+	if input.TOTPProvider != nil && *input.TOTPProvider != "local" && *input.TOTPProvider != "2fa_cn" {
+		gptAccountError(c, http.StatusBadRequest, "invalid_totp_provider")
+		return nil, false
 	}
 	return &input, true
 }
@@ -287,7 +314,7 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return false
 	}
-	if account.ChannelID != nil && input.Email != account.Email {
+	if (account.ChannelID != nil || account.AccountID != "") && input.Email != account.Email {
 		gptAccountError(c, http.StatusBadRequest, "identity_mismatch")
 		return false
 	}
@@ -308,6 +335,10 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 		}
 		account.ChannelID, account.ChannelKeyHash, account.AccountID = input.ChannelID, model.GPTChannelKeyHash(channel.Key), key.AccountID
 	}
+	if account.GatewayID != nil && account.ChannelID != nil {
+		gptAccountError(c, http.StatusBadRequest, "gateway_immutable")
+		return false
+	}
 	secrets := &service.GPTAccountSecrets{}
 	if account.SecretsCiphertext != "" {
 		var err error
@@ -320,6 +351,9 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 	if input.Password != "" {
 		secrets.Password = input.Password
 	}
+	if input.TOTPProvider != nil {
+		secrets.TOTPProvider = *input.TOTPProvider
+	}
 	if input.TOTPSecret != "" && input.TOTPSecret != secrets.TOTPSecret {
 		secrets.TOTPSecret = input.TOTPSecret
 		account.TOTPVersion++
@@ -331,6 +365,10 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 		return false
 	}
 	account.Name, account.Email, account.Group, account.Models = input.Name, input.Email, input.Group, input.Models
+	if err := service.ApplyGPTAccountGateway(account, input.GatewayID); err != nil {
+		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
+		return false
+	}
 	if input.AutoRelogin != nil {
 		account.AutoRelogin = *input.AutoRelogin
 	}

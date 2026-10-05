@@ -24,6 +24,7 @@ import { ROLE } from '@/lib/roles'
 
 import { updateUserSettings } from '../api'
 import { NotificationTab } from '../components/tabs/notification-tab'
+import { parseUserSettings } from '../lib/format'
 import type { UserProfile } from '../types'
 
 const profile: UserProfile = {
@@ -62,6 +63,14 @@ afterEach(() => vi.restoreAllMocks())
 function sentBody(put: { mock: { calls: unknown[][] } }): unknown {
   return JSON.parse(JSON.stringify(put.mock.calls[0][1]))
 }
+it.each([
+  ['', true],
+  [JSON.stringify({ language: 'zh' }), true],
+  [JSON.stringify({ record_ip_log: false }), false],
+  [JSON.stringify({ record_ip_log: true }), true],
+])('defaults IP logging when the setting is absent', (raw, expected) => {
+  expect(parseUserSettings(raw).record_ip_log).toBe(expected)
+})
 
 describe('user settings saves across profile and security', () => {
   it('disabling IP recording sends the latest complete notification settings', async () => {

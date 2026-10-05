@@ -42,14 +42,7 @@ import { ModelBadge, ResponseModelDetails } from './model-badge'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
 
-type FieldName =
-  | 'model'
-  | 'cost'
-  | 'user'
-  | 'channel'
-  | 'token'
-  | 'group'
-  | 'time'
+type FieldName = 'model' | 'cost' | 'user' | 'token' | 'group' | 'time'
 type LogField = {
   label: string
   value: string
@@ -98,12 +91,6 @@ export function CommonLogMobileCard<TData>(props: {
       visible: props.cells.has('user') && !!log.username,
       sensitive: true,
     },
-    channel: {
-      label: t('Channel'),
-      value: [log.channel_name, `#${log.channel}`].filter(Boolean).join(' '),
-      visible: displayable && props.cells.has('channel'),
-      sensitive: true,
-    },
     token: {
       label: t('Token'),
       value: logTokenName(log, t),
@@ -122,11 +109,10 @@ export function CommonLogMobileCard<TData>(props: {
     selected?.visible && (!selected.sensitive || context.sensitiveVisible)
       ? selected
       : undefined
-  const metadata: FieldName[] = ['user', 'channel', 'token', 'group']
+  const metadata: FieldName[] = ['user', 'token', 'group']
   const visibleMetadata = metadata.filter((id) => fields[id].visible)
   const costCell = props.cells.get('quota')
   const contentCell = props.cells.get('content')
-  const channelCell = props.cells.get('channel')
   const cacheRead = other?.cache_tokens || 0
   const cacheWrite =
     (other?.cache_creation_tokens_5m || 0) +
@@ -222,7 +208,16 @@ export function CommonLogMobileCard<TData>(props: {
           {visibleMetadata.map((id) => {
             const field = fields[id]
             let fieldContent = <span className='truncate'>{field.value}</span>
-            if (id === 'group') {
+            if (id === 'user' && log.ip) {
+              fieldContent = (
+                <span className='flex min-w-0 flex-col items-start gap-0.5'>
+                  <span className='truncate'>{field.value}</span>
+                  <span className='text-muted-foreground/70 max-w-full truncate font-mono text-xs'>
+                    {context.sensitiveVisible ? log.ip : '••••'}
+                  </span>
+                </span>
+              )
+            } else if (id === 'group') {
               fieldContent = (
                 <GroupBadge
                   group={field.value}
@@ -365,14 +360,6 @@ export function CommonLogMobileCard<TData>(props: {
                   <CopyButton value={model.actualModel} />
                 </div>
               )}
-            {selectedField === 'channel' && channelCell && (
-              <div>
-                {flexRender(
-                  channelCell.column.columnDef.cell,
-                  channelCell.getContext()
-                )}
-              </div>
-            )}
             {selectedField === 'user' && (
               <Button
                 variant='outline'

@@ -5,9 +5,101 @@ import net from 'node:net'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { chromium } from 'playwright'
-import { classifyLoginScreen, completeLoginPage, createIsolatedLoginContext, handleLoginRequest } from './browser.mjs'
+import { browserLogin, classifyLoginScreen, completeLoginPage, createIsolatedLoginContext, handleLoginRequest } from './browser.mjs'
 
 const state = 'browser_fixture_state_abcdefghijklmnopqrstuvwxyz'
+
+test('production browser login completes email, password and TOTP despite blocked optional resources', async t => {
+  const seed = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
+  const submissions = []
+  const server = http.createServer(async (req, res) => {
+    const path = new URL(req.url, 'http://fixture').pathname
+    if (req.method === 'POST') {
+      let body = ''
+      for await (const chunk of req) body += chunk
+      submissions.push([path, Object.fromEntries(new URLSearchParams(body))])
+      if (path === '/email') res.writeHead(303, { location: '/password', 'set-cookie': 'fixture_session=present; HttpOnly; Secure; SameSite=Lax; Path=/' }).end()
+      else if (path === '/password') res.writeHead(302, { location: '/totp' }).end()
+      else if (path === '/verify') res.writeHead(302, { location: `http://localhost:1455/auth/callback?code=fixture-authorization&state=${state}` }).end()
+      else res.writeHead(404).end()
+      return
+    }
+    res.setHeader('content-type', 'text/html')
+    if (path === '/oauth/authorize') {
+      res.end('<h1>Sign in</h1><img src="https://telemetry.example/pixel"><form method="post" action="/email"><input type="email" name="email"><button>Continue</button></form>')
+    } else if (path === '/password') {
+      assert.match(req.headers.cookie || '', /fixture_session=present/)
+      res.end('<h1>Enter your password</h1><form method="post" action="/password"><input name="password" type="password"><button>Continue</button></form>')
+    } else if (path === '/totp') {
+      assert.match(req.headers.cookie || '', /fixture_session=present/)
+      res.end('<h1>Enter your authenticator code</h1><form method="post" action="/verify"><input name="code" autocomplete="one-time-code"><button>Verify</button></form><a>Send a code to your email instead</a>')
+    } else res.writeHead(404).end()
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)) })
+  const fixtureOrigin = `http://127.0.0.1:${server.address().port}`
+  for (const provider of ['local', '2fa_cn']) {
+    let blockedAssets = 0, providerCalls = 0
+    const navigations = []
+    const result = await browserLogin({ authorization_url: `https://auth.openai.com/oauth/authorize?state=${state}`,
+      state, email: 'fixture@example.com', password: 'fixture-password', totp_secret: seed, totp_provider: provider },
+    new AbortController().signal, {
+      now: () => 59000,
+      fetch: async url => {
+        providerCalls++
+        assert.equal(url, `https://2fa.cn/codes/${seed}`)
+        assert.equal(submissions.at(-1)[0], '/password')
+        return Response.json({ code: '081804', ostring: seed })
+      },
+      launch: async options => {
+        const browser = await chromium.launch({ ...options,
+          ...(existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? { channel: 'chrome' } : {}) })
+        t.after(() => browser.close())
+        return {
+          close: () => browser.close(),
+          newContext: async options => {
+            const context = await browser.newContext(options)
+            context.on('page', page => {
+              page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations.push(frame.url()) })
+              page.on('requestfailed', request => navigations.push([request.url(), request.failure()?.errorText]))
+            })
+            const registerRoute = context.route.bind(context)
+            // Keep real browser URLs and DOM on the official origin. Translate
+            // only the HTTP transport to loopback; never contact live accounts.
+            context.route = (pattern, handler) => registerRoute(pattern, route => handler({
+              request: () => route.request(),
+              fetch: async options => {
+                const url = new URL(options.url)
+                assert.equal(url.origin, 'https://auth.openai.com')
+                const response = await route.fetch({ ...options, url: fixtureOrigin + url.pathname + url.search,
+                  headers: await route.request().allHeaders() })
+                // APIRequestContext normally stores upstream cookies on the
+                // official origin. Map that same transport side effect back.
+                const cookies = (await context.cookies()).filter(cookie => cookie.domain === '127.0.0.1')
+                if (cookies.length) await context.addCookies(cookies.map(cookie => ({ ...cookie, domain: 'auth.openai.com' })))
+                return response
+              },
+              fulfill: options => route.fulfill(options),
+              abort: () => {
+                if (route.request().url().startsWith('https://telemetry.example/')) blockedAssets++
+                return route.abort()
+              },
+            }))
+            return context
+          },
+        }
+      },
+    })
+    assert.deepEqual(result, { status: 'success', code: 'fixture-authorization', state }, JSON.stringify({ submissions, navigations }))
+    assert.equal(blockedAssets, 1)
+    assert.equal(providerCalls, provider === '2fa_cn' ? 1 : 0)
+    assert.deepEqual(submissions.splice(0), [
+      ['/email', { email: 'fixture@example.com' }], ['/password', { password: 'fixture-password' }],
+      ['/verify', { code: provider === '2fa_cn' ? '081804' : '287082' }],
+    ])
+  }
+})
 
 test('real browser keeps the login cookie across redirects and intercepts the final OAuth callback', async t => {
   let passwordSubmissions = 0, mfaSubmissions = 0
@@ -120,4 +212,15 @@ test('actual login DOM hands password reset and authenticator enrollment to a pe
   html = '<h1>Enter your authenticator code</h1><input name="code" autocomplete="one-time-code"><button>Verify</button>'
   await tab.goto('https://auth.openai.com/mfa')
   assert.deepEqual(await classifyLoginScreen(tab), { kind: 'totp' })
+  for (const [fixture, kind] of [
+    ['<h1>Enter your authenticator code</h1><input name="code"><a>Send a code to your email instead</a>', 'totp'],
+    ['<h1>Check your email</h1><input name="code"><a>Use your authenticator instead</a>', 'email_code'],
+    ['<h1>Enter your authenticator code</h1><input name="code"><div role="alert">Incorrect code</div>', 'invalid_totp'],
+    ['<h1>Enter your authenticator code</h1><input name="code"><div role="alert">Invalid authentication code</div>', 'invalid_totp'],
+    ['<h1>Check your email</h1><input name="code"><div role="alert">Incorrect code</div><a>Use your authenticator instead</a>', 'email_code'],
+  ]) {
+    html = fixture
+    await tab.goto('https://auth.openai.com/mfa')
+    assert.deepEqual(await classifyLoginScreen(tab), { kind })
+  }
 })

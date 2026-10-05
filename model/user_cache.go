@@ -13,6 +13,30 @@ import (
 
 const userCacheSchemaVersion = 2
 
+func parseUserSetting(setting string) dto.UserSetting {
+	parsed := dto.UserSetting{}
+	if setting != "" {
+		if err := common.Unmarshal([]byte(setting), &parsed); err != nil {
+			common.SysLog("failed to unmarshal setting: " + err.Error())
+			parsed.RecordIpLog = true
+			return parsed
+		}
+
+		var raw map[string]any
+		if err := common.Unmarshal([]byte(setting), &raw); err == nil {
+			if _, exists := raw["record_ip_log"]; !exists {
+				parsed.RecordIpLog = true
+			}
+		} else {
+			parsed.RecordIpLog = true
+		}
+		return parsed
+	}
+
+	parsed.RecordIpLog = true
+	return parsed
+}
+
 type UserBase struct {
 	Id          int    `json:"id"`
 	Group       string `json:"group"`
@@ -36,14 +60,7 @@ func (user *UserBase) WriteContext(c *gin.Context) {
 }
 
 func (user *UserBase) GetSetting() dto.UserSetting {
-	setting := dto.UserSetting{}
-	if user.Setting != "" {
-		err := common.Unmarshal([]byte(user.Setting), &setting)
-		if err != nil {
-			common.SysLog(common.LogText("failed to unmarshal setting: %s", err.Error()))
-		}
-	}
-	return setting
+	return parseUserSetting(user.Setting)
 }
 
 // getUserCacheKey returns the key for user cache

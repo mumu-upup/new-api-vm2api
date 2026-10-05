@@ -7,6 +7,8 @@ import type {
   GptAccountConfig,
   GptAccountInput,
   GptAccountTotpReveal,
+  GptAccountGateway,
+  GptAccountGatewayInput,
 } from './types'
 
 export function listGptAccounts(
@@ -51,7 +53,7 @@ export function saveGptAccount(
 
 export function runGptAccountAction(
   id: number,
-  action: 'login' | 'refresh',
+  action: 'login' | 'refresh' | 'sync',
   proof: string,
   signal: AbortSignal
 ) {
@@ -66,6 +68,31 @@ export function runGptAccountAction(
         signal,
       }
     )
+  )
+}
+
+export function listGptAccountGateways(signal?: AbortSignal) {
+  return authResult<{ items: GptAccountGateway[] }>(
+    api.get('/api/gpt-account-gateways', { ...authRequestOptions, signal })
+  )
+}
+
+export function saveGptAccountGateway(
+  id: number | undefined,
+  input: GptAccountGatewayInput,
+  proof: string,
+  signal: AbortSignal
+) {
+  const options = {
+    ...authRequestOptions,
+    headers: { 'X-Security-Proof': proof },
+    singleUseAuthorization: true,
+    signal,
+  }
+  return authResult<GptAccountGateway>(
+    id
+      ? api.put(`/api/gpt-account-gateways/${id}`, input, options)
+      : api.post('/api/gpt-account-gateways', input, options)
   )
 }
 

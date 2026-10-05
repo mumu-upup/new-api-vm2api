@@ -26,12 +26,16 @@ import type { UserProfile, UserSettings } from '../types'
  * Parse user settings from JSON string
  */
 export function parseUserSettings(settingsJson?: string): UserSettings {
-  if (!settingsJson) return {}
+  if (!settingsJson) return { record_ip_log: true }
 
   try {
-    return JSON.parse(settingsJson) as UserSettings
+    const parsed = JSON.parse(settingsJson) as UserSettings
+    if (typeof parsed.record_ip_log !== 'boolean') {
+      parsed.record_ip_log = true
+    }
+    return parsed
   } catch {
-    return {}
+    return { record_ip_log: true }
   }
 }
 

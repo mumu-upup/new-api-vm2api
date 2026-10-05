@@ -235,6 +235,28 @@ func TestUpdateUserSettingOnlyUpdatesSetting(t *testing.T) {
 	assert.Equal(t, "zh", got.GetSetting().Language)
 }
 
+func TestUserSettingsDefaultToRecordingRequestIPs(t *testing.T) {
+	tests := []struct {
+		name    string
+		setting string
+		want    bool
+	}{
+		{name: "empty", setting: "", want: true},
+		{name: "missing field", setting: `{"language":"zh"}`, want: true},
+		{name: "explicitly disabled", setting: `{"record_ip_log":false}`, want: false},
+		{name: "explicitly enabled", setting: `{"record_ip_log":true}`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := (&UserBase{Setting: tt.setting}).GetSetting()
+			assert.Equal(t, tt.want, got.RecordIpLog)
+		})
+	}
+	serialized, err := common.Marshal(dto.UserSetting{RecordIpLog: false})
+	require.NoError(t, err)
+	assert.Contains(t, string(serialized), `"record_ip_log":false`)
+}
+
 func TestEnsureEmailAvailableRejectsExistingEmailCaseInsensitive(t *testing.T) {
 	setupUserUpdateTestState(t)
 

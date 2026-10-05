@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { KeyRound, Loader2, ShieldCheck } from 'lucide-react'
-import { useId } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -54,11 +54,18 @@ const methodLabels: Record<VerificationMethod, string> = {
 export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
   const { t } = useTranslation()
   const inputId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
   const state = props.state
-  if (state.phase === 'idle') return null
   const ready =
     state.phase === 'ready' || state.phase === 'verifying' ? state : null
   const input = ready?.input
+  useEffect(() => {
+    if (state.phase !== 'ready' || input?.method === 'oauth') return
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0)
+    return () => window.clearTimeout(focusTimer)
+  }, [input?.method, state.phase])
+
+  if (state.phase === 'idle') return null
   const verifying = state.phase === 'verifying'
   const login = state.request.scope === 'auth.login'
   const acceptsBackupCode =
@@ -116,6 +123,7 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
       }
       contentClassName='sm:max-w-md'
       contentHeight='auto'
+      initialFocus
       titleClassName='flex items-center gap-2'
       footer={
         <>
@@ -185,6 +193,7 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
                 <Label htmlFor={inputId}>{t('Password')}</Label>
                 <Input
                   id={inputId}
+                  ref={inputRef}
                   type='password'
                   autoComplete='current-password'
                   autoFocus
@@ -206,6 +215,7 @@ export function SecureVerificationDialog(props: SecureVerificationDialogProps) {
                 </Label>
                 <Input
                   id={inputId}
+                  ref={inputRef}
                   autoComplete='one-time-code'
                   maxLength={acceptsBackupCode ? 9 : 6}
                   autoFocus
