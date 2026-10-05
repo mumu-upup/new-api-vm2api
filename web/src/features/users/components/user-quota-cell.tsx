@@ -68,7 +68,7 @@ export function UserQuotaCell(props: UserQuotaCellProps) {
             type='badge'
             copyable={false}
             className={cn(
-              '-ml-1.5 font-semibold',
+              'font-semibold',
               props.remaining > 0 && 'bg-success/10',
               props.remaining < 0 && 'bg-destructive/10',
               props.remaining === 0 && 'bg-muted'
