@@ -17,14 +17,24 @@ export function useAccountOperation() {
   const verification = useSecureVerification()
   const cancelVerification = verification.cancel
   const userId = useAuthStore((state) => state.auth.user?.id)
+  const role = useAuthStore((state) => state.auth.user?.role)
   const sessionId = useAuthStore((state) => state.auth.session?.sid)
   const controller = useRef<AbortController | null>(null)
+  const activeAction = useRef<(() => Promise<void>) | null>(null)
   const [error, setError] = useState<Pick<
     AuthOperationError,
     'code' | 'message'
   > | null>(null)
   const mutation = useMutation({
-    mutationFn: (action: () => Promise<unknown>) => action(),
+    // Do not retain credential closures, proof tokens, or results in the cache.
+    mutationFn: async () => {
+      try {
+        await activeAction.current?.()
+      } catch (error) {
+        const failure = AuthOperationError.from(error)
+        throw new AuthOperationError(failure.message, failure.code)
+      }
+    },
     retry: false,
     gcTime: 0,
     onError: () => undefined,
@@ -34,9 +44,10 @@ export function useAccountOperation() {
     () => () => {
       controller.current?.abort()
       controller.current = null
+      activeAction.current = null
       cancelVerification()
     },
-    [cancelVerification, userId, sessionId]
+    [cancelVerification, userId, role, sessionId]
   )
 
   const execute = async <T>(
@@ -48,16 +59,18 @@ export function useAccountOperation() {
     controller.current = current
     setError(null)
     try {
-      return (await mutation.mutateAsync(async () => {
+      let result: T | undefined
+      activeAction.current = async () => {
         const proof = request
           ? await verification.requestVerification(request)
           : null
         current.signal.throwIfAborted()
         if (request && !proof) return undefined
-        const result = await action(proof?.proof_token ?? '', current.signal)
+        result = await action(proof?.proof_token ?? '', current.signal)
         current.signal.throwIfAborted()
-        return result
-      })) as T | undefined
+      }
+      await mutation.mutateAsync()
+      return result
     } catch (error) {
       if (!current.signal.aborted) {
         const failure = AuthOperationError.from(error)
@@ -67,6 +80,7 @@ export function useAccountOperation() {
     } finally {
       if (controller.current === current) {
         controller.current = null
+        activeAction.current = null
         mutation.reset()
       }
     }

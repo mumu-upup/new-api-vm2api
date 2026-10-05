@@ -7,6 +7,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -19,6 +20,8 @@ import {
 } from './api'
 import { AccountFormDialog } from './components/account-form-dialog'
 import { AccountLoginDialog } from './components/account-login-dialog'
+import { AccountTotpDialog } from './components/account-totp-dialog'
+import { AccountTotpTable } from './components/account-totp-table'
 import { AccountsTable, type AccountAction } from './components/accounts-table'
 import { useAccountOperation } from './hooks/use-account-operation'
 import type { GptAccount } from './types'
@@ -48,6 +51,10 @@ function GptAccountsPage(props: {
   const { t } = useTranslation()
   const client = useQueryClient()
   const operation = useAccountOperation()
+  const [totp, setTotp] = useState<{
+    account: GptAccount
+    mode: 'save' | 'reveal'
+  } | null>(null)
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [editor, setEditor] = useState<GptAccount | 'create' | null>(null)
   const [login, setLogin] = useState<GptAccount | null>(null)
@@ -172,22 +179,66 @@ function GptAccountsPage(props: {
             {query.isError ? (
               <ErrorState onRetry={refresh} />
             ) : (
-              <AccountsTable
-                items={query.data?.items ?? []}
-                total={query.data?.total ?? 0}
-                pagination={pagination}
-                onPaginationChange={setPagination}
-                isLoading={query.isLoading}
-                isFetching={query.isFetching}
-                pending={operation.pending}
-                onAction={(account, kind) => {
-                  void action(account, kind)
-                }}
-              />
+              <Tabs
+                defaultValue='accounts'
+                className='min-h-0 flex-1'
+                onValueChange={() => setTotp(null)}
+              >
+                <TabsList aria-label={t('GPT Accounts')}>
+                  <TabsTrigger value='accounts'>{t('Accounts')}</TabsTrigger>
+                  <TabsTrigger value='totp'>{t('2FA management')}</TabsTrigger>
+                </TabsList>
+                <TabsContent value='accounts' className='min-h-0'>
+                  <AccountsTable
+                    items={query.data?.items ?? []}
+                    total={query.data?.total ?? 0}
+                    pagination={pagination}
+                    onPaginationChange={setPagination}
+                    isLoading={query.isLoading}
+                    isFetching={query.isFetching}
+                    pending={operation.pending}
+                    onAction={(account, kind) => {
+                      void action(account, kind)
+                    }}
+                  />
+                </TabsContent>
+                <TabsContent
+                  value='totp'
+                  className='flex min-h-0 flex-col gap-3'
+                >
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Complete authenticator binding on the official OpenAI website before saving. This gateway does not verify upstream binding.'
+                    )}
+                  </p>
+                  <AccountTotpTable
+                    items={query.data?.items ?? []}
+                    total={query.data?.total ?? 0}
+                    pagination={pagination}
+                    onPaginationChange={setPagination}
+                    isLoading={query.isLoading}
+                    isFetching={query.isFetching}
+                    encryptionAvailable={Boolean(
+                      config.data?.encryption_available
+                    )}
+                    onAction={(account, mode) => {
+                      if (account.can_manage) setTotp({ account, mode })
+                    }}
+                  />
+                </TabsContent>
+              </Tabs>
             )}
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>
+      {totp && (
+        <AccountTotpDialog
+          account={totp.account}
+          mode={totp.mode}
+          onClose={() => setTotp(null)}
+          onSaved={refresh}
+        />
+      )}
       {editor && (
         <AccountFormDialog
           account={editor === 'create' ? undefined : editor}

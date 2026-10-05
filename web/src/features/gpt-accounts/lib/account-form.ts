@@ -30,3 +30,18 @@ export const accountFormSchema = z.object({
 })
 
 export type AccountFormValues = z.infer<typeof accountFormSchema>
+
+export const accountTotpSchema = z.object({
+  totp_secret: accountFormSchema.shape.totp_secret.refine(
+    (value) => value.length > 0,
+    'Enter a Base32 TOTP secret'
+  ),
+  confirmed_bound: z
+    .boolean()
+    .refine(
+      (value) => value,
+      'Confirm that official authenticator binding is complete.'
+    ),
+})
+
+export type AccountTotpValues = z.infer<typeof accountTotpSchema>

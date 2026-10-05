@@ -6,6 +6,7 @@ import type {
   GptAccountAuthorization,
   GptAccountConfig,
   GptAccountInput,
+  GptAccountTotpReveal,
 } from './types'
 
 export function listGptAccounts(
@@ -114,6 +115,41 @@ export function finishGptAccountAuthorization(
       { redirect_url: redirectUrl },
       {
         ...authRequestOptions,
+        singleUseAuthorization: true,
+        signal,
+      }
+    )
+  )
+}
+
+export function saveGptAccountTotp(
+  id: number,
+  input: { totp_secret: string; confirmed_bound: boolean },
+  proof: string,
+  signal: AbortSignal
+) {
+  return authResult<GptAccount>(
+    api.post(`/api/gpt-accounts/${id}/totp`, input, {
+      ...authRequestOptions,
+      headers: { 'X-Security-Proof': proof },
+      singleUseAuthorization: true,
+      signal,
+    })
+  )
+}
+
+export function revealGptAccountTotp(
+  id: number,
+  proof: string,
+  signal: AbortSignal
+) {
+  return authResult<GptAccountTotpReveal>(
+    api.post(
+      `/api/gpt-accounts/${id}/totp/reveal`,
+      {},
+      {
+        ...authRequestOptions,
+        headers: { 'X-Security-Proof': proof },
         singleUseAuthorization: true,
         signal,
       }

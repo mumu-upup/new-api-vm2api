@@ -88,6 +88,9 @@ func gptAccountResponse(c *gin.Context, accountID int) {
 		return
 	}
 	account.CanManage = true
+	if account.HasTOTP && account.TOTPStatus == "" {
+		account.TOTPStatus = "saved"
+	}
 	if account.Status == "logging_in" && account.LeaseUntil <= time.Now().Unix() {
 		account.Status, account.LastErrorCode = "needs_attention", "login_timeout"
 	}
@@ -132,6 +135,9 @@ func ListGPTAccounts(c *gin.Context) {
 	}
 	names, _ := model.GetChannelNamesByIds(ids)
 	for i := range items {
+		if items[i].HasTOTP && items[i].TOTPStatus == "" {
+			items[i].TOTPStatus = "saved"
+		}
 		if items[i].Status == "logging_in" && items[i].LeaseUntil <= time.Now().Unix() {
 			items[i].Status, items[i].LastErrorCode = "needs_attention", "login_timeout"
 		}
@@ -169,14 +175,111 @@ func normalizeGPTAccountInput(c *gin.Context) (*gptAccountInput, bool) {
 		return nil, false
 	}
 	if input.TOTPSecret != "" {
-		input.TOTPSecret = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(input.TOTPSecret), " ", ""))
-		seed, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(input.TOTPSecret)
-		if err != nil || len(seed) < 10 || len(input.TOTPSecret) > 128 || base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(seed) != input.TOTPSecret {
+		var valid bool
+		input.TOTPSecret, valid = normalizeGPTAccountTOTPSecret(input.TOTPSecret)
+		if !valid {
 			gptAccountError(c, http.StatusBadRequest, "invalid_totp_secret")
 			return nil, false
 		}
 	}
 	return &input, true
+}
+
+func normalizeGPTAccountTOTPSecret(value string) (string, bool) {
+	value = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(value), " ", ""))
+	seed, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(value)
+	return value, err == nil && len(seed) >= 10 && len(value) <= 128 && base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(seed) == value
+}
+
+// UpdateGPTAccountTOTP records the operator's confirmation of an upstream binding.
+// It does not enroll, change, or verify an authentication factor at the provider.
+func UpdateGPTAccountTOTP(c *gin.Context) {
+	if _, ok := gptAccountIdentity(c, true); !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+	var input struct {
+		TOTPSecret     string `json:"totp_secret"`
+		ConfirmedBound bool   `json:"confirmed_bound"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		gptAccountError(c, http.StatusBadRequest, "invalid_totp_secret")
+		return
+	}
+	if !input.ConfirmedBound {
+		gptAccountError(c, http.StatusBadRequest, "totp_confirmation_required")
+		return
+	}
+	secret, valid := normalizeGPTAccountTOTPSecret(input.TOTPSecret)
+	if !valid {
+		gptAccountError(c, http.StatusBadRequest, "invalid_totp_secret")
+		return
+	}
+	if !gptAccountProof(c, "gpt_account.totp.update", account.ID, "") {
+		return
+	}
+	secrets, err := service.DecryptGPTAccountSecrets(account)
+	if err != nil {
+		gptAccountError(c, http.StatusServiceUnavailable, "encryption_unavailable")
+		return
+	}
+	secrets.TOTPSecret = secret
+	if service.EncryptGPTAccountSecrets(account, *secrets) != nil {
+		gptAccountError(c, http.StatusServiceUnavailable, "encryption_unavailable")
+		return
+	}
+	now := time.Now().Unix()
+	// One conditional write preserves concurrent password edits and fences any
+	// browser or OAuth result obtained before this secret was saved.
+	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND owner_id = ? AND generation = ?", account.ID, account.OwnerID, account.Generation).Updates(map[string]any{
+		"secrets_ciphertext": account.SecretsCiphertext, "has_totp": true,
+		"totp_version": account.TOTPVersion + 1, "totp_updated_at": now, "totp_status": "operator_confirmed",
+		"generation": account.Generation + 1, "lease_id": "", "lease_until": 0,
+		"failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": now,
+	})
+	if result.Error != nil || result.RowsAffected != 1 {
+		gptAccountError(c, http.StatusConflict, "account_changed")
+		return
+	}
+	recordManageAudit(c, "gpt_account.totp.update", map[string]any{"account_id": account.ID, "totp_version": account.TOTPVersion + 1})
+	gptAccountResponse(c, account.ID)
+}
+
+func RevealGPTAccountTOTP(c *gin.Context) {
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+	if _, ok := gptAccountIdentity(c, true); !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	if !gptAccountProof(c, "gpt_account.totp.read", account.ID, "") {
+		return
+	}
+	// Proof verification can overlap a replacement; disclose the current stored
+	// secret and recheck ownership after verification completes.
+	account, ok = getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	secrets, err := service.DecryptGPTAccountSecrets(account)
+	if err != nil {
+		gptAccountError(c, http.StatusServiceUnavailable, "encryption_unavailable")
+		return
+	}
+	if secrets.TOTPSecret == "" {
+		gptAccountError(c, http.StatusNotFound, "totp_secret_not_found")
+		return
+	}
+	recordManageAudit(c, "gpt_account.totp.read", map[string]any{"account_id": account.ID, "totp_version": account.TOTPVersion})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"totp_secret": secrets.TOTPSecret, "expires_at": time.Now().Add(30 * time.Second).Unix()}})
 }
 
 func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptAccountInput) bool {
@@ -217,8 +320,11 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 	if input.Password != "" {
 		secrets.Password = input.Password
 	}
-	if input.TOTPSecret != "" {
+	if input.TOTPSecret != "" && input.TOTPSecret != secrets.TOTPSecret {
 		secrets.TOTPSecret = input.TOTPSecret
+		account.TOTPVersion++
+		account.TOTPUpdatedAt = time.Now().Unix()
+		account.TOTPStatus = "saved"
 	}
 	if err := service.EncryptGPTAccountSecrets(account, *secrets); err != nil {
 		gptAccountError(c, http.StatusServiceUnavailable, "encryption_unavailable")
@@ -274,7 +380,7 @@ func UpdateGPTAccount(c *gin.Context) {
 	if !applyGPTAccountInput(c, account, input) {
 		return
 	}
-	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ?", account.ID, account.Generation).Updates(map[string]any{"name": account.Name, "email": account.Email, "account_group": account.Group, "models": account.Models, "auto_relogin": account.AutoRelogin, "channel_id": account.ChannelID, "channel_key_hash": account.ChannelKeyHash, "account_id": account.AccountID, "secrets_ciphertext": account.SecretsCiphertext, "has_password": account.HasPassword, "has_totp": account.HasTOTP, "generation": account.Generation + 1, "lease_id": "", "lease_until": 0, "failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": time.Now().Unix()})
+	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ?", account.ID, account.Generation).Updates(map[string]any{"name": account.Name, "email": account.Email, "account_group": account.Group, "models": account.Models, "auto_relogin": account.AutoRelogin, "channel_id": account.ChannelID, "channel_key_hash": account.ChannelKeyHash, "account_id": account.AccountID, "secrets_ciphertext": account.SecretsCiphertext, "has_password": account.HasPassword, "has_totp": account.HasTOTP, "totp_version": account.TOTPVersion, "totp_updated_at": account.TOTPUpdatedAt, "totp_status": account.TOTPStatus, "generation": account.Generation + 1, "lease_id": "", "lease_until": 0, "failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": time.Now().Unix()})
 	if result.Error != nil || result.RowsAffected != 1 {
 		gptAccountError(c, http.StatusConflict, "account_changed")
 		return

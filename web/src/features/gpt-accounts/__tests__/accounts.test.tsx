@@ -1,5 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -26,6 +33,9 @@ const account: GptAccount = {
   auto_relogin: true,
   has_password: true,
   has_totp: true,
+  totp_version: 0,
+  totp_updated_at: 0,
+  totp_status: 'saved',
   can_manage: true,
   group: 'default',
   models: 'gpt-5.4',
@@ -745,3 +755,463 @@ it.each([
     else expect(retryTime).not.toBeInTheDocument()
   }
 )
+
+async function openTotpTab() {
+  await userEvent.click(
+    await screen.findByRole('tab', { name: '2FA management' })
+  )
+  return screen.findByRole('tabpanel', { name: '2FA management' })
+}
+
+async function openTotpSave() {
+  renderPage()
+  const panel = await openTotpTab()
+  await userEvent.click(
+    within(panel).getByRole('button', {
+      name: 'Save replacement for Work account',
+    })
+  )
+  return screen.findByRole('dialog', { name: 'Save replacement secret' })
+}
+
+async function revealTotp() {
+  const originalPost = vi.mocked(api.post).getMockImplementation()
+  if (!originalPost) throw new Error('POST fixture is unavailable')
+  vi.mocked(api.post).mockImplementation(async (url, body, config) => {
+    if (url === '/api/gpt-accounts/1/totp/reveal') {
+      return {
+        data: {
+          success: true,
+          data: {
+            totp_secret: 'JBSWY3DPEHPK3PXP',
+            expires_at: Date.now() / 1000 + 30,
+          },
+        },
+      }
+    }
+    return originalPost(url, body, config)
+  })
+  renderPage()
+  const panel = await openTotpTab()
+  await userEvent.click(
+    within(panel).getByRole('button', {
+      name: 'Reveal secret for Work account',
+    })
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
+  await verify()
+  return screen.findByText('JBSWY3DPEHPK3PXP')
+}
+
+it('2FA tab shows masked stored-secret metadata without claiming upstream verification', async () => {
+  items = [
+    {
+      ...account,
+      totp_version: 2,
+      totp_updated_at: 1_700_000_000,
+      totp_status: 'operator_confirmed',
+    },
+  ]
+  renderPage()
+  const panel = await openTotpTab()
+  expect(screen.getByRole('tab', { name: '2FA management' })).toHaveAttribute(
+    'aria-selected',
+    'true'
+  )
+  expect(within(panel).getByText('owner@example.com')).toBeVisible()
+  expect(within(panel).getByText('Codex')).toBeVisible()
+  expect(within(panel).getByText('••••••••')).toBeVisible()
+  expect(within(panel).getByText('Operator confirmed')).toBeVisible()
+  expect(within(panel).getByText('2')).toBeVisible()
+  expect(within(panel).getByText(formatTimestamp(1_700_000_000))).toBeVisible()
+  expect(
+    within(panel).getByText(
+      'Complete authenticator binding on the official OpenAI website before saving. This gateway does not verify upstream binding.'
+    )
+  ).toBeVisible()
+  expect(api.post).not.toHaveBeenCalled()
+})
+
+it('2FA actions honor server management permission and disable reveal for absent secrets', async () => {
+  items = [
+    { ...account, can_manage: false },
+    { ...account, id: 2, name: 'Empty account', has_totp: false },
+  ]
+  renderPage()
+  const panel = await openTotpTab()
+  expect(
+    within(panel).getByRole('button', {
+      name: 'Save replacement for Work account',
+    })
+  ).toBeDisabled()
+  expect(
+    within(panel).getByRole('button', {
+      name: 'Reveal secret for Work account',
+    })
+  ).toBeDisabled()
+  expect(
+    within(panel).getByRole('button', {
+      name: 'Reveal secret for Empty account',
+    })
+  ).toBeDisabled()
+  expect(
+    within(panel).getByRole('button', {
+      name: 'Save replacement for Empty account',
+    })
+  ).toBeEnabled()
+  expect(within(panel).getByText('Saved')).toBeVisible()
+})
+
+it('requires a canonical seed and explicit completed-binding confirmation before verification', async () => {
+  const dialog = await openTotpSave()
+  const input = within(dialog).getByLabelText('Replacement TOTP secret')
+  expect(input).toHaveValue('')
+  expect(input).toHaveAttribute('type', 'password')
+  await userEvent.type(input, 'JBSWY3DPEHPK3PXP')
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  expect(
+    await screen.findByText(
+      'Confirm that official authenticator binding is complete.'
+    )
+  ).toBeVisible()
+  await userEvent.click(
+    screen.getByRole('checkbox', {
+      name: 'I completed binding this secret on the official OpenAI website.',
+    })
+  )
+  await userEvent.clear(input)
+  await userEvent.type(input, 'AAAAAAAAAAAAAAAAAB')
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  expect(await screen.findByText('Enter a Base32 TOTP secret')).toBeVisible()
+  expect(api.get).not.toHaveBeenCalledWith(
+    '/api/verify/methods',
+    expect.anything()
+  )
+})
+
+it('saves a normalized replacement only with account-scoped proof and refreshes safe metadata', async () => {
+  const originalPost = vi.mocked(api.post).getMockImplementation()
+  if (!originalPost) throw new Error('POST fixture is unavailable')
+  vi.mocked(api.post).mockImplementation(async (url, body, config) => {
+    if (url === '/api/gpt-accounts/1/totp') {
+      items = [
+        {
+          ...account,
+          totp_status: 'operator_confirmed',
+          totp_version: 1,
+          totp_updated_at: 1_700_000_000,
+        },
+      ]
+      return { data: { success: true, data: items[0] } }
+    }
+    return originalPost(url, body, config)
+  })
+  const dialog = await openTotpSave()
+  await userEvent.type(
+    within(dialog).getByLabelText('Replacement TOTP secret'),
+    ' jbsw y3dp ehpk 3pxp '
+  )
+  await userEvent.click(
+    screen.getByRole('checkbox', {
+      name: 'I completed binding this secret on the official OpenAI website.',
+    })
+  )
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/totp',
+      { totp_secret: 'JBSWY3DPEHPK3PXP', confirmed_bound: true },
+      expect.objectContaining({
+        singleUseAuthorization: true,
+        headers: { 'X-Security-Proof': 'proof' },
+      })
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account.totp.update',
+      context: { account_id: 1 },
+    }),
+    expect.anything()
+  )
+  expect(await screen.findByText('Operator confirmed')).toBeVisible()
+  expect(
+    screen.queryByRole('dialog', { name: 'Save replacement secret' })
+  ).not.toBeInTheDocument()
+  expect(
+    JSON.stringify(
+      client
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.state)
+    )
+  ).not.toContain('JBSWY3DPEHPK3PXP')
+})
+
+it('cancelling replacement verification clears the seed and confirmation without saving', async () => {
+  const dialog = await openTotpSave()
+  await userEvent.type(
+    within(dialog).getByLabelText('Replacement TOTP secret'),
+    'JBSWY3DPEHPK3PXP'
+  )
+  await userEvent.click(
+    screen.getByRole('checkbox', {
+      name: 'I completed binding this secret on the official OpenAI website.',
+    })
+  )
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+  await screen.findByLabelText('Password', { selector: 'input' })
+  await userEvent.keyboard('{Escape}')
+  expect(await screen.findByLabelText('Replacement TOTP secret')).toHaveValue(
+    ''
+  )
+  expect(
+    screen.getByRole('checkbox', {
+      name: 'I completed binding this secret on the official OpenAI website.',
+    })
+  ).not.toBeChecked()
+  expect(api.post).not.toHaveBeenCalledWith(
+    '/api/gpt-accounts/1/totp',
+    expect.anything(),
+    expect.anything()
+  )
+})
+
+it('reveals only after scoped proof and never puts the secret in query or mutation cache', async () => {
+  const mutationStates: unknown[] = []
+  const unsubscribe = client
+    .getMutationCache()
+    .subscribe((event) => mutationStates.push(event.mutation?.state))
+  await revealTotp()
+  unsubscribe()
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account.totp.read',
+      context: { account_id: 1 },
+    }),
+    expect.anything()
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/gpt-accounts/1/totp/reveal',
+    {},
+    expect.objectContaining({
+      singleUseAuthorization: true,
+      headers: { 'X-Security-Proof': 'proof' },
+    })
+  )
+  const dialog = screen.getByRole('dialog', { name: 'Current TOTP secret' })
+  expect(within(dialog).getByText('JBSWY3DPEHPK3PXP')).toBeVisible()
+  expect(
+    within(dialog).getByRole('button', { name: 'Copy to clipboard' })
+  ).toBeVisible()
+  expect(JSON.stringify(mutationStates)).not.toContain('JBSWY3DPEHPK3PXP')
+  expect(
+    mutationStates.every(
+      (state) =>
+        typeof (state as { variables?: unknown } | undefined)?.variables !==
+        'function'
+    )
+  ).toBe(true)
+  expect(
+    JSON.stringify(
+      client
+        .getQueryCache()
+        .getAll()
+        .map((query) => query.state)
+    )
+  ).not.toContain('JBSWY3DPEHPK3PXP')
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Done' }))
+  expect(screen.queryByText('JBSWY3DPEHPK3PXP')).not.toBeInTheDocument()
+})
+
+it('removes a revealed secret at its 30-second deadline', async () => {
+  const originalPost = vi.mocked(api.post).getMockImplementation()
+  if (!originalPost) throw new Error('POST fixture is unavailable')
+  vi.mocked(api.post).mockImplementation(async (url, body, config) => {
+    if (url === '/api/gpt-accounts/1/totp/reveal') {
+      return {
+        data: {
+          success: true,
+          data: {
+            totp_secret: 'JBSWY3DPEHPK3PXP',
+            expires_at: Date.now() / 1000 + 30,
+          },
+        },
+      }
+    }
+    return originalPost(url, body, config)
+  })
+  renderPage()
+  await openTotpTab()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Reveal secret for Work account' })
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
+  await userEvent.type(
+    await screen.findByLabelText('Password', { selector: 'input' }),
+    'admin-password'
+  )
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+  await act(async () =>
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
+  )
+  expect(screen.getByText('JBSWY3DPEHPK3PXP')).toBeVisible()
+  await act(async () => vi.advanceTimersByTimeAsync(30_001))
+  expect(screen.queryByText('JBSWY3DPEHPK3PXP')).not.toBeInTheDocument()
+})
+
+it.each(['hidden', 'role', 'session'] as const)(
+  'clears a revealed secret when %s changes',
+  async (kind) => {
+    await revealTotp()
+    act(() => {
+      if (kind === 'hidden') {
+        vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+        document.dispatchEvent(new Event('visibilitychange'))
+      } else if (kind === 'role') {
+        useAuthStore
+          .getState()
+          .auth.setUser({ id: 1, username: 'admin', role: 10 })
+      } else {
+        useAuthStore.setState((state) => ({
+          auth: {
+            ...state.auth,
+            session: {
+              sid: 'replacement',
+              current: true,
+              login_method: 'password',
+              ip: '',
+              user_agent: '',
+              created_at: 0,
+              last_active_at: 0,
+              expires_at: 0,
+            },
+          },
+        }))
+      }
+    })
+    expect(screen.queryByText('JBSWY3DPEHPK3PXP')).not.toBeInTheDocument()
+  }
+)
+
+it('hiding a pending reveal aborts the request and discards a late response', async () => {
+  let resolveReveal: (value: unknown) => void = () => undefined
+  const originalPost = vi.mocked(api.post).getMockImplementation()
+  if (!originalPost) throw new Error('POST fixture is unavailable')
+  vi.mocked(api.post).mockImplementation(async (url, body, config) => {
+    if (url === '/api/gpt-accounts/1/totp/reveal') {
+      return new Promise((resolve) => {
+        resolveReveal = resolve
+      })
+    }
+    return originalPost(url, body, config)
+  })
+  renderPage()
+  await openTotpTab()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Reveal secret for Work account' })
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/totp/reveal',
+      {},
+      expect.anything()
+    )
+  )
+  const signal = vi
+    .mocked(api.post)
+    .mock.calls.find(
+      ([url]) => url === '/api/gpt-accounts/1/totp/reveal'
+    )?.[2]?.signal
+  act(() => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  expect(signal?.aborted).toBe(true)
+  await act(async () =>
+    resolveReveal({
+      data: {
+        success: true,
+        data: {
+          totp_secret: 'JBSWY3DPEHPK3PXP',
+          expires_at: Date.now() / 1000 + 30,
+        },
+      },
+    })
+  )
+  expect(screen.queryByText('JBSWY3DPEHPK3PXP')).not.toBeInTheDocument()
+})
+
+it.each([
+  {
+    code: 'totp_confirmation_required',
+    message: 'Confirm that official authenticator binding is complete.',
+  },
+  {
+    code: 'totp_secret_not_found',
+    message: 'No TOTP secret is stored for this account.',
+  },
+])(
+  'shows a safe TOTP error for $code without retaining submitted secrets in cache',
+  async ({ code, message }) => {
+    const originalPost = vi.mocked(api.post).getMockImplementation()
+    if (!originalPost) throw new Error('POST fixture is unavailable')
+    vi.mocked(api.post).mockImplementation(async (url, body, config) => {
+      if (url === '/api/gpt-accounts/1/totp') {
+        return { data: { success: false, code } }
+      }
+      return originalPost(url, body, config)
+    })
+    const mutationStates: unknown[] = []
+    const unsubscribe = client
+      .getMutationCache()
+      .subscribe((event) => mutationStates.push(event.mutation?.state))
+    const dialog = await openTotpSave()
+    await userEvent.type(
+      within(dialog).getByLabelText('Replacement TOTP secret'),
+      'JBSWY3DPEHPK3PXP'
+    )
+    await userEvent.click(
+      screen.getByRole('checkbox', {
+        name: 'I completed binding this secret on the official OpenAI website.',
+      })
+    )
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await verify()
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(screen.getByLabelText('Replacement TOTP secret')).toHaveValue('')
+    unsubscribe()
+    expect(JSON.stringify(mutationStates)).not.toContain('JBSWY3DPEHPK3PXP')
+    expect(
+      mutationStates.every(
+        (state) =>
+          typeof (state as { variables?: unknown } | undefined)?.variables !==
+          'function'
+      )
+    ).toBe(true)
+  }
+)
+
+it('cancelling reveal verification never fetches a secret', async () => {
+  renderPage()
+  await openTotpTab()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Reveal secret for Work account' })
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
+  await screen.findByLabelText('Password', { selector: 'input' })
+  await userEvent.keyboard('{Escape}')
+  expect(
+    await screen.findByRole('dialog', { name: 'Current TOTP secret' })
+  ).toBeVisible()
+  expect(api.post).not.toHaveBeenCalledWith(
+    '/api/gpt-accounts/1/totp/reveal',
+    expect.anything(),
+    expect.anything()
+  )
+})

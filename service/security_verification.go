@@ -175,7 +175,7 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
-	case "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh":
+	case "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read":
 		var context struct {
 			AccountID int `json:"account_id"`
 		}
@@ -344,7 +344,7 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 		if !state.HasTwoFA {
 			return nil, model.ErrTwoFANotEnabled
 		}
-	case "gpt_account.create", "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh",
+	case "gpt_account.create", "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read",
 		VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenUpdate, VerificationScopeAccessTokenRevoke,
 		VerificationScopeAccountBind, VerificationScopeAccountUnbind,
