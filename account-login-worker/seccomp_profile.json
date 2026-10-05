@@ -697,12 +697,8 @@
 			],
 			"action": "SCMP_ACT_ALLOW",
 			"args": [],
-			"comment": "",
-			"includes": {
-				"caps": [
-					"CAP_SYS_CHROOT"
-				]
-			},
+			"comment": "Chromium chroots inside its user namespace without host capabilities.",
+			"includes": {},
 			"excludes": {}
 		},
 		{
