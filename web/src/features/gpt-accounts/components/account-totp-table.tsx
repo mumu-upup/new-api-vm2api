@@ -46,10 +46,17 @@ export function AccountTotpTable(props: AccountTotpTableProps) {
       {
         accessorKey: 'channel_id',
         header: t('Channel'),
-        cell: ({ row }) =>
-          row.original.channel_id
+        cell: ({ row }) => {
+          if (row.original.gateway_id)
+            return (
+              row.original.gateway_channel_name ||
+              row.original.gateway_name ||
+              `#${row.original.gateway_id}`
+            )
+          return row.original.channel_id
             ? row.original.channel_name || `#${row.original.channel_id}`
-            : '-',
+            : '-'
+        },
       },
       {
         accessorKey: 'has_totp',

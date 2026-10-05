@@ -16,6 +16,7 @@ import {
   deleteGptAccount,
   getGptAccountConfig,
   listGptAccounts,
+  listGptAccountGateways,
   runGptAccountAction,
 } from './api'
 import { AccountFormDialog } from './components/account-form-dialog'
@@ -23,8 +24,10 @@ import { AccountLoginDialog } from './components/account-login-dialog'
 import { AccountTotpDialog } from './components/account-totp-dialog'
 import { AccountTotpTable } from './components/account-totp-table'
 import { AccountsTable, type AccountAction } from './components/accounts-table'
+import { GatewaysPanel } from './components/gateways-panel'
+import { GatewayFormDialog } from './components/gateway-form-dialog'
 import { useAccountOperation } from './hooks/use-account-operation'
-import type { GptAccount } from './types'
+import type { GptAccount, GptAccountGateway } from './types'
 
 export function GptAccounts() {
   const { t } = useTranslation()
@@ -58,6 +61,7 @@ function GptAccountsPage(props: {
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [editor, setEditor] = useState<GptAccount | 'create' | null>(null)
   const [login, setLogin] = useState<GptAccount | null>(null)
+  const [gatewayEditor, setGatewayEditor] = useState<GptAccountGateway | 'create' | null>(null)
   const [deleting, setDeleting] = useState<GptAccount | null>(null)
   const query = useQuery({
     queryKey: [
@@ -89,8 +93,19 @@ function GptAccountsPage(props: {
     gcTime: 0,
     queryFn: ({ signal }) => getGptAccountConfig(signal),
   })
+  const gateways = useQuery({
+    queryKey: [
+      'gpt-account-gateways',
+      props.userId,
+      props.role,
+      props.sessionId,
+    ],
+    queryFn: ({ signal }) => listGptAccountGateways(signal),
+    gcTime: 0,
+  })
   const refresh = () => {
     void client.invalidateQueries({ queryKey: ['gpt-accounts'] })
+    void client.invalidateQueries({ queryKey: ['gpt-account-gateways'] })
     void client.invalidateQueries({ queryKey: ['channels'] })
   }
   const action = async (account: GptAccount, kind: AccountAction) => {
@@ -107,8 +122,21 @@ function GptAccountsPage(props: {
       setDeleting(account)
       return
     }
+    if (kind === 'totp') {
+      if (
+        account.status !== 'logging_in' &&
+        config.data?.encryption_available
+      ) {
+        setTotp({ account, mode: 'save' })
+      }
+      return
+    }
     const result = await operation.execute(
-      { scope: `gpt_account.${kind}`, context: { account_id: account.id } },
+      {
+        scope:
+          kind === 'sync' ? 'gpt_account.gateway.sync' : `gpt_account.${kind}`,
+        context: { account_id: account.id },
+      },
       (proof, signal) => runGptAccountAction(account.id, kind, proof, signal)
     )
     if (result) refresh()
@@ -187,6 +215,9 @@ function GptAccountsPage(props: {
                 <TabsList aria-label={t('GPT Accounts')}>
                   <TabsTrigger value='accounts'>{t('Accounts')}</TabsTrigger>
                   <TabsTrigger value='totp'>{t('2FA management')}</TabsTrigger>
+                  {props.role === ROLE.SUPER_ADMIN && (
+                    <TabsTrigger value='gateways'>{t('Gateways')}</TabsTrigger>
+                  )}
                 </TabsList>
                 <TabsContent value='accounts' className='min-h-0'>
                   <AccountsTable
@@ -197,6 +228,9 @@ function GptAccountsPage(props: {
                     isLoading={query.isLoading}
                     isFetching={query.isFetching}
                     pending={operation.pending}
+                    encryptionAvailable={Boolean(
+                      config.data?.encryption_available
+                    )}
                     onAction={(account, kind) => {
                       void action(account, kind)
                     }}
@@ -226,11 +260,31 @@ function GptAccountsPage(props: {
                     }}
                   />
                 </TabsContent>
+                {props.role === ROLE.SUPER_ADMIN && (
+                  <TabsContent
+                    value='gateways'
+                    className='min-h-0 overflow-auto'
+                  >
+                    <GatewaysPanel
+                      items={gateways.data?.items ?? []}
+                      isLoading={gateways.isLoading}
+                      isError={gateways.isError}
+                      encryptionAvailable={Boolean(
+                        config.data?.encryption_available
+                      )}
+                      onRetry={() => {
+                        void gateways.refetch()
+                      }}
+                      onEdit={setGatewayEditor}
+                    />
+                  </TabsContent>
+                )}
               </Tabs>
             )}
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>
+      {gatewayEditor && <GatewayFormDialog gateway={gatewayEditor === 'create' ? undefined : gatewayEditor} onClose={() => setGatewayEditor(null)} onSaved={refresh} />}
       {totp && (
         <AccountTotpDialog
           account={totp.account}
@@ -244,6 +298,12 @@ function GptAccountsPage(props: {
           account={editor === 'create' ? undefined : editor}
           onClose={() => setEditor(null)}
           onSaved={refresh}
+          gateways={gateways.data?.items ?? []}
+          gatewaysLoading={gateways.isLoading}
+          gatewaysError={gateways.isError}
+          onRetryGateways={() => {
+            void gateways.refetch()
+          }}
         />
       )}
       {login && (

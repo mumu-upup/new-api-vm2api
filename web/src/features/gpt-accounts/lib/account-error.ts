@@ -33,11 +33,61 @@ export function getAccountErrorMessage(
     case 'identity_mismatch':
       return t('The signed-in account does not match this email address.')
     case 'needs_attention':
-    case 'captcha_required':
-    case 'email_verification_required':
-    case 'consent_required':
-    case 'additional_verification_required':
       return t('Complete browser sign-in to continue.')
+    case 'captcha_required':
+      return t(
+        'The sign-in page requires a CAPTCHA. Complete it through browser sign-in.'
+      )
+    case 'email_verification_required':
+      return t(
+        'The sign-in page requires email verification. Complete it through browser sign-in.'
+      )
+    case 'consent_required':
+      return t(
+        'The sign-in page requires your consent. Complete it through browser sign-in.'
+      )
+    case 'additional_verification_required':
+      return t(
+        'The sign-in page requires additional verification. Complete it through browser sign-in.'
+      )
+    case 'login_navigation_blocked':
+      return t('The sign-in page blocked navigation. Try browser sign-in.')
+    case 'login_navigation_failed':
+      return t(
+        'Could not open the sign-in page. Try again or use browser sign-in.'
+      )
+    case 'email_submission_failed':
+      return t('Could not submit the account email on the sign-in page.')
+    case 'password_submission_failed':
+      return t('Could not submit the account password on the sign-in page.')
+    case 'totp_submission_failed':
+      return t('Could not submit the authenticator code on the sign-in page.')
+    case 'email_step_timeout':
+      return t(
+        'The sign-in page did not continue after the email step. Try again.'
+      )
+    case 'password_step_timeout':
+      return t(
+        'The sign-in page did not continue after the password step. Try again.'
+      )
+    case 'totp_step_timeout':
+      return t(
+        'The sign-in page did not continue after the authenticator code step. Try again.'
+      )
+    case 'login_screen_unrecognized':
+      return t('The sign-in page could not be recognized. Try browser sign-in.')
+    case 'totp_secret_required':
+      return t('Add this account’s TOTP secret to generate sign-in codes.')
+    case 'totp_provider_unavailable':
+      return t('The sign-in code provider is unavailable. Try again.')
+    case 'totp_provider_timeout':
+      return t('The sign-in code provider timed out. Try again.')
+    case 'totp_provider_invalid_response':
+      return t('The sign-in code provider returned an invalid code. Try again.')
+    case 'invalid_totp_code':
+      return t(
+        'The sign-in page rejected the authenticator code. Check the saved secret and try again.'
+      )
     case 'refresh_failed':
       return t('Credential refresh failed. Sign in again.')
     case 'channel_required':

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { generateTOTP, validateLoginRequest } from './login.mjs'
+import { generateTOTP, getLoginTOTP, safeLoginResult, validateLoginRequest } from './login.mjs'
 import { createLoginServer } from './server.mjs'
 
 const secret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'
@@ -25,6 +25,68 @@ test('local TOTP follows RFC6238 and preserves leading zeroes', () => {
   assert.equal(generateTOTP(secret,1111111109000), '081804')
   assert.equal(generateTOTP(secret.toLowerCase(),59000), '287082')
   assert.throws(() => generateTOTP('invalid!'))
+})
+test('TOTP providers are explicit and local remains the default for existing requests', () => {
+  for (const provider of [undefined, '', 'local', '2fa_cn']) {
+    assert.equal(validateLoginRequest(request({ totp_provider: provider })).totp_provider, provider || 'local')
+  }
+  for (const provider of ['https://attacker.example', 'remote', null, 1]) {
+    assert.throws(() => validateLoginRequest(request({ totp_provider: provider })), /invalid_request/)
+  }
+})
+test('local TOTP never contacts a provider and remote TOTP uses only the fixed endpoint', async () => {
+  const signal = new AbortController().signal
+  assert.deepEqual(await getLoginTOTP(request(), signal, { now: () => 1111111109000,
+    fetch: () => assert.fail('local TOTP must not leave the worker') }), { code: '081804' })
+  const result = await getLoginTOTP(request({ totp_provider: '2fa_cn', totp_secret: ` ${secret.toLowerCase()} ` }), signal, {
+    fetch: async (url, options) => {
+      assert.equal(url, `https://2fa.cn/codes/${secret}`)
+      assert.equal(options.method, 'GET')
+      assert.equal(options.redirect, 'error')
+      assert.equal(options.cache, 'no-store')
+      assert.equal(options.headers.Authorization, undefined)
+      return Response.json({ code: '081804', ostring: secret })
+    },
+  })
+  assert.deepEqual(result, { code: '081804' })
+})
+test('remote TOTP validates its bounded JSON contract without exposing provider content', async () => {
+  const input = request({ totp_provider: '2fa_cn' })
+  for (const response of [
+    Response.json({ code: 81804, ostring: secret }),
+    Response.json({ code: '81804', ostring: secret }),
+    Response.json({ code: '1234567', ostring: secret }),
+    Response.json({ code: '123456', ostring: 'ANOTHERSEED234567' }),
+    Response.json({ code: '123456' }),
+    new Response('{"code": "private"', { headers: { 'content-type': 'application/json' } }),
+    new Response('private', { headers: { 'content-type': 'text/html' } }),
+    new Response('x'.repeat(4097), { headers: { 'content-type': 'application/json' } }),
+    new Response(null, { status: 302, headers: { location: 'https://attacker.example/private' } }),
+  ]) {
+    assert.deepEqual(await getLoginTOTP(input, new AbortController().signal, { fetch: async () => response }),
+      { status: 'needs_attention', error_code: 'totp_provider_invalid_response' })
+  }
+  for (const fetch of [async () => { throw new Error('https://2fa.cn/codes/private') },
+    async () => new Response('private', { status: 503 })]) {
+    assert.deepEqual(await getLoginTOTP(input, new AbortController().signal, { fetch }),
+      { status: 'failed', error_code: 'totp_provider_unavailable' })
+  }
+})
+test('remote TOTP is bounded by provider timeout and caller cancellation', async () => {
+  const fetch = async (_url, { signal }) => new Promise((resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+  })
+  assert.deepEqual(await getLoginTOTP(request({ totp_provider: '2fa_cn' }), new AbortController().signal,
+    { fetch, providerTimeoutMs: 10 }), { status: 'failed', error_code: 'totp_provider_timeout' })
+  const aborted = new AbortController()
+  aborted.abort()
+  assert.deepEqual(await getLoginTOTP(request({ totp_provider: '2fa_cn' }), aborted.signal,
+    { fetch: () => assert.fail('cancelled job must not contact provider') }),
+    { status: 'needs_attention', error_code: 'login_timeout' })
+  const cancelled = new AbortController()
+  assert.deepEqual(await getLoginTOTP(request({ totp_provider: '2fa_cn' }), cancelled.signal,
+    { fetch: async () => { cancelled.abort(); return Response.json({ code: '081804', ostring: secret }) } }),
+    { status: 'needs_attention', error_code: 'login_timeout' })
 })
 test('login accepts only the official PKCE flow with matching state and loopback callback', () => {
   assert.equal(validateLoginRequest(request()).email,'account@example.com')
@@ -98,13 +160,31 @@ test('ordinary login fills email, password and locally generated authenticator c
   assert.deepEqual(await completeLoginPage(page,request(),new AbortController().signal,{now:()=>59000,wait:page.next}),{status:'success',code:'valid-code',state})
   assert.deepEqual(page.filled,[['email','account@example.com'],['password','upstream password'],['totp','287082']])
 })
+test('remote TOTP is fetched at the authenticator step only and never before a handoff', async () => {
+  const page = loginPage([{ kind: 'email' }, { kind: 'password' }, { kind: 'totp' },
+    { kind: 'callback', url: `http://localhost:1455/auth/callback?code=valid-code&state=${state}` }])
+  let calls = 0
+  const fetch = async () => {
+    calls++
+    assert.deepEqual(page.filled.map(([kind]) => kind), ['email', 'password'])
+    return Response.json({ code: '081804', ostring: secret })
+  }
+  assert.equal((await completeLoginPage(page, request({ totp_provider: '2fa_cn' }), new AbortController().signal, { fetch })).status, 'success')
+  assert.equal(calls, 1)
+  assert.deepEqual(page.filled[2], ['totp', '081804'])
+  const captcha = loginPage([{ kind: 'captcha' }])
+  await completeLoginPage(captcha, request({ totp_provider: '2fa_cn' }), new AbortController().signal,
+    { fetch: () => assert.fail('no provider calls before authenticator prompt') })
+})
 test('login stops for CAPTCHA, email verification, consent and disabled accounts without filling secrets', async () => {
   for(const [kind,error_code,status] of [
     ['captcha','captcha_required','needs_attention'],['email_code','email_verification_required','needs_attention'],
     ['consent','consent_required','needs_attention'],['disabled','account_unavailable','failed'],
+    ['invalid_totp','invalid_totp_code','needs_attention'],
   ]) {
     const page=loginPage([{kind}])
-    assert.deepEqual(await completeLoginPage(page,request(),new AbortController().signal),{status,error_code})
+    assert.deepEqual(await completeLoginPage(page,request(),new AbortController().signal,
+      { wait: () => assert.fail('recognized challenge must be returned immediately') }),{status,error_code})
     assert.deepEqual(page.filled,[])
   }
 })
@@ -114,7 +194,7 @@ test('login refuses offsite credential fields, repeated password prompts and mis
   assert.deepEqual(offsite.filled,[])
   const repeated=loginPage([{kind:'password'},{kind:'password'}])
   let ticks=0
-  assert.equal((await completeLoginPage(repeated,request(),new AbortController().signal,{now:()=>ticks++ * 10000,wait:async()=>{}})).error_code,'login_timeout')
+  assert.equal((await completeLoginPage(repeated,request(),new AbortController().signal,{now:()=>ticks++ * 10000,wait:async()=>{}})).error_code,'password_step_timeout')
   assert.equal(repeated.filled.length,1)
   assert.deepEqual(parseCallback(`http://localhost:1455/auth/callback?code=private&state=wrong`,state),{status:'failed',error_code:'invalid_callback'})
   assert.equal(parseCallback(`http://localhost:1455/auth/callback?code=private&state=${state}&state=other`,state).status,'failed')
@@ -125,7 +205,7 @@ test('login cancellation and missing authenticator secret stop without credentia
   assert.equal((await completeLoginPage(page,request(),abort.signal)).error_code,'login_timeout')
   assert.deepEqual(page.filled,[])
   const mfa=loginPage([{kind:'totp'}])
-  assert.equal((await completeLoginPage(mfa,request({totp_secret:''}),new AbortController().signal)).error_code,'additional_verification_required')
+  assert.equal((await completeLoginPage(mfa,request({totp_secret:''}),new AbortController().signal)).error_code,'totp_secret_required')
   assert.deepEqual(mfa.filled,[])
 })
 
@@ -134,6 +214,60 @@ test('slow password navigation waits for a callback without resubmitting or decl
   const result=await completeLoginPage(page,request(),new AbortController().signal,{wait:page.next})
   assert.equal(result.status,'success')
   assert.equal(page.filled.length,1)
+})
+test('login reports safe stage failures and timeouts without retrying credentials', async () => {
+  for (const kind of ['email', 'password', 'totp']) {
+    const page = loginPage([{ kind }])
+    page.fillAndContinue = async () => { throw new Error('private password seed URL') }
+    assert.deepEqual(await completeLoginPage(page, request(), new AbortController().signal),
+      { status: 'needs_attention', error_code: `${kind}_submission_failed` })
+    const stalled = loginPage([{ kind }, { kind }])
+    let time = 0
+    assert.deepEqual(await completeLoginPage(stalled, request(), new AbortController().signal,
+      { now: () => time, deadline: 3, wait: async () => { time++ } }),
+      { status: 'needs_attention', error_code: `${kind}_step_timeout` })
+    assert.equal(stalled.filled.length, 1)
+  }
+  let time = 0
+  const unknown = loginPage([{ kind: 'loading' }])
+  assert.deepEqual(await completeLoginPage(unknown, request(), new AbortController().signal,
+    { now: () => time, deadline: 3, wait: async () => { time++ } }),
+    { status: 'needs_attention', error_code: 'login_screen_unrecognized' })
+})
+test('navigation failures survive initial blank pages and classification retries a page transition', async () => {
+  for (const error_code of ['login_navigation_blocked', 'login_navigation_failed']) {
+    const page = loginPage([{ kind: 'navigation_error', error_code, url: 'about:blank' }])
+    assert.deepEqual(await completeLoginPage(page, request(), new AbortController().signal),
+      { status: 'needs_attention', error_code })
+  }
+  const page = loginPage([{ kind: 'loading' },
+    { kind: 'callback', url: `http://localhost:1455/auth/callback?code=valid-code&state=${state}` }])
+  page.screen = async () => { throw new Error('Execution context was destroyed, most likely because of a navigation.') }
+  assert.equal((await completeLoginPage(page, request(), new AbortController().signal, { wait: page.next })).status, 'success')
+})
+test('diagnostic output is a fixed code and never includes worker or provider secrets', () => {
+  for (const error_code of ['login_navigation_blocked', 'login_navigation_failed', 'login_screen_unrecognized',
+    'email_submission_failed', 'password_submission_failed', 'totp_submission_failed',
+    'email_step_timeout', 'password_step_timeout', 'totp_step_timeout', 'totp_secret_required',
+    'totp_provider_invalid_response', 'totp_provider_unavailable', 'totp_provider_timeout', 'invalid_totp_code']) {
+    assert.deepEqual(safeLoginResult({ status: 'needs_attention', error_code, message: secret, password: 'private' }, state),
+      { status: 'needs_attention', error_code })
+  }
+})
+test('worker clears transient credentials after success and after exceptions', async t => {
+  let captured, shouldThrow = false
+  const url = await endpoint(t, async input => {
+    captured = input
+    assert.equal(input.totp_provider, '2fa_cn')
+    if (shouldThrow) throw new Error('private')
+    return { status: 'success', code: 'valid-code', state }
+  })
+  for (shouldThrow of [false, true]) {
+    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(request({ totp_provider: '2fa_cn' })) })
+    await response.json()
+    assert.equal(captured.password, '')
+    assert.equal(captured.totp_secret, '')
+  }
 })
 
 const { handleLoginRequest } = await import('./browser.mjs')
@@ -188,4 +322,45 @@ test('subresource redirects cannot carry authorization headers to another allowe
   await handleLoginRequest(fixture.route,fixture.context)
   assert.equal(fixture.effects.fetched.length,1)
   assert.equal(fixture.effects.aborted,true)
+  assert.equal(fixture.effects.blocked,false)
+})
+
+test('blocked third-party assets do not prevent ordinary credential login', async () => {
+  const fixture = routedRequest('https://telemetry.example/pixel', 200)
+  fixture.route.request = () => ({ url: () => 'https://telemetry.example/pixel', method: () => 'GET',
+    isNavigationRequest: () => false, frame: () => 'main' })
+  await handleLoginRequest(fixture.route, fixture.context)
+  assert.equal(fixture.effects.aborted, true)
+  assert.equal(fixture.effects.fetched.length, 0)
+  assert.equal(fixture.effects.blocked, false)
+})
+
+test('asset redirects do not consume the login navigation redirect budget', async () => {
+  const fixture = routedRequest('https://auth.openai.com/asset', 302, '/asset-final')
+  fixture.context.redirects = 12
+  fixture.route.request = () => ({ url: () => 'https://auth.openai.com/asset', method: () => 'GET',
+    isNavigationRequest: () => false, frame: () => 'main' })
+  fixture.route.fetch = async options => {
+    fixture.effects.fetched.push(options)
+    return { status: () => fixture.effects.fetched.length === 1 ? 302 : 200,
+      headers: () => ({ location: '/asset-final' }) }
+  }
+  await handleLoginRequest(fixture.route, fixture.context)
+  assert.equal(fixture.context.redirects, 12)
+  assert.equal(fixture.effects.aborted, false)
+  assert.equal(fixture.effects.fulfilled.length, 1)
+})
+
+test('a failed main navigation produces a safe navigation error while failed assets remain optional', async () => {
+  for (const mainNavigation of [true, false]) {
+    const fixture = routedRequest('https://auth.openai.com/fixture', 200)
+    fixture.route.request = () => ({ url: () => 'https://auth.openai.com/fixture', method: () => 'GET',
+      isNavigationRequest: () => mainNavigation, frame: () => 'main' })
+    fixture.route.fetch = async () => { throw new Error('upstream password private URL') }
+    const errors = []
+    fixture.context.setBlocked = code => errors.push(code)
+    await handleLoginRequest(fixture.route, fixture.context)
+    assert.equal(fixture.effects.aborted, true)
+    assert.deepEqual(errors, mainNavigation ? ['login_navigation_failed'] : [])
+  }
 })

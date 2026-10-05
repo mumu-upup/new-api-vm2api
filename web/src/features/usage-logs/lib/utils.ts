@@ -187,9 +187,6 @@ export function buildApiParams(config: {
     ...(searchParams.model ? { model_name: String(searchParams.model) } : {}),
     ...(searchParams.token ? { token_name: String(searchParams.token) } : {}),
     ...(searchParams.group ? { group: String(searchParams.group) } : {}),
-    ...(isAdmin && searchParams.channel
-      ? { channel: Number(searchParams.channel) || 0 }
-      : {}),
     ...(isAdmin && searchParams.username
       ? { username: String(searchParams.username) }
       : {}),
@@ -219,9 +216,6 @@ export function buildApiParams(config: {
           break
         case 'group':
           params.group = String(value)
-          break
-        case 'channel':
-          if (isAdmin) params.channel = Number(value) || 0
           break
         case 'username':
           if (isAdmin) params.username = String(value)

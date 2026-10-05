@@ -6,6 +6,11 @@ const errorCodes = new Set([
   'captcha_required', 'email_verification_required', 'consent_required',
   'additional_verification_required', 'invalid_credentials', 'account_unavailable',
   'login_timeout', 'automation_unavailable', 'invalid_callback',
+  'login_navigation_blocked', 'login_navigation_failed', 'login_screen_unrecognized',
+  'email_submission_failed', 'password_submission_failed', 'totp_submission_failed',
+  'email_step_timeout', 'password_step_timeout', 'totp_step_timeout',
+  'totp_secret_required', 'totp_provider_invalid_response',
+  'totp_provider_unavailable', 'totp_provider_timeout', 'invalid_totp_code',
 ])
 
 function decodeSeed(value) {
@@ -39,14 +44,74 @@ export function generateTOTP(seed, timestamp = Date.now()) {
   }
 }
 
+export async function getLoginTOTP(input, signal, options = {}) {
+  if (signal.aborted) return { status: 'needs_attention', error_code: 'login_timeout' }
+  if (!input.totp_secret) return { status: 'needs_attention', error_code: 'totp_secret_required' }
+  if (!input.totp_provider || input.totp_provider === 'local') {
+    return { code: generateTOTP(input.totp_secret, (options.now || Date.now)()) }
+  }
+  if (input.totp_provider !== '2fa_cn') {
+    return { status: 'needs_attention', error_code: 'totp_provider_invalid_response' }
+  }
+  decodeSeed(input.totp_secret).fill(0)
+  const seed = input.totp_secret.replace(/\s/g, '').toUpperCase().replace(/=+$/, '')
+  const timeout = new AbortController()
+  const timer = setTimeout(() => timeout.abort(), options.providerTimeoutMs ?? 5000)
+  const providerSignal = AbortSignal.any([signal, timeout.signal])
+  const invalid = { status: 'needs_attention', error_code: 'totp_provider_invalid_response' }
+  let response
+  try {
+    // Explicit opt-in only. No cookies, worker token, configurable host, or
+    // redirect can carry the seed to a second destination.
+    response = await (options.fetch || fetch)(`https://2fa.cn/codes/${seed}`, {
+      method: 'GET', redirect: 'error', cache: 'no-store', credentials: 'omit',
+      headers: { Accept: 'application/json' }, signal: providerSignal,
+    })
+    if ((response.status >= 300 && response.status < 400) || response.redirected) return invalid
+    if (!response.ok) return { status: 'failed', error_code: 'totp_provider_unavailable' }
+    if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '') || !response.body) return invalid
+    if (Number(response.headers.get('content-length')) > 4096) return invalid
+    const reader = response.body.getReader()
+    const chunks = []
+    let size = 0
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.byteLength
+        if (size > 4096) return invalid
+        chunks.push(value)
+      }
+    } finally {
+      await reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
+    let payload
+    try {
+      payload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    } catch {
+      return invalid
+    }
+    if (!payload || typeof payload.code !== 'string' || !/^\d{6}$/.test(payload.code) || payload.ostring !== seed) return invalid
+    providerSignal.throwIfAborted()
+    return { code: payload.code }
+  } catch {
+    if (signal.aborted) return { status: 'needs_attention', error_code: 'login_timeout' }
+    return { status: 'failed', error_code: timeout.signal.aborted ? 'totp_provider_timeout' : 'totp_provider_unavailable' }
+  } finally {
+    clearTimeout(timer)
+    if (response?.body && !response.body.locked) await response.body.cancel().catch(() => {})
+  }
+}
+
 export function validateLoginRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('invalid_request')
-  const { authorization_url, state, email, password, totp_secret = '' } = input
+  const { authorization_url, state, email, password, totp_secret = '', totp_provider = 'local' } = input
   if (typeof authorization_url !== 'string' || authorization_url.length > 4096 ||
       typeof state !== 'string' || !/^[A-Za-z0-9_-]{24,128}$/.test(state) ||
       typeof email !== 'string' || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email) ||
       typeof password !== 'string' || !password || password.length > 1024 ||
-      typeof totp_secret !== 'string') throw new Error('invalid_request')
+      typeof totp_secret !== 'string' || !['', 'local', '2fa_cn'].includes(totp_provider)) throw new Error('invalid_request')
   const url = new URL(authorization_url)
   if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/oauth/authorize' ||
       url.username || url.password || url.hash ||
@@ -60,7 +125,7 @@ export function validateLoginRequest(input) {
     if (url.searchParams.getAll(key).length !== 1) throw new Error('invalid_request')
   }
   if (totp_secret) decodeSeed(totp_secret).fill(0)
-  return { authorization_url, state, email, password, totp_secret }
+  return { authorization_url, state, email, password, totp_secret, totp_provider: totp_provider || 'local' }
 }
 
 export function safeLoginResult(result, state) {

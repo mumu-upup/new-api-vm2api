@@ -163,6 +163,26 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 	}
 	var normalized any
 	switch operation.Scope {
+	case "gpt_account_gateway.create":
+		var context struct {
+			Name string `json:"name"`
+		}
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &context) != nil {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		context.Name = strings.TrimSpace(context.Name)
+		if context.Name == "" || len(context.Name) > 128 {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		normalized = context
+	case "gpt_account_gateway.update":
+		var context struct {
+			GatewayID int `json:"gateway_id"`
+		}
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &context) != nil || context.GatewayID <= 0 {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		normalized = context
 	case "gpt_account.create":
 		var context struct {
 			Email string `json:"email"`
@@ -175,7 +195,7 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
-	case "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read":
+	case "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read", "gpt_account.gateway.sync":
 		var context struct {
 			AccountID int `json:"account_id"`
 		}
@@ -345,6 +365,7 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 			return nil, model.ErrTwoFANotEnabled
 		}
 	case "gpt_account.create", "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read",
+		"gpt_account.gateway.sync", "gpt_account_gateway.create", "gpt_account_gateway.update",
 		VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenUpdate, VerificationScopeAccessTokenRevoke,
 		VerificationScopeAccountBind, VerificationScopeAccountUnbind,
@@ -397,6 +418,9 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 		return nil, ErrAuthTokenInvalid
 	}
 	if scope == VerificationScopeChannelKeyRead && state.Role != common.RoleRootUser {
+		return nil, ErrVerificationForbidden
+	}
+	if strings.HasPrefix(scope, "gpt_account_gateway.") && state.Role != common.RoleRootUser {
 		return nil, ErrVerificationForbidden
 	}
 	if (strings.HasPrefix(scope, verificationScopeAdminUserPrefix) || strings.HasPrefix(scope, "gpt_account.")) && state.Role < common.RoleAdminUser {
