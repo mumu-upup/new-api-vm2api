@@ -21,6 +21,9 @@ export interface GptAccount {
   auto_relogin: boolean
   has_password: boolean
   has_totp: boolean
+  totp_version: number
+  totp_updated_at: number
+  totp_status: '' | 'saved' | 'operator_confirmed'
   can_manage: boolean
   group: string
   models: string
@@ -44,5 +47,10 @@ export interface GptAccountConfig {
 
 export interface GptAccountAuthorization {
   authorization_url: string
+  expires_at: number
+}
+
+export interface GptAccountTotpReveal {
+  totp_secret: string
   expires_at: number
 }
