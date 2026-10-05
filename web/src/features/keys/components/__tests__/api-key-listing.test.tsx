@@ -306,6 +306,19 @@ function KeysPage() {
 async function renderKeysPage(status = 1, overrides: Partial<ApiKey> = {}) {
   let currentKey = { ...key, status, ...overrides }
   vi.mocked(api.get).mockImplementation(async (url) => {
+    if (url === '/api/token/concurrency') {
+      return {
+        data: {
+          success: true,
+          data: {
+            user_id: 1,
+            current: 4,
+            max_concurrent_requests: 8,
+            tokens: { '7': 2 },
+          },
+        },
+      }
+    }
     if (url.startsWith('/api/token/')) {
       return {
         data: { success: true, data: { items: [currentKey], total: 1 } },
@@ -525,3 +538,25 @@ it('keeps mobile quota readable and opens complete model and IP restrictions by 
   expect(within(details).getByText('192.0.2.1')).toBeVisible()
   expect(within(details).getByText('2001:db8::1')).toBeVisible()
 })
+
+it.each([false, true])(
+  'shows live API key requests and the account total across all keys (mobile=%s)',
+  async (mobile) => {
+    if (mobile) {
+      const originalMatchMedia = window.matchMedia
+      vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+        ...originalMatchMedia(query),
+        matches: query.includes('max-width'),
+      }))
+    }
+    await renderKeysPage()
+    expect(
+      await screen.findByLabelText('Concurrent requests: 2')
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText('All API keys: 4 / 8')).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledWith(
+      '/api/token/concurrency',
+      expect.objectContaining({ params: { ids: '7' } })
+    )
+  }
+)

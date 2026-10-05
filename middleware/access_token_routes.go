@@ -262,6 +262,10 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/mj/":                     accessTokenScopeRule("log:read"),
 	"GET /api/task/self":               accessTokenScopeRule("usage:read"),
 	"GET /api/task":                    accessTokenScopeRule("log:read"),
+	"GET /api/task/":                   accessTokenScopeRule("log:read"),
+	"GET /api/user/concurrency":        accessTokenScopeRule("user:read"),
+	"PUT /api/user/:id/concurrency":    accessTokenScopeRule("user:write"),
+	"GET /api/token/concurrency":       accessTokenScopeRule("token:read"),
 	"GET /api/task/:task_id/artifacts": accessTokenScopeRule("usage:read"),
 
 	// router/api-router.go: /api/vendors, /api/models (admin)

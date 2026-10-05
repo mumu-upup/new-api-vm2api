@@ -120,6 +120,10 @@ func TestModelPricingRoutesRequireRootSession(t *testing.T) {
 // accessTokenExemptRoutes are /api routes that never reach dashboard
 // authentication, so a personal access token has no rule to satisfy there.
 var accessTokenExemptRoutes = []string{
+	// Partner endpoints validate their own signed partner credentials.
+	"POST /api/partner/v1/redemption-codes",
+	"POST /api/partner/v1/redemption-orders/query",
+	"POST /api/partner/v1/redemption-codes/revoke",
 	// Anonymous pages and setup.
 	"GET /api/setup",
 	"POST /api/setup",

@@ -28,6 +28,10 @@ import {
   DataTablePage,
   useDataTable,
 } from '@/components/data-table'
+import {
+  useUserConcurrency,
+  UserConcurrencyContext,
+} from '@/features/concurrency/use-request-concurrency'
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import {
@@ -64,7 +68,6 @@ function isDisabledUserRow(user: User) {
 
 export function UsersTable() {
   const { t } = useTranslation()
-  const columns = useUsersColumns()
   const { refreshTrigger } = useUsers()
   const isMobile = useMediaQuery('(max-width: 640px)')
   const [sorting, setSorting] = useState<SortingState>([])
@@ -181,6 +184,8 @@ export function UsersTable() {
   })
 
   const users = data?.items || []
+  const concurrency = useUserConcurrency(users.map((user) => user.id))
+  const columns = useUsersColumns()
 
   const { table } = useDataTable({
     data: users,
@@ -215,49 +220,51 @@ export function UsersTable() {
   })
 
   return (
-    <DataTablePage
-      table={table}
-      columns={columns}
-      isLoading={isLoading}
-      isFetching={isFetching}
-      emptyTitle={t('No Users Found')}
-      emptyDescription={t(
-        'No users available. Try adjusting your search or filters.'
-      )}
-      skeletonKeyPrefix='users-skeleton'
-      applyHeaderSize
-      toolbarProps={{
-        searchPlaceholder: t('Filter by username, name or email...'),
-        searchDebounceMs: 500,
-        filters: [
-          {
-            columnId: 'status',
-            title: t('Status'),
-            options: getUserStatusOptions(t),
-            singleSelect: true,
-          },
-          {
-            columnId: 'role',
-            title: t('Role'),
-            options: getUserRoleOptions(t),
-            singleSelect: true,
-          },
-          {
-            columnId: 'group',
-            title: t('User Group'),
-            options: (groupsData?.data ?? []).map((group) => ({
-              label: group,
-              value: group,
-            })),
-            singleSelect: true,
-          },
-        ],
-      }}
-      getRowClassName={(row, { isMobile }) => {
-        if (!isDisabledUserRow(row.original)) return undefined
-        return isMobile ? DISABLED_ROW_MOBILE : DISABLED_ROW_DESKTOP
-      }}
-      bulkActions={<DataTableBulkActions table={table} />}
-    />
+    <UserConcurrencyContext value={concurrency}>
+      <DataTablePage
+        table={table}
+        columns={columns}
+        isLoading={isLoading}
+        isFetching={isFetching}
+        emptyTitle={t('No Users Found')}
+        emptyDescription={t(
+          'No users available. Try adjusting your search or filters.'
+        )}
+        skeletonKeyPrefix='users-skeleton'
+        applyHeaderSize
+        toolbarProps={{
+          searchPlaceholder: t('Filter by username, name or email...'),
+          searchDebounceMs: 500,
+          filters: [
+            {
+              columnId: 'status',
+              title: t('Status'),
+              options: getUserStatusOptions(t),
+              singleSelect: true,
+            },
+            {
+              columnId: 'role',
+              title: t('Role'),
+              options: getUserRoleOptions(t),
+              singleSelect: true,
+            },
+            {
+              columnId: 'group',
+              title: t('User Group'),
+              options: (groupsData?.data ?? []).map((group) => ({
+                label: group,
+                value: group,
+              })),
+              singleSelect: true,
+            },
+          ],
+        }}
+        getRowClassName={(row, { isMobile }) => {
+          if (!isDisabledUserRow(row.original)) return undefined
+          return isMobile ? DISABLED_ROW_MOBILE : DISABLED_ROW_DESKTOP
+        }}
+        bulkActions={<DataTableBulkActions table={table} />}
+      />
+    </UserConcurrencyContext>
   )
 }

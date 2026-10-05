@@ -40,6 +40,11 @@ import {
 } from '@/components/ui/empty'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ConcurrencyStatus } from '@/features/concurrency/concurrency-status'
+import {
+  useTokenConcurrency,
+  TokenConcurrencyContext,
+} from '@/features/concurrency/use-request-concurrency'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import { createServerError } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
@@ -140,6 +145,9 @@ function ApiKeysMobileList({
         const groupCell = row
           .getAllCells()
           .find((cell) => cell.column.id === 'group')
+        const concurrencyCell = row
+          .getAllCells()
+          .find((cell) => cell.column.id === 'concurrency')
         const expiryCell = row
           .getAllCells()
           .find((cell) => cell.column.id === 'expired_time')
@@ -184,6 +192,16 @@ function ApiKeysMobileList({
                   )}
               </div>
               <ApiKeyQuotaCell apiKey={apiKey} now={now} variant='card' />
+              <div className='flex items-center gap-2'>
+                <span className='text-muted-foreground'>
+                  {t('Concurrent requests')}
+                </span>
+                {concurrencyCell &&
+                  flexRender(
+                    concurrencyCell.column.columnDef.cell,
+                    concurrencyCell.getContext()
+                  )}
+              </div>
             </div>
 
             <div className='flex flex-wrap items-center gap-x-5 gap-y-1'>
@@ -219,7 +237,6 @@ export function ApiKeysTable() {
   const { t } = useTranslation()
   const { refreshTrigger } = useApiKeys()
   const [now, setNow] = useState(() => Date.now())
-  const columns = useApiKeysColumns(now)
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -303,6 +320,11 @@ export function ApiKeysTable() {
   })
 
   const apiKeys = data?.items || []
+  const concurrency = useTokenConcurrency(
+    apiKeys.map((apiKey) => apiKey.id),
+    !isLoading
+  )
+  const columns = useApiKeysColumns(now)
 
   const { table } = useDataTable({
     data: apiKeys,
@@ -339,45 +361,60 @@ export function ApiKeysTable() {
   }, [columnVisibility, table])
 
   return (
-    <DataTablePage
-      table={table}
-      columns={columns}
-      isLoading={isLoading}
-      isFetching={isFetching}
-      emptyTitle={t('No API Keys Found')}
-      emptyDescription={t(
-        'No API keys available. Create your first API key to get started.'
-      )}
-      skeletonKeyPrefix='api-keys-skeleton'
-      applyHeaderSize
-      toolbarProps={{
-        searchPlaceholder: t('Filter by name...'),
-        searchDebounceMs: 500,
-        additionalSearch: (
-          <Input
-            placeholder={t('Filter by API key...')}
-            aria-label={t('Filter by API key...')}
-            value={tokenFilterInput}
-            onChange={(e) => setTokenFilterInput(e.target.value)}
-            className='w-full sm:w-50 lg:w-60'
-          />
-        ),
-        filters: [
-          {
-            columnId: 'status',
-            title: t('Status'),
-            options: API_KEY_STATUS_OPTIONS,
-            singleSelect: true,
-          },
-        ],
-      }}
-      mobile={
-        <ApiKeysMobileList table={table} isLoading={isLoading} now={now} />
-      }
-      getRowClassName={(row) =>
-        isDisabledApiKeyRow(row.original) ? DISABLED_ROW_DESKTOP : undefined
-      }
-      bulkActions={<DataTableBulkActions table={table} />}
-    />
+    <TokenConcurrencyContext value={concurrency}>
+      <DataTablePage
+        table={table}
+        columns={columns}
+        isLoading={isLoading}
+        isFetching={isFetching}
+        emptyTitle={t('No API Keys Found')}
+        emptyDescription={t(
+          'No API keys available. Create your first API key to get started.'
+        )}
+        skeletonKeyPrefix='api-keys-skeleton'
+        applyHeaderSize
+        toolbarProps={{
+          searchPlaceholder: t('Filter by name...'),
+          searchDebounceMs: 500,
+          additionalSearch: (
+            <Input
+              placeholder={t('Filter by API key...')}
+              aria-label={t('Filter by API key...')}
+              value={tokenFilterInput}
+              onChange={(e) => setTokenFilterInput(e.target.value)}
+              className='w-full sm:w-50 lg:w-60'
+            />
+          ),
+          filters: [
+            {
+              columnId: 'status',
+              title: t('Status'),
+              options: API_KEY_STATUS_OPTIONS,
+              singleSelect: true,
+            },
+          ],
+        }}
+        mobile={
+          <ApiKeysMobileList table={table} isLoading={isLoading} now={now} />
+        }
+        getRowClassName={(row) =>
+          isDisabledApiKeyRow(row.original) ? DISABLED_ROW_DESKTOP : undefined
+        }
+        bulkActions={<DataTableBulkActions table={table} />}
+        afterTable={
+          <div className='flex flex-wrap items-center gap-x-2 gap-y-1 text-sm'>
+            <span>{t('All API keys')}</span>
+            <ConcurrencyStatus
+              current={concurrency?.current}
+              limit={concurrency?.max_concurrent_requests}
+              label={t('All API keys')}
+            />
+            <span className='text-muted-foreground text-xs'>
+              {t('Active requests / shared limit. Refreshes every 3 seconds.')}
+            </span>
+          </div>
+        }
+      />
+    </TokenConcurrencyContext>
   )
 }

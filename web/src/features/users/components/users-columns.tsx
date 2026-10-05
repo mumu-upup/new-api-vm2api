@@ -44,6 +44,7 @@ import {
 } from '../constants'
 import type { User } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
+import { UserConcurrencyCell } from './user-concurrency-cell'
 import { UserQuotaCell } from './user-quota-cell'
 
 export function useUsersColumns(): ColumnDef<User>[] {
@@ -193,6 +194,14 @@ export function useUsersColumns(): ColumnDef<User>[] {
         size: 180,
         minSize: 160,
         meta: { mobileOrder: 40 },
+      },
+      {
+        id: 'concurrency',
+        header: t('Concurrent requests'),
+        cell: ({ row }) => <UserConcurrencyCell user={row.original} />,
+        enableSorting: false,
+        size: 180,
+        meta: { mobileOrder: 45 },
       },
       {
         accessorKey: 'group',
