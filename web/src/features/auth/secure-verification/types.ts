@@ -31,6 +31,8 @@ export type SecurityProofScope =
   | 'gpt_account.login'
   | 'gpt_account.oauth'
   | 'gpt_account.refresh'
+  | 'gpt_account.totp.update'
+  | 'gpt_account.totp.read'
   | 'channel.key.read'
   | 'passkey.register'
   | 'passkey.delete'
@@ -59,7 +61,14 @@ export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'
 export type VerificationOperation =
   | { scope: 'gpt_account.create'; context: { email: string } }
   | {
-      scope: 'gpt_account.update' | 'gpt_account.delete' | 'gpt_account.login' | 'gpt_account.oauth' | 'gpt_account.refresh'
+      scope:
+        | 'gpt_account.update'
+        | 'gpt_account.delete'
+        | 'gpt_account.login'
+        | 'gpt_account.oauth'
+        | 'gpt_account.refresh'
+        | 'gpt_account.totp.update'
+        | 'gpt_account.totp.read'
       context: { account_id: number }
     }
   | { scope: 'channel.key.read'; context: { channel_id: number } }

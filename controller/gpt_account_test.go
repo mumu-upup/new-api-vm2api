@@ -33,6 +33,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestGPTAccountRecoveryPreservesConcurrentAndStaleCredentials(t *testing.T) {
@@ -312,7 +313,45 @@ func TestGPTAccountProactiveRefreshPreservesRecoveryBudget(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond, "a real401 must reach browser recovery even after proactive refresh failures")
 }
 
+// gptAccountBeforeTOTP preserves the persisted account schema from 955014a4d.
+type gptAccountBeforeTOTP struct {
+	ID                int    `json:"id" gorm:"primaryKey"`
+	OwnerID           int    `json:"-" gorm:"not null;index"`
+	OwnerRole         int    `json:"-" gorm:"-"`
+	Name              string `json:"name" gorm:"type:varchar(128);not null"`
+	Email             string `json:"email" gorm:"type:varchar(254);not null;index"`
+	ChannelID         *int   `json:"channel_id" gorm:"uniqueIndex"`
+	ChannelName       string `json:"channel_name" gorm:"-"`
+	Group             string `json:"group" gorm:"column:account_group;type:varchar(64)"`
+	Models            string `json:"models" gorm:"type:text"`
+	AutoRelogin       bool   `json:"auto_relogin"`
+	Status            string `json:"status" gorm:"type:varchar(32)"`
+	LastErrorCode     string `json:"last_error_code" gorm:"type:varchar(64)"`
+	LastLoginAt       int64  `json:"last_login_at"`
+	LastAttemptAt     int64  `json:"last_attempt_at"`
+	NextRetryAt       int64  `json:"next_retry_at"`
+	CreatedAt         int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt         int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	HasPassword       bool   `json:"has_password"`
+	HasTOTP           bool   `json:"has_totp"`
+	CanManage         bool   `json:"can_manage" gorm:"-"`
+	SecretID          string `json:"-" gorm:"type:varchar(64);not null"`
+	SecretsCiphertext string `json:"-" gorm:"type:text;not null"`
+	AccountID         string `json:"-" gorm:"type:varchar(128)"`
+	OAuthSubject      string `json:"-" gorm:"type:varchar(255)"`
+	ChannelKeyHash    string `json:"-" gorm:"type:char(64)"`
+	Generation        int64  `json:"-" gorm:"not null"`
+	LeaseID           string `json:"-" gorm:"type:varchar(64)"`
+	LeaseUntil        int64  `json:"-"`
+	FailureCount      int    `json:"-"`
+}
+
+func (gptAccountBeforeTOTP) TableName() string { return "gpt_accounts" }
+
 func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "encryption.key")
+	require.NoError(t, os.WriteFile(keyPath, []byte(base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901"))), 0600))
+	t.Setenv("GPT_ACCOUNT_ENCRYPTION_KEY_FILE", keyPath)
 	dialect := os.Getenv("TEST_MANAGE_USER_DIALECT")
 	if dialect == "" {
 		dialect = "sqlite"
@@ -324,12 +363,18 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = sqlDB.Close() })
 			channel := model.Channel{Type: 57, Name: "Existing released channel", Key: "unchanged-key", Group: "default", Models: "gpt-5", Status: common.ChannelStatusEnabled}
+			legacy := model.GPTAccount{OwnerID: 1, Name: "Legacy account", Email: "legacy@example.com", SecretID: "legacy-binding", Generation: 7, AccountID: "legacy-subject", OAuthSubject: "oauth-subject"}
+			require.NoError(t, service.EncryptGPTAccountSecrets(&legacy, service.GPTAccountSecrets{Password: "legacy-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
 			if upgrade {
 				// The persisted Channel, Ability and AuthFlow schemas are unchanged
 				// from v1.0.0-rc.41 (verified with git diff for those model files).
 				require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AuthFlow{}))
 				require.NoError(t, db.Create(&channel).Error)
 				require.NoError(t, channel.AddAbilities(db))
+				require.NoError(t, db.AutoMigrate(&gptAccountBeforeTOTP{}))
+				legacy.ChannelID = &channel.Id
+				legacy.ChannelKeyHash = model.GPTChannelKeyHash(channel.Key)
+				require.NoError(t, db.Omit("totp_version", "totp_updated_at", "totp_status").Create(&legacy).Error)
 			}
 			for range 2 {
 				require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AuthFlow{}, &model.GPTAccount{}))
@@ -342,6 +387,13 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 				require.NoError(t, db.Where("channel_id = ?", channel.Id).Find(&abilities).Error)
 				require.Len(t, abilities, 1)
 				assert.Equal(t, "gpt-5", abilities[0].Model)
+				var migrated model.GPTAccount
+				require.NoError(t, db.First(&migrated, legacy.ID).Error)
+				assert.Equal(t, legacy, migrated)
+				secrets, err := service.DecryptGPTAccountSecrets(&migrated)
+				require.NoError(t, err)
+				assert.Equal(t, "legacy-password", secrets.Password)
+				assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
 			}
 			channelID := 123
 			account := model.GPTAccount{OwnerID: 1, Name: "Preserved account", SecretID: "cipher-binding", SecretsCiphertext: "persisted-ciphertext", Generation: 7, ChannelID: &channelID}
@@ -715,4 +767,306 @@ func TestGPTAccountOAuthStateAndEncryptionFailClosed(t *testing.T) {
 	assert.Error(t, err)
 	unavailable := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"No key","email":"owner@example.com"}`, "gpt_account.create", CreateGPTAccount)
 	assert.Equal(t, http.StatusServiceUnavailable, unavailable.Code)
+}
+
+func TestGPTAccountTOTPMetadataForImportedSecrets(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"jbsw y3dp ehpk 3pxp"}`, "gpt_account.create", CreateGPTAccount)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	var response struct {
+		Data struct {
+			ID        int    `json:"id"`
+			Version   int64  `json:"totp_version"`
+			UpdatedAt int64  `json:"totp_updated_at"`
+			Status    string `json:"totp_status"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(created.Body.Bytes(), &response))
+	assert.Equal(t, int64(1), response.Data.Version)
+	assert.Positive(t, response.Data.UpdatedAt)
+	assert.Equal(t, "saved", response.Data.Status)
+	original := response.Data
+	for _, secret := range []string{"", "JBSWY3DPEHPK3PXP", "JBSWY3DPEHPK3PXQ"} {
+		updated := gptAccountRequest(t, identity, common.RoleRootUser, original.ID, http.MethodPut, fmt.Sprintf(`{"name":"Primary","email":"owner@example.com","totp_secret":%q}`, secret), "gpt_account.update", UpdateGPTAccount)
+		require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
+		require.NoError(t, common.Unmarshal(updated.Body.Bytes(), &response))
+		if secret == "JBSWY3DPEHPK3PXQ" {
+			assert.Equal(t, int64(2), response.Data.Version)
+		} else {
+			assert.Equal(t, original, response.Data, "empty or unchanged seeds preserve metadata")
+		}
+		assert.NotContains(t, updated.Body.String(), "JBSWY3DPEHPK3P")
+	}
+	var account model.GPTAccount
+	require.NoError(t, model.DB.First(&account, original.ID).Error)
+	secrets, err := service.DecryptGPTAccountSecrets(&account)
+	require.NoError(t, err)
+	assert.Equal(t, "private-password", secrets.Password)
+	assert.Equal(t, "JBSWY3DPEHPK3PXQ", secrets.TOTPSecret)
+}
+
+func TestGPTAccountTOTPProofPolicy(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	for _, scope := range []string{"gpt_account.totp.update", "gpt_account.totp.read"} {
+		binding, err := service.BindVerificationOperation(service.VerificationOperation{Scope: scope, Context: []byte(`{"account_id":1}`)})
+		require.NoError(t, err)
+		assert.Equal(t, scope, binding.Scope)
+		requirements, err := service.GetVerificationRequirements(identity, scope)
+		require.NoError(t, err)
+		require.Len(t, requirements.Methods, 1)
+		assert.Equal(t, service.VerificationMethodPassword, requirements.Methods[0].Method)
+		for _, context := range []string{`{}`, `{"account_id":0}`, `{"account_id":1,"totp_secret":"private"}`} {
+			_, err = service.BindVerificationOperation(service.VerificationOperation{Scope: scope, Context: []byte(context)})
+			assert.ErrorIs(t, err, service.ErrVerificationContextInvalid)
+		}
+	}
+	require.NoError(t, model.DB.Create(&model.TwoFA{UserId: identity.UserID, Secret: "private", IsEnabled: true}).Error)
+	for _, scope := range []string{"gpt_account.totp.update", "gpt_account.totp.read"} {
+		requirements, err := service.GetVerificationRequirements(identity, scope)
+		require.NoError(t, err)
+		require.Len(t, requirements.Methods, 1)
+		assert.Equal(t, service.VerificationMethodTwoFA, requirements.Methods[0].Method, "password must not bypass an enrolled factor")
+	}
+}
+
+func TestGPTAccountTOTPRequiresOwnedAccountAndFreshScopedProof(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "proof-account", Generation: 1}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	for _, endpoint := range []struct {
+		name, scope, body string
+		handler           gin.HandlerFunc
+	}{
+		{"save", "gpt_account.totp.update", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`, UpdateGPTAccountTOTP},
+		{"reveal", "gpt_account.totp.read", `{}`, RevealGPTAccountTOTP},
+	} {
+		t.Run(endpoint.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name   string
+				role   int
+				scope  string
+				change func(*gin.Context)
+				want   int
+			}{
+				{"missing proof", common.RoleRootUser, "", nil, http.StatusForbidden},
+				{"ordinary user", common.RoleCommonUser, endpoint.scope, nil, http.StatusForbidden},
+				{"wrong scope", common.RoleRootUser, "gpt_account.update", nil, http.StatusForbidden},
+				{"missing session", common.RoleRootUser, endpoint.scope, func(c *gin.Context) { c.Set("session_id", "") }, http.StatusForbidden},
+				{"different session", common.RoleRootUser, endpoint.scope, func(c *gin.Context) { c.Set("session_id", "another-session") }, http.StatusForbidden},
+				{"expired proof", common.RoleRootUser, endpoint.scope, func(c *gin.Context) {
+					require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", model.AuthFlowPurposeSecurityProof).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+				}, http.StatusForbidden},
+				{"wrong account", common.RoleRootUser, endpoint.scope, func(c *gin.Context) { c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(account.ID + 1)}} }, http.StatusNotFound},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					response := gptAccountRequest(t, identity, tc.role, account.ID, http.MethodPost, endpoint.body, tc.scope, func(c *gin.Context) {
+						if tc.change != nil {
+							tc.change(c)
+						}
+						endpoint.handler(c)
+					})
+					assert.Equal(t, tc.want, response.Code, response.Body.String())
+					assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
+				})
+			}
+			wrongBinding := gptAccountRequest(t, identity, common.RoleRootUser, account.ID+1, http.MethodPost, endpoint.body, endpoint.scope, func(c *gin.Context) {
+				c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(account.ID)}}
+				endpoint.handler(c)
+			})
+			assert.Equal(t, http.StatusForbidden, wrongBinding.Code)
+			require.NoError(t, model.DB.Model(&account).Update("owner_id", identity.UserID+1).Error)
+			other := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, endpoint.body, endpoint.scope, endpoint.handler)
+			assert.Equal(t, http.StatusNotFound, other.Code)
+			require.NoError(t, model.DB.Model(&account).Update("owner_id", identity.UserID).Error)
+			require.NoError(t, authz.SetUserPermissions(identity.UserID, authz.PermissionsMap{"gpt_account": {"manage": false}}))
+			denied := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, endpoint.body, endpoint.scope, endpoint.handler)
+			assert.Equal(t, http.StatusForbidden, denied.Code)
+			require.NoError(t, authz.ClearUserPermissions(identity.UserID))
+			proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: endpoint.scope, Context: []byte(fmt.Sprintf(`{"account_id":%d}`, account.ID))}, service.VerificationMethodPassword)
+			for i := range 2 {
+				response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, endpoint.body, "", func(c *gin.Context) { c.Request.Header.Set("X-Security-Proof", proof); endpoint.handler(c) })
+				if i == 0 {
+					require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+				} else {
+					assert.Equal(t, http.StatusForbidden, response.Code)
+					assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
+				}
+			}
+		})
+	}
+}
+
+func TestGPTAccountTOTPConfirmedSaveAndReveal(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	channel := model.Channel{Type: 57, Key: `{"access_token":"private-access","refresh_token":"private-refresh","account_id":"account"}`, Name: "Preserved", Status: common.ChannelStatusEnabled, Models: "gpt-5", Group: "default"}
+	require.NoError(t, model.DB.Create(&channel).Error)
+	require.NoError(t, channel.AddAbilities(nil))
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "saved-account", Generation: 1, Group: "default", Models: "gpt-5", ChannelID: &channel.Id, ChannelKeyHash: model.GPTChannelKeyHash(channel.Key), AccountID: "account", OAuthSubject: "subject", AutoRelogin: true, Status: "ready"}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	legacy := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	assert.Contains(t, legacy.Body.String(), `"totp_status":"saved"`)
+	job, err := service.AcquireGPTAccountJob(account.ID, false)
+	require.NoError(t, err)
+	before := time.Now().Unix()
+	saved := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{"totp_secret":"jbsw y3dp ehpk 3pxq","confirmed_bound":true}`, "gpt_account.totp.update", UpdateGPTAccountTOTP)
+	require.Equal(t, http.StatusOK, saved.Code, saved.Body.String())
+	assert.Contains(t, saved.Body.String(), `"totp_status":"operator_confirmed"`)
+	assert.NotContains(t, saved.Body.String(), "JBSWY3DPEHPK3P")
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Equal(t, int64(1), account.TOTPVersion)
+	assert.GreaterOrEqual(t, account.TOTPUpdatedAt, before)
+	assert.Equal(t, job.Generation+1, account.Generation)
+	assert.Empty(t, account.LeaseID)
+	assert.Zero(t, account.LeaseUntil)
+	assert.Equal(t, "account", account.AccountID)
+	assert.Equal(t, "subject", account.OAuthSubject)
+	secrets, err := service.DecryptGPTAccountSecrets(&account)
+	require.NoError(t, err)
+	assert.Equal(t, "private-password", secrets.Password)
+	assert.Equal(t, "JBSWY3DPEHPK3PXQ", secrets.TOTPSecret)
+	assert.NotContains(t, account.SecretsCiphertext, secrets.TOTPSecret)
+	assert.ErrorIs(t, model.StoreGPTAccountCredential(job, `{"access_token":"stale"}`, "account"), model.ErrGPTAccountStale)
+	service.ReleaseGPTAccountJob(job, "invalid_credentials")
+	var storedChannel model.Channel
+	require.NoError(t, model.DB.First(&storedChannel, channel.Id).Error)
+	assert.Equal(t, channel.Key, storedChannel.Key)
+	assert.Equal(t, channel.Status, storedChannel.Status)
+	for _, seed := range []string{"", "JBSWY3DPEHPK3PXQ"} {
+		updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, fmt.Sprintf(`{"name":"Managed","email":"owner@example.com","totp_secret":%q}`, seed), "gpt_account.update", UpdateGPTAccount)
+		require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
+		assert.Contains(t, updated.Body.String(), `"totp_status":"operator_confirmed"`)
+		assert.Contains(t, updated.Body.String(), `"totp_version":1`)
+	}
+	revealed := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, "gpt_account.totp.read", RevealGPTAccountTOTP)
+	require.Equal(t, http.StatusOK, revealed.Code, revealed.Body.String())
+	assert.Contains(t, revealed.Header().Get("Cache-Control"), "no-store")
+	var response struct {
+		Data struct {
+			Secret    string `json:"totp_secret"`
+			ExpiresAt int64  `json:"expires_at"`
+		} `json:"data"`
+	}
+	require.NoError(t, common.Unmarshal(revealed.Body.Bytes(), &response))
+	assert.Equal(t, "JBSWY3DPEHPK3PXQ", response.Data.Secret)
+	assert.InDelta(t, time.Now().Unix()+30, response.Data.ExpiresAt, 1)
+	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	var audits []model.AuditLog
+	require.NoError(t, model.LOG_DB.Find(&audits).Error)
+	encoded, err := common.Marshal(audits)
+	require.NoError(t, err)
+	for _, secret := range []string{"JBSWY3DPEHPK3PXP", "JBSWY3DPEHPK3PXQ", "private-password", "private-access", "private-refresh"} {
+		assert.NotContains(t, listed.Body.String(), secret)
+		assert.NotContains(t, string(encoded), secret)
+	}
+	assert.Contains(t, string(encoded), "gpt_account.totp.update")
+	assert.Contains(t, string(encoded), "gpt_account.totp.read")
+}
+
+func TestGPTAccountTOTPInvalidSaveAndEncryptionFailurePreserveState(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "invalid-account", Generation: 7}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password"}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	original := account
+	for _, body := range []string{`{}`, `{"totp_secret":"JBSWY3DPEHPK3PXQ"}`, `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":false}`, `{"totp_secret":"","confirmed_bound":true}`, `{"totp_secret":"AAAAAAAAAAAAAAAAAB","confirmed_bound":true}`, `{"totp_secret":"JBSWY3DPEHPK3PXQ=","confirmed_bound":true}`} {
+		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, "gpt_account.totp.update", UpdateGPTAccountTOTP)
+		assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
+	}
+	empty := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, "gpt_account.totp.read", RevealGPTAccountTOTP)
+	assert.Equal(t, http.StatusNotFound, empty.Code)
+	t.Setenv("GPT_ACCOUNT_ENCRYPTION_KEY_FILE", "")
+	for _, handler := range []struct {
+		fn          gin.HandlerFunc
+		scope, body string
+	}{
+		{UpdateGPTAccountTOTP, "gpt_account.totp.update", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`},
+		{RevealGPTAccountTOTP, "gpt_account.totp.read", `{}`},
+	} {
+		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, handler.body, handler.scope, handler.fn)
+		assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+		assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
+	}
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Equal(t, original, account)
+}
+
+func TestGPTAccountTOTPConcurrentCredentialChange(t *testing.T) {
+	for _, reveal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reveal_%v", reveal), func(t *testing.T) {
+			identity := setupGPTAccountTest(t)
+			account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "concurrent-account", Generation: 1}
+			require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "old-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
+			require.NoError(t, model.DB.Create(&account).Error)
+			// A concurrent general edit commits after the first account read, before
+			// the dedicated operation can consume its proof and write or reveal.
+			raceRan := false
+			require.NoError(t, model.DB.Callback().Query().After("gorm:query").Register("test:concurrent-gpt-secret", func(tx *gorm.DB) {
+				if snapshot, ok := tx.Statement.Dest.(*model.GPTAccount); !ok || snapshot.ID != account.ID || raceRan {
+					return
+				}
+				raceRan = true
+				updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Managed","email":"owner@example.com","password":"concurrent-password","totp_secret":"JBSWY3DPEHPK3PXQ"}`, "gpt_account.update", UpdateGPTAccount)
+				require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
+			}))
+			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove("test:concurrent-gpt-secret") })
+			handler, scope, body := UpdateGPTAccountTOTP, "gpt_account.totp.update", `{"totp_secret":"AAAAAAAAAAAAAAAA","confirmed_bound":true}`
+			if reveal {
+				handler, scope, body = RevealGPTAccountTOTP, "gpt_account.totp.read", `{}`
+			}
+			response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, scope, handler)
+			require.True(t, raceRan)
+			if reveal {
+				assert.Equal(t, http.StatusOK, response.Code)
+				assert.Contains(t, response.Body.String(), "JBSWY3DPEHPK3PXQ")
+				assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3PXP")
+			} else {
+				assert.Equal(t, http.StatusConflict, response.Code)
+			}
+			require.NoError(t, model.DB.First(&account, account.ID).Error)
+			secrets, err := service.DecryptGPTAccountSecrets(&account)
+			require.NoError(t, err)
+			assert.Equal(t, "concurrent-password", secrets.Password)
+			assert.Equal(t, "JBSWY3DPEHPK3PXQ", secrets.TOTPSecret)
+			assert.Equal(t, int64(1), account.TOTPVersion)
+			assert.Equal(t, "saved", account.TOTPStatus)
+		})
+	}
+}
+
+func TestGPTAccountTOTPRevokedSessionRejectsUnusedProofs(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "revoked-account", Generation: 1}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{TOTPSecret: "JBSWY3DPEHPK3PXP"}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	operation := service.VerificationOperation{Context: []byte(fmt.Sprintf(`{"account_id":%d}`, account.ID))}
+	proofs := map[string]string{}
+	for _, scope := range []string{"gpt_account.totp.update", "gpt_account.totp.read"} {
+		operation.Scope = scope
+		proofs[scope] = issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
+	}
+	revoked, err := model.RevokeUserSession(identity.UserID, identity.SessionID, "test")
+	require.NoError(t, err)
+	require.True(t, revoked)
+	for _, endpoint := range []struct {
+		scope, body string
+		handler     gin.HandlerFunc
+	}{
+		{"gpt_account.totp.update", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`, UpdateGPTAccountTOTP},
+		{"gpt_account.totp.read", `{}`, RevealGPTAccountTOTP},
+	} {
+		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, endpoint.body, "", func(c *gin.Context) {
+			c.Request.Header.Set("X-Security-Proof", proofs[endpoint.scope])
+			endpoint.handler(c)
+		})
+		assert.Equal(t, http.StatusForbidden, response.Code)
+		assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
+	}
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Zero(t, account.TOTPVersion)
+	secrets, err := service.DecryptGPTAccountSecrets(&account)
+	require.NoError(t, err)
+	assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
 }

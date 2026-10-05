@@ -44,6 +44,10 @@ export function getAccountErrorMessage(
       return t('Authorize this account to create its channel first.')
     case 'authorization_forbidden':
       return t('You do not have permission to manage this account.')
+    case 'totp_confirmation_required':
+      return t('Confirm that official authenticator binding is complete.')
+    case 'totp_secret_not_found':
+      return t('No TOTP secret is stored for this account.')
     case 'invalid_totp_secret':
       return t('Enter a Base32 TOTP secret')
     case 'invalid_channel':

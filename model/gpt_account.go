@@ -33,6 +33,9 @@ type GPTAccount struct {
 	UpdatedAt         int64  `json:"updated_at" gorm:"autoUpdateTime"`
 	HasPassword       bool   `json:"has_password"`
 	HasTOTP           bool   `json:"has_totp"`
+	TOTPVersion       int64  `json:"totp_version"`
+	TOTPUpdatedAt     int64  `json:"totp_updated_at"`
+	TOTPStatus        string `json:"totp_status" gorm:"type:varchar(32)"`
 	CanManage         bool   `json:"can_manage" gorm:"-"`
 	SecretID          string `json:"-" gorm:"type:varchar(64);not null"`
 	SecretsCiphertext string `json:"-" gorm:"type:text;not null"`
