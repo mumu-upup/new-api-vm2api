@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -24,6 +28,7 @@ import (
 	"github.com/go-redis/redis/v8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -723,4 +728,349 @@ func TestUpdateUserSettingKeepsWhatTheRequestLeavesOut(t *testing.T) {
 			assert.Equal(t, tc.want, user.GetSetting())
 		})
 	}
+}
+
+func TestUserConcurrencyEndpointsAndPersistence(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Token{}))
+	user := model.User{Username: "concurrency-user", AffCode: "concurrency-user", Password: "password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+	admin := model.User{Username: "concurrency-admin", AffCode: "concurrency-admin", Password: "password", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+	require.NoError(t, db.Create(&admin).Error)
+	own := model.Token{UserId: user.Id, Key: strings.Repeat("a", 48), Name: "own"}
+	other := model.Token{UserId: admin.Id, Key: strings.Repeat("b", 48), Name: "other"}
+	require.NoError(t, db.Create(&own).Error)
+	require.NoError(t, db.Create(&other).Error)
+	request := func(method, path, body string, role int, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+		r := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(r)
+		c.Request = httptest.NewRequest(method, path, strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		c.Set("id", user.Id)
+		c.Set("role", role)
+		c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(user.Id)}}
+		handler(c)
+		return r
+	}
+	for _, body := range []string{`{}`, `{"max_concurrent_requests":-1}`, `{"max_concurrent_requests":1.5}`, `{"max_concurrent_requests":2147483648}`} {
+		response := request(http.MethodPut, "/", body, common.RoleRootUser, UpdateUserConcurrency)
+		assert.Contains(t, response.Body.String(), `"success":false`)
+	}
+	response := request(http.MethodPut, "/", `{"max_concurrent_requests":3}`, common.RoleCommonUser, UpdateUserConcurrency)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	response = request(http.MethodPut, "/", `{"max_concurrent_requests":3}`, common.RoleAdminUser, UpdateUserConcurrency)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	require.NoError(t, db.First(&user, user.Id).Error)
+	assert.Equal(t, 3, user.MaxConcurrentRequests)
+	// A stale profile snapshot may not overwrite the administrator's cap.
+	stale := model.User{Id: user.Id, DisplayName: "new name", MaxConcurrentRequests: 99}
+	require.NoError(t, stale.Update(false))
+	require.NoError(t, db.First(&user, user.Id).Error)
+	assert.Equal(t, 3, user.MaxConcurrentRequests)
+	lease, err := service.AcquireRelayConcurrency(context.Background(), user.Id, own.Id, 3)
+	require.NoError(t, err)
+	defer lease.Release(context.Background())
+	response = request(http.MethodGet, fmt.Sprintf("/?ids=%d", own.Id), "", common.RoleCommonUser, GetTokenConcurrency)
+	assert.Contains(t, response.Body.String(), `"current":1`)
+	assert.Contains(t, response.Body.String(), `"max_concurrent_requests":3`)
+	assert.Contains(t, response.Body.String(), fmt.Sprintf(`"tokens":{"%d":1}`, own.Id))
+	assert.NotContains(t, response.Body.String(), own.Key)
+	response = request(http.MethodGet, fmt.Sprintf("/?ids=%d", other.Id), "", common.RoleCommonUser, GetTokenConcurrency)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	response = request(http.MethodGet, fmt.Sprintf("/?ids=%d", user.Id), "", common.RoleCommonUser, GetUserConcurrency)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	response = request(http.MethodGet, fmt.Sprintf("/?ids=%d", user.Id), "", common.RoleAdminUser, GetUserConcurrency)
+	assert.Contains(t, response.Body.String(), `"success":true`)
+	assert.Contains(t, response.Body.String(), `"current":1`)
+	// Administrators cannot edit peer administrators, even by direct handler access.
+	r := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(r)
+	c.Request = httptest.NewRequest(http.MethodPut, "/", strings.NewReader(`{"max_concurrent_requests":8}`))
+	c.Set("role", common.RoleAdminUser)
+	c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(admin.Id)}}
+	UpdateUserConcurrency(c)
+	assert.Contains(t, r.Body.String(), `"success":false`)
+	response = request(http.MethodPut, "/", `{"max_concurrent_requests":0}`, common.RoleRootUser, UpdateUserConcurrency)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	require.NoError(t, db.First(&user, user.Id).Error)
+	assert.Zero(t, user.MaxConcurrentRequests)
+	// A saved limit remains a successful mutation when the live snapshot fails.
+	oldRedis, oldEnabled := common.RDB, common.RedisEnabled
+	defer func() { common.RDB, common.RedisEnabled = oldRedis, oldEnabled }()
+	server := miniredis.RunT(t)
+	common.RedisEnabled = true
+	common.RDB = redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	defer common.RDB.Close()
+	require.NoError(t, model.PublishUserAuthCache(user.Id))
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	r = httptest.NewRecorder()
+	c, _ = gin.CreateTestContext(r)
+	c.Request = httptest.NewRequest(http.MethodPut, "/", strings.NewReader(`{"max_concurrent_requests":4}`)).WithContext(canceled)
+	c.Set("id", user.Id)
+	c.Set("role", common.RoleRootUser)
+	c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(user.Id)}}
+	UpdateUserConcurrency(c)
+	assert.Equal(t, http.StatusOK, r.Code)
+	assert.Contains(t, r.Body.String(), `"success":true`)
+	assert.Contains(t, r.Body.String(), `"current":null`)
+	require.NoError(t, db.First(&user, user.Id).Error)
+	assert.Equal(t, 4, user.MaxConcurrentRequests)
+}
+
+// releasedConcurrencyUser preserves the users schema from v1.0.0-rc.41.
+// Verified with git diff v1.0.0-rc.41 HEAD -- model/user.go (no differences)
+// before adding MaxConcurrentRequests; keep this fixture frozen for upgrades.
+type releasedConcurrencyUser struct {
+	Id                   int                        `json:"id"`
+	Username             string                     `json:"username" gorm:"unique;index" validate:"max=20"`
+	Password             string                     `json:"password" gorm:"not null;" validate:"min=8,max=128"`
+	HasPassword          bool                       `json:"-" gorm:"-:all"`
+	OriginalPassword     string                     `json:"original_password" gorm:"-:all"`
+	DisplayName          string                     `json:"display_name" gorm:"index" validate:"max=20"`
+	Role                 int                        `json:"role" gorm:"type:int;default:1"`
+	Status               int                        `json:"status" gorm:"type:int;default:1"`
+	Email                string                     `json:"email" gorm:"index" validate:"max=50"`
+	GitHubId             string                     `json:"github_id" gorm:"column:github_id;index"`
+	DiscordId            string                     `json:"discord_id" gorm:"column:discord_id;index"`
+	OidcId               string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
+	WeChatId             string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
+	TelegramId           string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
+	VerificationCode     string                     `json:"verification_code" gorm:"-:all"`
+	AccessToken          *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"`
+	AccessTokenCreatedAt *int64                     `json:"-" gorm:"type:bigint;column:access_token_created_at"`
+	Quota                int                        `json:"quota" gorm:"type:int;default:0"`
+	UsedQuota            int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"`
+	RequestCount         int                        `json:"request_count" gorm:"type:int;default:0;"`
+	Group                string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
+	AffCode              string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
+	AffCount             int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
+	AffQuota             int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`
+	AffHistoryQuota      int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"`
+	InviterId            int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	DeletedAt            gorm.DeletedAt             `gorm:"index"`
+	LinuxDOId            string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
+	Setting              string                     `json:"setting" gorm:"type:text;column:setting"`
+	Remark               string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	StripeCustomer       string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	CreatedAt            int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
+	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
+	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
+	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+}
+
+func (releasedConcurrencyUser) TableName() string { return "users" }
+
+func TestUserConcurrencyColumnMigration(t *testing.T) {
+	dialect := os.Getenv("TEST_MANAGE_USER_DIALECT")
+	if dialect == "" {
+		dialect = "sqlite"
+	}
+	db, _ := newAuditTestDatabase(t, dialect, os.Getenv("TEST_"+strings.ToUpper(dialect)+"_DSN"))
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	versionQuery := "SELECT version()"
+	if dialect == "sqlite" {
+		versionQuery = "SELECT sqlite_version()"
+	}
+	var version string
+	require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+	t.Logf("released-schema upgrade database: %s %s", dialect, version)
+	// Build the released schema in an empty isolated database before any current
+	// User migration. Existing rows and unique indexes must survive the upgrade.
+	require.NoError(t, db.AutoMigrate(&releasedConcurrencyUser{}))
+	user := releasedConcurrencyUser{Username: "concurrency-upgrade", Password: "preserve-password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", Setting: `{"language":"zh"}`}
+	require.NoError(t, db.Create(&user).Error)
+	for range 2 {
+		require.NoError(t, db.AutoMigrate(&model.User{}))
+	}
+	var upgraded model.User
+	require.NoError(t, db.First(&upgraded, user.Id).Error)
+	assert.Zero(t, upgraded.MaxConcurrentRequests)
+	assert.Equal(t, user.Password, upgraded.Password)
+	assert.Equal(t, user.Setting, upgraded.Setting)
+	require.NoError(t, db.Model(&model.User{}).Where("id = ?", user.Id).Update("max_concurrent_requests", 7).Error)
+	for range 2 {
+		require.NoError(t, db.AutoMigrate(&model.User{}))
+	}
+	require.NoError(t, db.First(&upgraded, user.Id).Error)
+	assert.Equal(t, 7, upgraded.MaxConcurrentRequests)
+	duplicate := model.User{Username: user.Username, AffCode: "unique-duplicate-code", Password: "password"}
+	assert.Error(t, db.Create(&duplicate).Error)
+}
+
+func TestRelayConcurrencyMiddlewareLifetime(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupManageUserTestDB(t)
+	user := model.User{Username: "concurrency-stream", Password: "password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", MaxConcurrentRequests: 1}
+	require.NoError(t, db.Create(&user).Error)
+	entered, finish := make(chan struct{}), make(chan struct{})
+	engine := gin.New()
+	engine.Use(gin.Recovery())
+	engine.Use(func(c *gin.Context) {
+		c.Set("id", user.Id)
+		token, _ := strconv.Atoi(c.GetHeader("X-Test-Token"))
+		c.Set("token_id", token)
+	})
+	engine.Use(middleware.RelayConcurrency())
+	engine.GET("/stream", func(c *gin.Context) {
+		c.Header("Content-Type", "text/event-stream")
+		c.Writer.WriteHeader(http.StatusOK)
+		c.Writer.Flush()
+		close(entered)
+		<-finish
+	})
+	engine.GET("/error", func(c *gin.Context) { c.AbortWithStatus(http.StatusBadGateway) })
+	engine.GET("/panic", func(c *gin.Context) { panic("concurrency regression") })
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		r := httptest.NewRequest(http.MethodGet, "/stream", nil)
+		r.Header.Set("X-Test-Token", "1")
+		engine.ServeHTTP(httptest.NewRecorder(), r)
+	}()
+	<-entered
+	snapshot, err := service.GetRelayConcurrency(context.Background(), user.Id, []int{1, 2})
+	require.NoError(t, err)
+	assert.Equal(t, 1, snapshot.Current)
+	assert.Equal(t, 1, snapshot.Tokens[1])
+	denied := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/error", nil)
+	r.Header.Set("X-Test-Token", "2")
+	engine.ServeHTTP(denied, r)
+	assert.Equal(t, http.StatusTooManyRequests, denied.Code)
+	close(finish)
+	<-firstDone
+	for _, path := range []string{"/error", "/panic"} {
+		engine.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+		snapshot, err = service.GetRelayConcurrency(context.Background(), user.Id, nil)
+		require.NoError(t, err)
+		assert.Zero(t, snapshot.Current)
+	}
+}
+
+func TestRelayConcurrencyWebSocketAndCancellation(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	user := model.User{Username: "concurrency-ws", Password: "password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", MaxConcurrentRequests: 1}
+	require.NoError(t, db.Create(&user).Error)
+	engine := gin.New()
+	done := make(chan struct{}, 2)
+	engine.Use(func(c *gin.Context) {
+		defer func() { done <- struct{}{} }()
+		c.Set("id", user.Id)
+		c.Set("token_id", 9)
+		c.Next()
+	}, middleware.RelayConcurrency())
+	engine.GET("/ws", func(c *gin.Context) {
+		upgrader := websocket.Upgrader{}
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _ = conn.ReadMessage()
+	})
+	entered := make(chan struct{})
+	engine.GET("/cancel", func(c *gin.Context) { close(entered); <-c.Request.Context().Done() })
+	server := httptest.NewServer(engine)
+	defer server.Close()
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws", nil)
+	require.NoError(t, err)
+	snapshot, err := service.GetRelayConcurrency(context.Background(), user.Id, []int{9})
+	require.NoError(t, err)
+	assert.Equal(t, 1, snapshot.Current)
+	assert.Equal(t, 1, snapshot.Tokens[9])
+	require.NoError(t, conn.Close())
+	<-done
+	snapshot, err = service.GetRelayConcurrency(context.Background(), user.Id, nil)
+	require.NoError(t, err)
+	assert.Zero(t, snapshot.Current)
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/cancel", nil).WithContext(ctx)
+	go engine.ServeHTTP(httptest.NewRecorder(), req)
+	<-entered
+	cancel()
+	<-done
+	snapshot, err = service.GetRelayConcurrency(context.Background(), user.Id, nil)
+	require.NoError(t, err)
+	assert.Zero(t, snapshot.Current)
+	oldRedis, oldEnabled := common.RDB, common.RedisEnabled
+	defer func() { common.RDB, common.RedisEnabled = oldRedis, oldEnabled }()
+	common.RedisEnabled = true
+	common.RDB = nil
+	response := httptest.NewRecorder()
+	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ws", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+}
+
+// stalledConcurrencyConn models an upgraded connection whose shutdown has not
+// completed. The request's slot must remain reserved until shutdown finishes.
+type stalledConcurrencyConn struct {
+	net.Conn
+	closeStarted chan struct{}
+	allowClose   chan struct{}
+	closeOnce    sync.Once
+}
+
+func (connection *stalledConcurrencyConn) Close() error {
+	connection.closeOnce.Do(func() { close(connection.closeStarted) })
+	<-connection.allowClose
+	return connection.Conn.Close()
+}
+
+type concurrencyHijackRecorder struct {
+	*httptest.ResponseRecorder
+	connection net.Conn
+}
+
+func (recorder *concurrencyHijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return recorder.connection, bufio.NewReadWriter(bufio.NewReader(recorder.connection), bufio.NewWriter(recorder.connection)), nil
+}
+
+func TestRelayConcurrencyCancellationWaitsForConnectionShutdown(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	user := model.User{Username: "concurrency-shutdown", Password: "password", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", MaxConcurrentRequests: 1}
+	require.NoError(t, db.Create(&user).Error)
+	synctest.Test(t, func(t *testing.T) {
+		connection, peer := net.Pipe()
+		defer peer.Close()
+		stalled := &stalledConcurrencyConn{Conn: connection, closeStarted: make(chan struct{}), allowClose: make(chan struct{})}
+		entered, handlerFinishing, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+		engine := gin.New()
+		engine.Use(func(c *gin.Context) { c.Set("id", user.Id); c.Set("token_id", 9) }, middleware.RelayConcurrency())
+		engine.GET("/", func(c *gin.Context) {
+			_, _, err := c.Writer.Hijack()
+			if err != nil {
+				panic(err)
+			}
+			close(entered)
+			<-c.Request.Context().Done()
+			<-stalled.closeStarted
+			close(handlerFinishing)
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+		go func() {
+			defer close(finished)
+			engine.ServeHTTP(&concurrencyHijackRecorder{ResponseRecorder: httptest.NewRecorder(), connection: stalled}, request)
+		}()
+		<-entered
+		cancel()
+		<-handlerFinishing
+		synctest.Wait()
+		snapshot, err := service.GetRelayConcurrency(context.Background(), user.Id, nil)
+		require.NoError(t, err)
+		assert.Equal(t, 1, snapshot.Current, "slot stays reserved while the watcher finishes closing the connection")
+		select {
+		case <-finished:
+			t.Error("request cleanup returned before connection shutdown")
+		default:
+		}
+		close(stalled.allowClose)
+		<-finished
+		snapshot, err = service.GetRelayConcurrency(context.Background(), user.Id, nil)
+		require.NoError(t, err)
+		assert.Zero(t, snapshot.Current)
+	})
 }

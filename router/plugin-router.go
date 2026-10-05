@@ -114,15 +114,17 @@ func productionPluginRouteHandlers(generation *jsplugin.RoutingGeneration, bindi
 			c.Writer.Status(),
 		)
 	}
-	return []gin.HandlerFunc{
-		pinRoute,
-		middleware.TokenAuth(),
+	handlers := []gin.HandlerFunc{pinRoute, middleware.TokenAuth()}
+	if binding.Route.Type != jsplugin.RouteTypeQuery {
+		handlers = append(handlers, middleware.RelayConcurrency())
+	}
+	return append(handlers,
 		middleware.SystemPerformanceCheck(),
 		middleware.ModelRequestRateLimit(),
 		middleware.PrepareTaskPluginRoute(),
 		middleware.Distribute(),
 		controller.RelayTask,
-	}
+	)
 }
 
 func (b *pluginGenerationBuilder) prepare(candidate, current *jsplugin.RoutingGeneration) (jsplugin.PreparedRoutingGeneration, error) {

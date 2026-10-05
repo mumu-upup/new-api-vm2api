@@ -151,7 +151,9 @@ it('shows balance above secondary usage text and opens quota details on click', 
     within(cells[0]).queryByText('Available Balance')
   ).not.toBeInTheDocument()
   expect(within(cells[0]).getByText('0.0022')).toBeInTheDocument()
-  expect(screen.getByText('0.0038').parentElement).toHaveClass('grid-cols-1')
+  expect(
+    screen.getByText('0.0038').closest('[data-slot="status-badge"]')
+  ).toHaveClass('font-semibold', 'bg-success/10')
   expect(screen.getByText('Used amount').parentElement).toHaveAttribute(
     'data-table-text',
     'secondary'
@@ -207,7 +209,9 @@ it('preserves negative balances in details opened with the keyboard', async () =
       <QuotaTable remaining={-500000} used={1000000} />
     </I18nextProvider>
   )
-  expect(screen.getByText('-1')).toHaveClass('text-destructive')
+  expect(
+    screen.getByText('-1').closest('[data-slot="status-badge"]')
+  ).toHaveClass('text-destructive', 'bg-destructive/10')
   expect(screen.getByText('2')).toBeInTheDocument()
   await userEvent.tab()
   await userEvent.keyboard('{Enter}')
@@ -254,8 +258,14 @@ function UsersPage() {
   )
 }
 
-async function renderUsersList(emptyInvitation = false) {
-  useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 100 })
+async function renderUsersList(
+  emptyInvitation = false,
+  viewerRole = 100,
+  targetRole = 1
+) {
+  useAuthStore
+    .getState()
+    .auth.setUser({ id: 1, username: 'admin', role: viewerRole })
   const usersResponse = {
     data: {
       success: true,
@@ -265,7 +275,7 @@ async function renderUsersList(emptyInvitation = false) {
             id: 2,
             username: 'long-user-name-for-table-layout',
             display_name: 'A display name',
-            role: 1,
+            role: targetRole,
             status: 1,
             quota: 1900,
             used_quota: 1100,
@@ -282,13 +292,20 @@ async function renderUsersList(emptyInvitation = false) {
       },
     },
   }
-  const get = vi
-    .spyOn(api, 'get')
-    .mockImplementation(async (url) =>
-      url === '/api/group/'
-        ? { data: { success: true, data: ['default'] } }
-        : usersResponse
-    )
+  const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === '/api/group/') {
+      return { data: { success: true, data: ['default'] } }
+    }
+    if (url === '/api/user/concurrency') {
+      return {
+        data: {
+          success: true,
+          data: { '2': { user_id: 2, current: 3, max_concurrent_requests: 5 } },
+        },
+      }
+    }
+    return usersResponse
+  })
   const root = createRootRoute()
   const auth = createRoute({ getParentRoute: () => root, id: '_authenticated' })
   const users = createRoute({
@@ -442,3 +459,127 @@ it('labels raw quota mode as tokens without introducing a currency symbol', () =
     within(screen.getAllByRole('cell')[0]).getByText('200')
   ).toBeInTheDocument()
 })
+
+it('shows account concurrency and saves an unlimited shared limit', async () => {
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: {
+      success: true,
+      data: { user_id: 2, current: 3, max_concurrent_requests: 0 },
+    },
+  })
+  const get = await renderUsersList()
+  expect(
+    await screen.findByLabelText('Concurrent requests: 3 / 5')
+  ).toBeInTheDocument()
+  expect(get).toHaveBeenCalledWith(
+    '/api/user/concurrency',
+    expect.objectContaining({ params: { ids: '2' } })
+  )
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Edit concurrency limit' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Edit concurrency limit',
+  })
+  const input = within(dialog).getByRole('spinbutton', {
+    name: 'Concurrent request limit',
+  })
+  expect(input).toHaveValue(5)
+  await userEvent.clear(input)
+  await userEvent.type(input, '0')
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save changes' })
+  )
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith('/api/user/2/concurrency', {
+      max_concurrent_requests: 0,
+    })
+  )
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  )
+})
+
+it('rejects invalid concurrency limits and preserves the dialog after a rejected save', async () => {
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: false, message: 'Cannot change this user' },
+  })
+  await renderUsersList()
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Edit concurrency limit' })
+    ).toBeEnabled()
+  )
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Edit concurrency limit' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Edit concurrency limit',
+  })
+  const input = within(dialog).getByRole('spinbutton', {
+    name: 'Concurrent request limit',
+  })
+  await userEvent.clear(input)
+  await userEvent.type(input, '-1')
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save changes' })
+  )
+  expect(put).not.toHaveBeenCalled()
+  expect(
+    await within(dialog).findByText('Enter a whole number from 0 to 2147483647')
+  ).toBeInTheDocument()
+  await userEvent.clear(input)
+  await userEvent.type(input, '10')
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Save changes' })
+  )
+  expect(
+    await within(dialog).findByText('Cannot change this user')
+  ).toBeInTheDocument()
+  expect(input).toHaveValue(10)
+})
+
+it('keeps an in-progress limit edit when a concurrency refresh fails', async () => {
+  const get = await renderUsersList()
+  await screen.findByLabelText('Concurrent requests: 3 / 5')
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Edit concurrency limit' })
+  )
+  const input = await screen.findByRole('spinbutton', {
+    name: 'Concurrent request limit',
+  })
+  await userEvent.clear(input)
+  await userEvent.type(input, '12')
+  get.mockRejectedValue(new Error('temporarily unavailable'))
+  await act(async () => {
+    await clients.at(-1)?.refetchQueries({ queryKey: ['request-concurrency'] })
+  })
+  await waitFor(() =>
+    expect(
+      screen.getByLabelText('Concurrent requests: Unknown')
+    ).toBeInTheDocument()
+  )
+  expect(
+    screen.getByRole('dialog', { name: 'Edit concurrency limit' })
+  ).toBeInTheDocument()
+  expect(input).toHaveValue(12)
+})
+
+it.each([
+  [1, 1, false],
+  [10, 10, false],
+  [10, 100, false],
+  [10, 1, true],
+  [100, 100, true],
+])(
+  'limits concurrency editing by role hierarchy (viewer=%s, target=%s)',
+  async (viewerRole, targetRole, allowed) => {
+    await renderUsersList(false, viewerRole, targetRole)
+    await screen.findByLabelText('Concurrent requests: 3 / 5')
+    const edit = screen.queryByRole('button', {
+      name: 'Edit concurrency limit',
+    })
+    if (allowed) expect(edit).toBeEnabled()
+    else expect(edit).not.toBeInTheDocument()
+  }
+)

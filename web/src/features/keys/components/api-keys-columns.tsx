@@ -23,6 +23,7 @@ import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
 import { Checkbox } from '@/components/ui/checkbox'
+import { TokenConcurrencyStatus } from '@/features/concurrency/concurrency-status'
 import { useMediaQuery } from '@/hooks'
 import { toIntlLocale } from '@/i18n/languages'
 import { getUserGroups } from '@/lib/api'
@@ -147,6 +148,13 @@ export function useApiKeysColumns(now: number): ColumnDef<ApiKey>[] {
         cell: ({ row }) => <ApiKeyQuotaCell apiKey={row.original} now={now} />,
         size: 260,
         minSize: 260,
+      },
+      {
+        id: 'concurrency',
+        header: t('Concurrent requests'),
+        cell: ({ row }) => <TokenConcurrencyStatus tokenId={row.original.id} />,
+        enableSorting: false,
+        size: 160,
       },
       {
         accessorKey: 'group',

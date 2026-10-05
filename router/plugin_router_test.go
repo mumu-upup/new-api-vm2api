@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -728,7 +730,14 @@ func TestProductionPluginNativeQueryTraversesInnerRouter(t *testing.T) {
 	previousDB := model.DB
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, database.AutoMigrate(&model.Task{}))
+	require.NoError(t, database.AutoMigrate(&model.Task{}, &model.User{}))
+	previousRedisEnabled := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = previousRedisEnabled })
+	require.NoError(t, database.Create(&model.User{Id: 91, Username: "native-concurrency", MaxConcurrentRequests: 1}).Error)
+	lease, err := service.AcquireRelayConcurrency(context.Background(), 91, 1, 1)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, lease.Release(context.Background())) })
 	model.DB = database
 	t.Cleanup(func() { model.DB = previousDB })
 	require.NoError(t, database.Create(&model.Task{
@@ -751,22 +760,18 @@ func TestProductionPluginNativeQueryTraversesInnerRouter(t *testing.T) {
 		binding jsplugin.RouteBinding,
 	) []gin.HandlerFunc {
 		production := productionPluginRouteHandlers(generation, binding)
-		return []gin.HandlerFunc{
-			production[0],
-			func(c *gin.Context) {
-				common.SetContextKey(c, constant.ContextKeyUserId, 91)
-				common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
-				common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
-				c.Next()
-			},
-			production[2],
-			production[3],
-			production[4],
-			production[5],
-			production[6],
+		production[1] = func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyUserId, 91)
+			common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+			common.SetContextKey(c, constant.ContextKeyTokenGroup, "default")
+			c.Next()
 		}
+		return production
 	}
-	outer, registry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{kling}, authenticatedProductionHandlers)
+	dynamic := compileRouterPlugin(t, "concurrency-dynamic", "1.0.0", `[
+  {method: "POST", path: "/dynamic/jobs", type: "dynamic"}
+ ]`)
+	outer, registry := newPluginRouterTest(t, []*jsplugin.LoadedPlugin{kling, dynamic}, authenticatedProductionHandlers)
 	outer.NoRoute((&pluginRouteDispatcher{registry: registry}).dispatch)
 
 	request := httptest.NewRequest(http.MethodGet, "/kling/v1/videos/text2video/task_native_router", nil)
@@ -778,6 +783,19 @@ func TestProductionPluginNativeQueryTraversesInnerRouter(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), `"task_status":"succeed"`)
 	assert.NotContains(t, recorder.Body.String(), "private_upstream_id")
 	assert.NotContains(t, recorder.Body.String(), "secret.example")
+	// Admission must happen before body parsing and the plugin decoder, while
+	// the declared query above remains available at the same shared cap.
+	for _, path := range []string{"/kling/v1/videos/text2video", "/dynamic/jobs"} {
+		request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(`not JSON`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder = httptest.NewRecorder()
+		outer.ServeHTTP(recorder, request)
+		assert.Equal(t, http.StatusTooManyRequests, recorder.Code, recorder.Body.String())
+	}
+	snapshot, err := service.GetRelayConcurrency(context.Background(), 91, []int{1})
+	require.NoError(t, err)
+	assert.Equal(t, 1, snapshot.Current)
+	assert.Equal(t, 1, snapshot.Tokens[1])
 }
 
 func newPluginRouterTest(
