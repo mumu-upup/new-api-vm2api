@@ -31,6 +31,7 @@ import {
   PricingToolbar,
   ModelCardGrid,
   ModelDetailsDrawer,
+  PricingScrollContainer,
 } from './components'
 import { EXCLUDED_GROUPS, VIEW_MODES } from './constants'
 import { useFilters } from './hooks/use-filters'
@@ -159,8 +160,11 @@ export function Pricing() {
   }
 
   return (
-    <PublicLayout showMainContainer={false}>
-      <div className='relative'>
+    <PublicLayout
+      showMainContainer={false}
+      className='flex h-full min-h-0 flex-col overflow-hidden'
+    >
+      <PricingScrollContainer>
         <div
           aria-hidden
           className='pointer-events-none absolute inset-x-0 top-0 h-[600px] opacity-20 dark:opacity-[0.10]'
@@ -283,7 +287,7 @@ export function Pricing() {
             />
           )}
         </PageTransition>
-      </div>
+      </PricingScrollContainer>
     </PublicLayout>
   )
 }
