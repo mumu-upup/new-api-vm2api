@@ -1860,6 +1860,65 @@ it('creates a gateway with masked keys only after name-scoped verification and k
   expect(cache).not.toContain('gateway-relay-secret')
 })
 
+it('imports a direct CPA or Sub2API channel JSON only after scoped verification', async () => {
+  const user = userEvent.setup()
+  const configJSON =
+    '{"provider":"sub2api","base_url":"https://sub2api.example/v1","api_key":"relay-secret","models":["gpt-5"]}'
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import CPA/Sub2API channel JSON',
+  })
+  fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
+    target: { value: configJSON },
+  })
+  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-account-gateways/import-channel-json',
+      { config_json: configJSON },
+      expect.objectContaining({
+        headers: { 'X-Security-Proof': 'proof' },
+        singleUseAuthorization: true,
+      })
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account_gateway.create',
+      context: { name: 'channel-json' },
+    }),
+    expect.anything()
+  )
+})
+
+it('rejects non-object channel JSON before requesting security verification', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import CPA/Sub2API channel JSON',
+  })
+  fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
+    target: { value: '[]' },
+  })
+  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  expect(
+    await within(dialog).findByText(
+      'Paste a valid CPA or Sub2API channel JSON object.'
+    )
+  ).toBeVisible()
+  expect(api.post).not.toHaveBeenCalledWith(
+    '/api/verify',
+    expect.anything(),
+    expect.anything()
+  )
+})
+
 it('edits gateway display settings without exposing saved keys or changing connection identity', async () => {
   const user = userEvent.setup()
   vi.spyOn(api, 'put').mockResolvedValue({

@@ -118,6 +118,25 @@ export function saveGptAccountGateway(
   )
 }
 
+export function importGptGatewayChannelJSON(
+  configJson: string,
+  proof: string,
+  signal: AbortSignal
+) {
+  return authResult<{ channel_id: number; name: string; provider: string }>(
+    api.post(
+      '/api/gpt-account-gateways/import-channel-json',
+      { config_json: configJson },
+      {
+        ...authRequestOptions,
+        headers: { 'X-Security-Proof': proof },
+        singleUseAuthorization: true,
+        signal,
+      }
+    )
+  )
+}
+
 export async function deleteGptAccount(
   id: number,
   proof: string,
