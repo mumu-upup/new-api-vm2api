@@ -65,6 +65,7 @@ function GptAccountsPage(props: {
   const [gatewayEditor, setGatewayEditor] = useState<
     GptAccountGateway | 'create' | null
   >(null)
+  const [oauthImportAccount, setOAuthImportAccount] = useState<GptAccount | null>(null)
   const [oauthImportOpen, setOAuthImportOpen] = useState(false)
   const [deleting, setDeleting] = useState<GptAccount | null>(null)
   const query = useQuery({
@@ -120,6 +121,11 @@ function GptAccountsPage(props: {
     }
     if (kind === 'oauth') {
       setLogin(account)
+      return
+    }
+    if (kind === 'oauth_import') {
+      setOAuthImportAccount(account)
+      setOAuthImportOpen(true)
       return
     }
     if (kind === 'delete') {
@@ -331,11 +337,15 @@ function GptAccountsPage(props: {
           onSaved={refresh}
         />
       )}
-      {oauthImportOpen && (
-        <OAuthImportDialog
-          onClose={() => setOAuthImportOpen(false)}
-          onSaved={refresh}
-        />
+        {oauthImportOpen && (
+          <OAuthImportDialog
+            accountId={oauthImportAccount?.id}
+            onClose={() => {
+              setOAuthImportOpen(false)
+              setOAuthImportAccount(null)
+            }}
+            onSaved={refresh}
+          />
       )}
       <ConfirmDialog
         open={Boolean(deleting) && !operation.verification.isActive}
