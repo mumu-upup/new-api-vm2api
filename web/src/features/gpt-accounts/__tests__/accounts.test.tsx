@@ -1676,6 +1676,51 @@ it('shows gateway channel and sync status and retries import only after account-
   )
 })
 
+it.each(['cpa', 'sub2api'] as const)(
+  'refreshes a %s gateway account without a direct channel after scoped verification',
+  async (provider) => {
+    items = [
+      {
+        ...account,
+        channel_id: undefined,
+        gateway_id: 5,
+        gateway_provider: provider,
+        gateway_sync_status: 'synced',
+      },
+    ]
+    renderPage()
+    const refresh = await screen.findByRole('button', {
+      name: 'Refresh credentials for Work account',
+    })
+    expect(refresh).toBeEnabled()
+    await userEvent.click(refresh)
+    expect(api.post).not.toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/refresh',
+      expect.anything(),
+      expect.anything()
+    )
+    await verify()
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        '/api/gpt-accounts/1/refresh',
+        {},
+        expect.objectContaining({
+          singleUseAuthorization: true,
+          headers: { 'X-Security-Proof': 'proof' },
+        })
+      )
+    )
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/verify',
+      expect.objectContaining({
+        scope: 'gpt_account.refresh',
+        context: { account_id: 1 },
+      }),
+      expect.anything()
+    )
+  }
+)
+
 it('keeps the account destination immutable when editing a gateway account', async () => {
   items = [
     {
