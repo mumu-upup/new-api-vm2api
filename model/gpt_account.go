@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -59,6 +60,7 @@ type GPTAccount struct {
 }
 
 var ErrGPTAccountStale = errors.New("account_changed")
+var ErrGPTAccountImportConflict = errors.New("account_conflict")
 
 const GPTAccountRecoveryReason = "Managed account authorization in progress"
 
@@ -118,6 +120,79 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 		}
 		return tx.Model(&account).Updates(map[string]any{"channel_id": channel.Id, "channel_key_hash": GPTChannelKeyHash(key), "account_id": externalAccountID, "o_auth_subject": snapshot.OAuthSubject, "status": "ready", "last_error_code": "", "last_login_at": time.Now().Unix(), "failure_count": 0, "updated_at": time.Now().Unix()}).Error
 	})
+}
+
+// CreateGPTAccountCredential atomically creates a new account and its Codex
+// channel. The owner row serializes same-owner imports so duplicate email
+// submissions cannot create a second account between lookup and insert.
+// If a matching account already exists, it is returned with created=false for
+// the caller to process through the normal fenced update path.
+func CreateGPTAccountCredential(account *GPTAccount, key, externalAccountID string) (*GPTAccount, bool, error) {
+	var result GPTAccount
+	created := false
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		result = GPTAccount{}
+		created = false
+		err = DB.Transaction(func(tx *gorm.DB) error {
+			var owner User
+			if err := lockForUpdate(tx).First(&owner, account.OwnerID).Error; err != nil || owner.Status != common.UserStatusEnabled || owner.Role < common.RoleAdminUser {
+				return ErrGPTAccountStale
+			}
+			var matches []GPTAccount
+			if err := lockForUpdate(tx).Where("owner_id = ? AND email = ?", account.OwnerID, account.Email).Order("id ASC").Find(&matches).Error; err != nil {
+				return err
+			}
+			for _, match := range matches {
+				if (match.AccountID != "" && match.AccountID == externalAccountID) || (match.OAuthSubject != "" && match.OAuthSubject == account.OAuthSubject) {
+					result = match
+					return nil
+				}
+			}
+			if len(matches) == 1 {
+				result = matches[0]
+				return nil
+			}
+			if len(matches) > 1 {
+				return ErrGPTAccountImportConflict
+			}
+			if err := tx.Create(account).Error; err != nil {
+				return err
+			}
+			channel := Channel{Type: constant.ChannelTypeCodex, Key: key, Name: account.Name, Status: common.ChannelStatusEnabled, Group: account.Group, Models: account.Models, CreatedTime: time.Now().Unix()}
+			if err := tx.Create(&channel).Error; err != nil {
+				return err
+			}
+			if err := channel.AddAbilities(tx); err != nil {
+				return err
+			}
+			now := time.Now().Unix()
+			if err := tx.Model(account).Updates(map[string]any{
+				"channel_id": channel.Id, "channel_key_hash": GPTChannelKeyHash(key),
+				"account_id": externalAccountID, "o_auth_subject": account.OAuthSubject,
+				"status": "ready", "last_error_code": "", "last_login_at": now,
+				"failure_count": 0, "updated_at": now,
+			}).Error; err != nil {
+				return err
+			}
+			account.ChannelID = &channel.Id
+			account.ChannelKeyHash = GPTChannelKeyHash(key)
+			account.AccountID = externalAccountID
+			account.Status = "ready"
+			account.LastLoginAt = now
+			result = *account
+			created = true
+			return nil
+		})
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locked") || attempt == 4 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return &result, created, nil
 }
 
 // PauseGPTAccountChannel suspends routing during an accepted recovery job. The

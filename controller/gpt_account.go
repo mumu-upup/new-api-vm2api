@@ -534,12 +534,16 @@ func ImportGPTAccountOAuth(c *gin.Context) {
 		gptAccountOAuthImportError(c, err)
 		return
 	}
-	recordManageAudit(c, "gpt_account.oauth_import", map[string]any{"account_id": account.ID})
+	audit := map[string]any{"account_id": account.ID}
+	if account.ChannelID != nil {
+		audit["channel_id"] = *account.ChannelID
+	}
+	recordManageAudit(c, "gpt_account.oauth_import", audit)
 	gptAccountResponse(c, account.ID)
 }
 
 func ImportGPTAccountOAuthForAccount(c *gin.Context) {
-	identity, ok := gptAccountIdentity(c, true)
+	_, ok := gptAccountIdentity(c, true)
 	if !ok {
 		return
 	}
@@ -554,12 +558,18 @@ func ImportGPTAccountOAuthForAccount(c *gin.Context) {
 	if !gptAccountProof(c, "gpt_account.oauth_import.update", account.ID, "") {
 		return
 	}
-	updated, err := service.ImportGPTAccountOAuth(c.Request.Context(), identity.UserID, account.ID, *input)
+	// Root operators may manage an account owned by another administrator;
+	// import must fence against the account's owner, not the acting session.
+	updated, err := service.ImportGPTAccountOAuth(c.Request.Context(), account.OwnerID, account.ID, *input)
 	if err != nil {
 		gptAccountOAuthImportError(c, err)
 		return
 	}
-	recordManageAudit(c, "gpt_account.oauth_import", map[string]any{"account_id": updated.ID})
+	audit := map[string]any{"account_id": updated.ID}
+	if updated.ChannelID != nil {
+		audit["channel_id"] = *updated.ChannelID
+	}
+	recordManageAudit(c, "gpt_account.oauth_import", audit)
 	gptAccountResponse(c, updated.ID)
 }
 

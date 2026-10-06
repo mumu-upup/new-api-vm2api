@@ -19,6 +19,7 @@ export type AccountAction =
   | 'edit'
   | 'login'
   | 'oauth'
+  | 'oauth_import'
   | 'refresh'
   | 'delete'
   | 'totp'
@@ -188,6 +189,17 @@ export function AccountsTable(props: AccountsTableProps) {
                 onClick={() => props.onAction(item, 'totp')}
               >
                 {t('Change 2FA')}
+              </Button>
+              <Button
+                variant='outline'
+                size='sm'
+                aria-label={t('Import OAuth JSON for {{name}}', {
+                  name: item.name,
+                })}
+                disabled={!item.can_manage || busy || !props.encryptionAvailable}
+                onClick={() => props.onAction(item, 'oauth_import')}
+              >
+                {t('Import OAuth JSON')}
               </Button>
               <Button
                 variant='ghost'

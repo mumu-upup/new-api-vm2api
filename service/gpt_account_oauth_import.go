@@ -2,13 +2,13 @@ package service
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
@@ -48,30 +48,65 @@ func ParseCodexOAuthImport(raw string) (CodexOAuthKey, error) {
 	if err != nil || !expired.After(time.Now()) {
 		return CodexOAuthKey{}, errors.New("oauth_import_invalid")
 	}
-	if _, err := parseCodexOAuthSubject(key.IDToken); err != nil {
+	claims, err := parseCodexOAuthClaims(key.IDToken)
+	if err != nil || !claims.EmailVerified || !strings.EqualFold(strings.TrimSpace(claims.Email), key.Email) || claims.AccountID != key.AccountID {
 		return CodexOAuthKey{}, errors.New("oauth_import_invalid")
 	}
 	return key, nil
 }
 
+type codexOAuthClaims struct {
+	Subject       string
+	Email         string
+	EmailVerified bool
+	AccountID     string
+}
+
+func parseCodexOAuthClaims(raw string) (codexOAuthClaims, error) {
+	claims := jwt.MapClaims{}
+	parsed, _, err := jwt.NewParser(jwt.WithValidMethods([]string{"RS256"})).ParseUnverified(raw, claims)
+	if err != nil || parsed.Method.Alg() != "RS256" {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	issuer, ok := claims["iss"].(string)
+	if !ok || issuer != "https://auth.openai.com" {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	audience, err := claims.GetAudience()
+	if err != nil || len(audience) != 1 || audience[0] != codexOAuthClientID {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	subject, ok := claims["sub"].(string)
+	if !ok || strings.TrimSpace(subject) == "" || len(subject) > 255 {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	expires, ok := claims["exp"].(float64)
+	if !ok || int64(expires) <= time.Now().Unix() {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	email, ok := claims["email"].(string)
+	if !ok {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	emailVerified, ok := claims["email_verified"].(bool)
+	if !ok {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	auth, ok := claims["https://api.openai.com/auth"].(map[string]any)
+	if !ok {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	accountID, ok := auth["chatgpt_account_id"].(string)
+	if !ok || strings.TrimSpace(accountID) == "" {
+		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
+	}
+	return codexOAuthClaims{Subject: strings.TrimSpace(subject), Email: email, EmailVerified: emailVerified, AccountID: strings.TrimSpace(accountID)}, nil
+}
+
 func parseCodexOAuthSubject(raw string) (string, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 || parts[1] == "" {
-		return "", errors.New("oauth_import_invalid")
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := parseCodexOAuthClaims(raw)
 	if err != nil {
-		return "", errors.New("oauth_import_invalid")
-	}
-	var claims struct {
-		Subject string `json:"sub"`
-	}
-	if common.Unmarshal(payload, &claims) != nil {
-		return "", errors.New("oauth_import_invalid")
-	}
-	claims.Subject = strings.TrimSpace(claims.Subject)
-	if claims.Subject == "" || len(claims.Subject) > 255 {
-		return "", errors.New("oauth_import_invalid")
+		return "", err
 	}
 	return claims.Subject, nil
 }
@@ -81,7 +116,7 @@ func parseCodexOAuthSubject(raw string) (string, error) {
 // and cannot take over a still-running worker.
 func ReclaimExpiredGPTAccountJobs(now int64) (int64, error) {
 	result := model.DB.Model(&model.GPTAccount{}).
-		Where("status = ? AND lease_until > 0 AND lease_until < ?", "logging_in", now).
+		Where("status = ? AND lease_until <= ?", "logging_in", now).
 		Updates(map[string]any{
 			"status":          "needs_attention",
 			"last_error_code": "login_timeout",
@@ -126,6 +161,10 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 	if !gptAccountOwnerActive(&model.GPTAccount{OwnerID: ownerID}) {
 		return nil, errors.New("authorization_forbidden")
 	}
+	encoded, err := common.Marshal(key)
+	if err != nil {
+		return nil, errors.New("authorization_failed")
+	}
 
 	var account model.GPTAccount
 	created := false
@@ -134,27 +173,24 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 			return nil, errors.New("account_not_found")
 		}
 	} else {
-		var matches []model.GPTAccount
-		if err := model.DB.Where("owner_id = ? AND email = ?", ownerID, key.Email).Order("id ASC").Find(&matches).Error; err != nil {
-			return nil, errors.New("database_error")
+		account = model.GPTAccount{OwnerID: ownerID, Name: name, Email: key.Email, Group: group, Models: models, SecretID: uuid.NewString(), Generation: 1, Status: "pending", AutoRelogin: true, OAuthSubject: subject}
+		if input.AutoRelogin != nil {
+			account.AutoRelogin = *input.AutoRelogin
 		}
-		if len(matches) > 1 {
-			return nil, errors.New("account_conflict")
+		if err := EncryptGPTAccountSecrets(&account, GPTAccountSecrets{}); err != nil {
+			return nil, err
 		}
-		if len(matches) == 1 {
-			account = matches[0]
-		} else {
-			account = model.GPTAccount{OwnerID: ownerID, Name: name, Email: key.Email, Group: group, Models: models, SecretID: uuid.NewString(), Generation: 1, Status: "pending", AutoRelogin: true}
-			if input.AutoRelogin != nil {
-				account.AutoRelogin = *input.AutoRelogin
-			}
-			if err := EncryptGPTAccountSecrets(&account, GPTAccountSecrets{}); err != nil {
-				return nil, err
-			}
-			if err := model.DB.Create(&account).Error; err != nil {
+		resolved, isCreated, err := model.CreateGPTAccountCredential(&account, string(encoded), key.AccountID)
+		if err != nil {
+			if errors.Is(err, model.ErrGPTAccountImportConflict) {
 				return nil, errors.New("account_conflict")
 			}
-			created = true
+			return nil, err
+		}
+		account = *resolved
+		created = isCreated
+		if created {
+			return &account, nil
 		}
 	}
 	if account.Email != key.Email || (account.AccountID != "" && account.AccountID != key.AccountID) || (account.OAuthSubject != "" && account.OAuthSubject != subject) {
@@ -177,10 +213,7 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 		return nil, err
 	}
 	job.OAuthSubject = subject
-	encoded, err := common.Marshal(key)
-	if err == nil {
-		err = model.StoreGPTAccountCredential(job, string(encoded), key.AccountID)
-	}
+	err = model.StoreGPTAccountCredential(job, string(encoded), key.AccountID)
 	if err != nil {
 		code := GPTAccountErrorCode(err)
 		if code == "operation_failed" {
