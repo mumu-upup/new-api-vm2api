@@ -159,19 +159,19 @@ func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testi
 	}
 	response := accessTokenRequest(engine, http.MethodPut, "/api/option/", pat, "", `{"key":"Notice","value":"测试公告"}`)
 	assert.Equal(t, http.StatusOK, response.Code)
-	config := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", GPTAccountsConfig)
+	config := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", GPTAccountsConfig)
 	assert.Contains(t, config.Body.String(), `"default_group":"default"`)
 	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
-		denied := gptAccountRequest(t, identity, role, 0, http.MethodPut, `{"default_group":"forbidden"}`, "", UpdateGPTAccountsConfig)
+		denied := gptAccountRequest(t, identity, role, 0, http.MethodPut, `{"default_group":"forbidden"}`, UpdateGPTAccountsConfig)
 		assert.Equal(t, http.StatusForbidden, denied.Code)
 	}
 	for _, value := range []string{"", " ", "team\nother", strings.Repeat("x", 65), "team,,other", "team\x00"} {
 		body, err := common.Marshal(map[string]string{"default_group": value})
 		require.NoError(t, err)
-		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, string(body), "", UpdateGPTAccountsConfig)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, string(body), UpdateGPTAccountsConfig)
 		assert.Equal(t, http.StatusBadRequest, response.Code)
 	}
-	saved := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_group":" team "}`, "", UpdateGPTAccountsConfig)
+	saved := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_group":" team "}`, UpdateGPTAccountsConfig)
 	require.Equal(t, http.StatusOK, saved.Code, saved.Body.String())
 	var option model.Option
 	require.NoError(t, model.DB.Where(&model.Option{Key: "GPTAccountDefaultGroup"}).First(&option).Error)
@@ -180,9 +180,9 @@ func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testi
 	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
 	require.NoError(t, err)
 	assert.Equal(t, "team", account.Group)
-	saved = gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_group":"next"}`, "", UpdateGPTAccountsConfig)
+	saved = gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_group":"next"}`, UpdateGPTAccountsConfig)
 	require.Equal(t, http.StatusOK, saved.Code)
-	config = gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", "", GPTAccountsConfig)
+	config = gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", GPTAccountsConfig)
 	assert.Contains(t, config.Body.String(), `"default_group":"next"`)
 	account, err = service.ImportGPTAccountOAuth(context.Background(), identity.UserID, account.ID, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
 	require.NoError(t, err)
@@ -214,7 +214,7 @@ func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.Option{}))
 	require.NoError(t, model.DB.Create(&model.Option{Key: "GPTAccountDefaultGroup", Value: "team"}).Error)
-	config := gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", "", GPTAccountsConfig)
+	config := gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", GPTAccountsConfig)
 	assert.Contains(t, config.Body.String(), `"default_group":"team"`)
 	for _, tc := range []struct{ name, group, want string }{
 		{"inherit", "", "team"}, {"override", "premium", "premium"},
@@ -399,18 +399,16 @@ func TestGPTAccountOAuthImportConcurrentIdempotent(t *testing.T) {
 	assert.EqualValues(t, 1, channels)
 }
 
-func TestGPTAccountOAuthImportControllerRequiresScopedProof(t *testing.T) {
+func TestGPTAccountOAuthImportControllerUsesAdminSession(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	raw := fmt.Sprintf(`{"access_token":"controller-access","refresh_token":"controller-refresh","id_token":%q,"account_id":"acct-controller","email":"controller@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("controller@example.com", "acct-controller", "subject-controller"))
 	body := fmt.Sprintf(`{"oauth_json":%s,"name":"Controller import","group":"default","models":"gpt-5"}`, strconv.Quote(raw))
-	denied := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "", ImportGPTAccountOAuth)
-	assert.Equal(t, http.StatusForbidden, denied.Code)
-	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "gpt_account.oauth_import.create", ImportGPTAccountOAuth)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, ImportGPTAccountOAuth)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	assert.NotContains(t, created.Body.String(), "controller-access")
 	var account model.GPTAccount
 	require.NoError(t, model.DB.First(&account).Error)
-	updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, "gpt_account.oauth_import.update", ImportGPTAccountOAuthForAccount)
+	updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, ImportGPTAccountOAuthForAccount)
 	require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
 }
 
@@ -421,7 +419,7 @@ func TestGPTAccountOAuthImportRootUpdatesChildOwnerAccount(t *testing.T) {
 	account := model.GPTAccount{OwnerID: ownerID, Name: "Child account", Email: "child@example.com", SecretID: "child-owner-account", Generation: 1, Status: "pending"}
 	require.NoError(t, model.DB.Create(&account).Error)
 	raw := fmt.Sprintf(`{"oauth_json":%q,"name":"Child account","group":"default","models":"gpt-5"}`, fmt.Sprintf(`{"access_token":"child-access","refresh_token":"child-refresh","id_token":%q,"account_id":"child-acct","email":"child@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("child@example.com", "child-acct", "child-subject")))
-	response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, raw, "gpt_account.oauth_import.update", ImportGPTAccountOAuthForAccount)
+	response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, raw, ImportGPTAccountOAuthForAccount)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
 	var updated model.GPTAccount
 	require.NoError(t, model.DB.First(&updated, account.ID).Error)
@@ -455,7 +453,7 @@ func TestGPTAccountWorkerAttentionStopsAutomaticRetries(t *testing.T) {
 	}
 }
 
-func TestGPTAccountCredentialTamperingAndProofScope(t *testing.T) {
+func TestGPTAccountCredentialTamperingAndSessionAccess(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Original", Email: "owner@example.com", SecretID: "first", Generation: 1}
 	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
@@ -469,14 +467,11 @@ func TestGPTAccountCredentialTamperingAndProofScope(t *testing.T) {
 	_, err = service.DecryptGPTAccountSecrets(&copy)
 	assert.Error(t, err)
 	body := `{"name":"Changed","email":"owner@example.com"}`
-	wrongScope := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, body, "gpt_account.delete", UpdateGPTAccount)
-	assert.Equal(t, http.StatusForbidden, wrongScope.Code)
-	wrongAccount := gptAccountRequest(t, identity, common.RoleRootUser, account.ID+1, http.MethodPut, body, "gpt_account.update", func(c *gin.Context) {
-		c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(account.ID)}}
-		UpdateGPTAccount(c)
-	})
-	assert.Equal(t, http.StatusForbidden, wrongAccount.Code)
-	missingSession := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, body, "gpt_account.update", func(c *gin.Context) {
+	ordinaryUser := gptAccountRequest(t, identity, common.RoleCommonUser, account.ID, http.MethodPut, body, UpdateGPTAccount)
+	assert.Equal(t, http.StatusForbidden, ordinaryUser.Code)
+	wrongAccount := gptAccountRequest(t, identity, common.RoleRootUser, account.ID+1, http.MethodPut, body, UpdateGPTAccount)
+	assert.Equal(t, http.StatusNotFound, wrongAccount.Code)
+	missingSession := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, body, func(c *gin.Context) {
 		c.Set("session_id", "")
 		UpdateGPTAccount(c)
 	})
@@ -498,7 +493,7 @@ func TestGPTAccountWorkerInputLimits(t *testing.T) {
 		input["name"], input["email"] = "Invalid worker input", "owner@example.com"
 		body, err := common.Marshal(input)
 		require.NoError(t, err)
-		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, string(body), "gpt_account.create", CreateGPTAccount)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, string(body), CreateGPTAccount)
 		assert.Equal(t, http.StatusBadRequest, response.Code)
 	}
 }
@@ -507,10 +502,10 @@ func TestGPTAccountTOTPProviderIsExplicitAndPreserved(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	for _, provider := range []string{"https://attacker.invalid", "2fa_CN", ""} {
 		body := fmt.Sprintf(`{"name":"Primary","email":"owner@example.com","totp_provider":%q}`, provider)
-		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "gpt_account.create", CreateGPTAccount)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, CreateGPTAccount)
 		assert.Equal(t, http.StatusBadRequest, response.Code, "reject an explicitly invalid provider")
 	}
-	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"JBSWY3DPEHPK3PXP","totp_provider":"2fa_cn"}`, "gpt_account.create", CreateGPTAccount)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"JBSWY3DPEHPK3PXP","totp_provider":"2fa_cn"}`, CreateGPTAccount)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	assert.Contains(t, created.Body.String(), `"totp_provider":"2fa_cn"`)
 	assert.NotContains(t, created.Body.String(), "JBSWY3DPEHPK3PXP")
@@ -520,14 +515,14 @@ func TestGPTAccountTOTPProviderIsExplicitAndPreserved(t *testing.T) {
 		`{"name":"Primary","email":"owner@example.com"}`,
 		`{"name":"Primary","email":"owner@example.com","totp_provider":"local"}`,
 	} {
-		updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, input, "gpt_account.update", UpdateGPTAccount)
+		updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, input, UpdateGPTAccount)
 		require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
 		provider := "2fa_cn"
 		if strings.Contains(input, "local") {
 			provider = "local"
 		}
 		assert.Contains(t, updated.Body.String(), fmt.Sprintf(`"totp_provider":%q`, provider))
-		listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+		listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
 		assert.Contains(t, listed.Body.String(), fmt.Sprintf(`"totp_provider":%q`, provider))
 		require.NoError(t, model.DB.First(&account, account.ID).Error)
 		secrets, err := service.DecryptGPTAccountSecrets(&account)
@@ -536,7 +531,7 @@ func TestGPTAccountTOTPProviderIsExplicitAndPreserved(t *testing.T) {
 		assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
 		assert.Equal(t, provider, secrets.TOTPProvider)
 	}
-	legacy := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Legacy","email":"owner@example.com"}`, "gpt_account.create", CreateGPTAccount)
+	legacy := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Legacy","email":"owner@example.com"}`, CreateGPTAccount)
 	require.Equal(t, http.StatusOK, legacy.Code, legacy.Body.String())
 	assert.Contains(t, legacy.Body.String(), `"totp_provider":"local"`, "old clients must not opt into sending seeds to a third party")
 }
@@ -877,7 +872,7 @@ func TestGPTAccountAbandonedJobRequiresManualRetry(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: "abandoned", Generation: 1, AutoRelogin: true, Status: "logging_in", LeaseID: "crashed-worker", LeaseUntil: time.Now().Unix() - 1}
 	require.NoError(t, model.DB.Create(&account).Error)
-	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
 	assert.Contains(t, listed.Body.String(), `"status":"needs_attention"`)
 	assert.Contains(t, listed.Body.String(), `"last_error_code":"login_timeout"`)
 	_, err := service.AcquireGPTAccountJob(account.ID, true)
@@ -1059,7 +1054,7 @@ func (transport gptOAuthTransport) RoundTrip(request *http.Request) (*http.Respo
 
 func TestGPTAccountOAuthIdentityReplayAndChannelCreation(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Managed","email":"owner@example.com","models":"gpt-5","group":"default"}`, "gpt_account.create", CreateGPTAccount)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Managed","email":"owner@example.com","models":"gpt-5","group":"default"}`, CreateGPTAccount)
 	require.Contains(t, created.Body.String(), `"success":true`)
 	var account model.GPTAccount
 	require.NoError(t, model.DB.First(&account).Error)
@@ -1115,7 +1110,7 @@ func TestGPTAccountOAuthIdentityReplayAndChannelCreation(t *testing.T) {
 	assert.Equal(t, "gpt-5", abilities[0].Model)
 	assert.Error(t, service.FinishGPTAccountAuthorization(context.Background(), account.ID, identity, callback))
 	assert.Equal(t, 1, exchanges)
-	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
 	assert.NotContains(t, listed.Body.String(), "access-private")
 	assert.NotContains(t, listed.Body.String(), "refresh-private")
 	assert.NotContains(t, listed.Body.String(), signed)
@@ -1208,9 +1203,9 @@ func TestGPTAccountOwnershipProofAndExpiredFlow(t *testing.T) {
 	account := model.GPTAccount{OwnerID: identity.UserID + 1, Name: "Other owner", Email: "owner@example.com", SecretID: "other", Generation: 1}
 	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{}))
 	require.NoError(t, model.DB.Create(&account).Error)
-	listed := gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	listed := gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", ListGPTAccounts)
 	assert.NotContains(t, listed.Body.String(), "Other owner")
-	denied := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodDelete, "", "gpt_account.delete", DeleteGPTAccount)
+	denied := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodDelete, "", DeleteGPTAccount)
 	assert.Equal(t, http.StatusNotFound, denied.Code)
 	require.NoError(t, model.DB.Model(&account).Update("owner_id", identity.UserID).Error)
 	authorization, err := service.StartGPTAccountAuthorization(account.ID, identity)
@@ -1228,31 +1223,12 @@ func TestGPTAccountOwnershipProofAndExpiredFlow(t *testing.T) {
 	assert.Zero(t, channelCount)
 }
 
-func gptAccountRequest(t *testing.T, identity service.AuthIdentity, role int, id int, method, body, scope string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+func gptAccountRequest(t *testing.T, identity service.AuthIdentity, role int, id int, method, body string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
-	proof := ""
-	if scope != "" {
-		ctx := []byte(fmt.Sprintf(`{"account_id":%d}`, id))
-		if scope == "gpt_account.create" || scope == "gpt_account.oauth_import.create" {
-			ctx = []byte(`{"email":"owner@example.com"}`)
-			if scope == "gpt_account.oauth_import.create" {
-				var input struct {
-					OAuthJSON string `json:"oauth_json"`
-				}
-				if common.Unmarshal([]byte(body), &input) == nil {
-					if key, err := service.ParseCodexOAuthImport(input.OAuthJSON); err == nil {
-						ctx = []byte(fmt.Sprintf(`{"email":%q}`, key.Email))
-					}
-				}
-			}
-		}
-		proof = issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: scope, Context: ctx}, service.VerificationMethodPassword)
-	}
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(method, "/api/gpt-accounts", strings.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
-	c.Request.Header.Set("X-Security-Proof", proof)
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(id)}}
 	c.Set("id", identity.UserID)
 	c.Set("role", role)
@@ -1266,9 +1242,7 @@ func gptAccountRequest(t *testing.T, identity service.AuthIdentity, role int, id
 func TestGPTAccountSecretsPermissionsAndDelete(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	body := `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"JBSWY3DPEHPK3PXP","models":"gpt-5","group":"default"}`
-	denied := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "", CreateGPTAccount)
-	assert.Equal(t, http.StatusForbidden, denied.Code)
-	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "gpt_account.create", CreateGPTAccount)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, CreateGPTAccount)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	require.Contains(t, created.Body.String(), `"success":true`)
 	assert.NotContains(t, created.Body.String(), "private-password")
@@ -1281,9 +1255,9 @@ func TestGPTAccountSecretsPermissionsAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "private-password", secrets.Password)
 	assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
-	listed := gptAccountRequest(t, identity, common.RoleCommonUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	listed := gptAccountRequest(t, identity, common.RoleCommonUser, 0, http.MethodGet, "", ListGPTAccounts)
 	assert.Equal(t, http.StatusForbidden, listed.Code)
-	updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Updated","email":"owner@example.com","password":"","totp_secret":"","models":"gpt-5","group":"default","auto_relogin":false}`, "gpt_account.update", UpdateGPTAccount)
+	updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Updated","email":"owner@example.com","password":"","totp_secret":"","models":"gpt-5","group":"default","auto_relogin":false}`, UpdateGPTAccount)
 	require.Contains(t, updated.Body.String(), `"success":true`, updated.Body.String())
 	require.NoError(t, model.DB.First(&account, account.ID).Error)
 	assert.False(t, account.AutoRelogin)
@@ -1297,10 +1271,10 @@ func TestGPTAccountSecretsPermissionsAndDelete(t *testing.T) {
 		changes["name"], changes["email"] = "Updated", "owner@example.com"
 		encoded, err := common.Marshal(changes)
 		require.NoError(t, err)
-		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, string(encoded), "gpt_account.update", UpdateGPTAccount)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, string(encoded), UpdateGPTAccount)
 		assert.Equal(t, http.StatusBadRequest, response.Code, "attached routing metadata must not silently diverge from its channel")
 	}
-	deleted := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodDelete, "", "gpt_account.delete", DeleteGPTAccount)
+	deleted := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodDelete, "", DeleteGPTAccount)
 	require.Contains(t, deleted.Body.String(), `"success":true`)
 	require.NoError(t, model.DB.First(&channel, channel.Id).Error)
 	var audits []model.AuditLog
@@ -1313,11 +1287,11 @@ func TestGPTAccountSecretsPermissionsAndDelete(t *testing.T) {
 
 func TestGPTAccountOAuthStateAndEncryptionFailClosed(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","models":"gpt-5","group":"default"}`, "gpt_account.create", CreateGPTAccount)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","models":"gpt-5","group":"default"}`, CreateGPTAccount)
 	require.Contains(t, created.Body.String(), `"success":true`, created.Body.String())
 	var account model.GPTAccount
 	require.NoError(t, model.DB.First(&account).Error)
-	oauth := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodGet, "", "gpt_account.oauth", StartGPTAccountOAuth)
+	oauth := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodGet, "", StartGPTAccountOAuth)
 	require.Contains(t, oauth.Body.String(), `"success":true`, oauth.Body.String())
 	var response struct {
 		Data struct {
@@ -1331,18 +1305,18 @@ func TestGPTAccountOAuthStateAndEncryptionFailClosed(t *testing.T) {
 	assert.Equal(t, "S256", u.Query().Get("code_challenge_method"))
 	assert.NotEmpty(t, u.Query().Get("state"))
 	assert.NotEmpty(t, u.Query().Get("code_challenge"))
-	bad := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{"redirect_url":"http://localhost:1455/auth/callback?state=forged&code=code"}`, "", CompleteGPTAccountOAuth)
+	bad := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{"redirect_url":"http://localhost:1455/auth/callback?state=forged&code=code"}`, CompleteGPTAccountOAuth)
 	assert.Equal(t, http.StatusBadRequest, bad.Code)
 	t.Setenv("GPT_ACCOUNT_ENCRYPTION_KEY_FILE", "")
 	_, err = service.DecryptGPTAccountSecrets(&account)
 	assert.Error(t, err)
-	unavailable := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"No key","email":"owner@example.com"}`, "gpt_account.create", CreateGPTAccount)
+	unavailable := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"No key","email":"owner@example.com"}`, CreateGPTAccount)
 	assert.Equal(t, http.StatusServiceUnavailable, unavailable.Code)
 }
 
 func TestGPTAccountTOTPMetadataForImportedSecrets(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"jbsw y3dp ehpk 3pxp"}`, "gpt_account.create", CreateGPTAccount)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Primary","email":"owner@example.com","password":"private-password","totp_secret":"jbsw y3dp ehpk 3pxp"}`, CreateGPTAccount)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	var response struct {
 		Data struct {
@@ -1358,7 +1332,7 @@ func TestGPTAccountTOTPMetadataForImportedSecrets(t *testing.T) {
 	assert.Equal(t, "saved", response.Data.Status)
 	original := response.Data
 	for _, secret := range []string{"", "JBSWY3DPEHPK3PXP", "JBSWY3DPEHPK3PXQ"} {
-		updated := gptAccountRequest(t, identity, common.RoleRootUser, original.ID, http.MethodPut, fmt.Sprintf(`{"name":"Primary","email":"owner@example.com","totp_secret":%q}`, secret), "gpt_account.update", UpdateGPTAccount)
+		updated := gptAccountRequest(t, identity, common.RoleRootUser, original.ID, http.MethodPut, fmt.Sprintf(`{"name":"Primary","email":"owner@example.com","totp_secret":%q}`, secret), UpdateGPTAccount)
 		require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
 		require.NoError(t, common.Unmarshal(updated.Body.Bytes(), &response))
 		if secret == "JBSWY3DPEHPK3PXQ" {
@@ -1400,69 +1374,52 @@ func TestGPTAccountTOTPProofPolicy(t *testing.T) {
 	}
 }
 
-func TestGPTAccountTOTPRequiresOwnedAccountAndFreshScopedProof(t *testing.T) {
+func TestGPTAccountTOTPRequiresAdminSessionAndOwnership(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "proof-account", Generation: 1}
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "session-account", Generation: 1}
 	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
 	require.NoError(t, model.DB.Create(&account).Error)
 	for _, endpoint := range []struct {
-		name, scope, body string
-		handler           gin.HandlerFunc
+		name, body string
+		handler    gin.HandlerFunc
 	}{
-		{"save", "gpt_account.totp.update", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`, UpdateGPTAccountTOTP},
-		{"reveal", "gpt_account.totp.read", `{}`, RevealGPTAccountTOTP},
+		{"save", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`, UpdateGPTAccountTOTP},
+		{"reveal", `{}`, RevealGPTAccountTOTP},
 	} {
 		t.Run(endpoint.name, func(t *testing.T) {
 			for _, tc := range []struct {
 				name   string
 				role   int
-				scope  string
 				change func(*gin.Context)
 				want   int
 			}{
-				{"missing proof", common.RoleRootUser, "", nil, http.StatusForbidden},
-				{"ordinary user", common.RoleCommonUser, endpoint.scope, nil, http.StatusForbidden},
-				{"wrong scope", common.RoleRootUser, "gpt_account.update", nil, http.StatusForbidden},
-				{"missing session", common.RoleRootUser, endpoint.scope, func(c *gin.Context) { c.Set("session_id", "") }, http.StatusForbidden},
-				{"different session", common.RoleRootUser, endpoint.scope, func(c *gin.Context) { c.Set("session_id", "another-session") }, http.StatusForbidden},
-				{"expired proof", common.RoleRootUser, endpoint.scope, func(c *gin.Context) {
-					require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", model.AuthFlowPurposeSecurityProof).Update("expires_at", time.Now().Add(-time.Minute)).Error)
-				}, http.StatusForbidden},
-				{"wrong account", common.RoleRootUser, endpoint.scope, func(c *gin.Context) { c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(account.ID + 1)}} }, http.StatusNotFound},
+				{"ordinary user", common.RoleCommonUser, nil, http.StatusForbidden},
+				{"missing session", common.RoleRootUser, func(c *gin.Context) { c.Set("session_id", "") }, http.StatusForbidden},
+				{"missing session version", common.RoleRootUser, func(c *gin.Context) { c.Set("session_version", int64(0)) }, http.StatusForbidden},
+				{"wrong account", common.RoleRootUser, func(c *gin.Context) { c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(account.ID + 1)}} }, http.StatusNotFound},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					response := gptAccountRequest(t, identity, tc.role, account.ID, http.MethodPost, endpoint.body, tc.scope, func(c *gin.Context) {
+					response := gptAccountRequest(t, identity, tc.role, account.ID, http.MethodPost, endpoint.body, func(c *gin.Context) {
 						if tc.change != nil {
 							tc.change(c)
 						}
 						endpoint.handler(c)
 					})
-					assert.Equal(t, tc.want, response.Code, response.Body.String())
+					assert.Equal(t, tc.want, response.Code)
 					assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
 				})
 			}
-			wrongBinding := gptAccountRequest(t, identity, common.RoleRootUser, account.ID+1, http.MethodPost, endpoint.body, endpoint.scope, func(c *gin.Context) {
-				c.Params = gin.Params{{Key: "id", Value: fmt.Sprint(account.ID)}}
-				endpoint.handler(c)
-			})
-			assert.Equal(t, http.StatusForbidden, wrongBinding.Code)
 			require.NoError(t, model.DB.Model(&account).Update("owner_id", identity.UserID+1).Error)
-			other := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, endpoint.body, endpoint.scope, endpoint.handler)
+			other := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, endpoint.body, endpoint.handler)
 			assert.Equal(t, http.StatusNotFound, other.Code)
 			require.NoError(t, model.DB.Model(&account).Update("owner_id", identity.UserID).Error)
 			require.NoError(t, authz.SetUserPermissions(identity.UserID, authz.PermissionsMap{"gpt_account": {"manage": false}}))
-			denied := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, endpoint.body, endpoint.scope, endpoint.handler)
+			denied := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, endpoint.body, endpoint.handler)
 			assert.Equal(t, http.StatusForbidden, denied.Code)
 			require.NoError(t, authz.ClearUserPermissions(identity.UserID))
-			proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: endpoint.scope, Context: []byte(fmt.Sprintf(`{"account_id":%d}`, account.ID))}, service.VerificationMethodPassword)
-			for i := range 2 {
-				response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, endpoint.body, "", func(c *gin.Context) { c.Request.Header.Set("X-Security-Proof", proof); endpoint.handler(c) })
-				if i == 0 {
-					require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-				} else {
-					assert.Equal(t, http.StatusForbidden, response.Code)
-					assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
-				}
+			for _, role := range []int{common.RoleAdminUser, common.RoleRootUser} {
+				response := gptAccountRequest(t, identity, role, account.ID, http.MethodPost, endpoint.body, endpoint.handler)
+				require.Equal(t, http.StatusOK, response.Code)
 			}
 		})
 	}
@@ -1476,12 +1433,12 @@ func TestGPTAccountTOTPConfirmedSaveAndReveal(t *testing.T) {
 	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "saved-account", Generation: 1, Group: "default", Models: "gpt-5", ChannelID: &channel.Id, ChannelKeyHash: model.GPTChannelKeyHash(channel.Key), AccountID: "account", OAuthSubject: "subject", AutoRelogin: true, Status: "ready"}
 	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
 	require.NoError(t, model.DB.Create(&account).Error)
-	legacy := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	legacy := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
 	assert.Contains(t, legacy.Body.String(), `"totp_status":"saved"`)
 	job, err := service.AcquireGPTAccountJob(account.ID, false)
 	require.NoError(t, err)
 	before := time.Now().Unix()
-	saved := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{"totp_secret":"jbsw y3dp ehpk 3pxq","confirmed_bound":true}`, "gpt_account.totp.update", UpdateGPTAccountTOTP)
+	saved := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{"totp_secret":"jbsw y3dp ehpk 3pxq","confirmed_bound":true}`, UpdateGPTAccountTOTP)
 	require.Equal(t, http.StatusOK, saved.Code, saved.Body.String())
 	assert.Contains(t, saved.Body.String(), `"totp_status":"operator_confirmed"`)
 	assert.NotContains(t, saved.Body.String(), "JBSWY3DPEHPK3P")
@@ -1505,12 +1462,12 @@ func TestGPTAccountTOTPConfirmedSaveAndReveal(t *testing.T) {
 	assert.Equal(t, channel.Key, storedChannel.Key)
 	assert.Equal(t, channel.Status, storedChannel.Status)
 	for _, seed := range []string{"", "JBSWY3DPEHPK3PXQ"} {
-		updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, fmt.Sprintf(`{"name":"Managed","email":"owner@example.com","totp_secret":%q}`, seed), "gpt_account.update", UpdateGPTAccount)
+		updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, fmt.Sprintf(`{"name":"Managed","email":"owner@example.com","totp_secret":%q}`, seed), UpdateGPTAccount)
 		require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
 		assert.Contains(t, updated.Body.String(), `"totp_status":"operator_confirmed"`)
 		assert.Contains(t, updated.Body.String(), `"totp_version":1`)
 	}
-	revealed := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, "gpt_account.totp.read", RevealGPTAccountTOTP)
+	revealed := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, RevealGPTAccountTOTP)
 	require.Equal(t, http.StatusOK, revealed.Code, revealed.Body.String())
 	assert.Contains(t, revealed.Header().Get("Cache-Control"), "no-store")
 	var response struct {
@@ -1522,7 +1479,7 @@ func TestGPTAccountTOTPConfirmedSaveAndReveal(t *testing.T) {
 	require.NoError(t, common.Unmarshal(revealed.Body.Bytes(), &response))
 	assert.Equal(t, "JBSWY3DPEHPK3PXQ", response.Data.Secret)
 	assert.InDelta(t, time.Now().Unix()+30, response.Data.ExpiresAt, 1)
-	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
 	var audits []model.AuditLog
 	require.NoError(t, model.LOG_DB.Find(&audits).Error)
 	encoded, err := common.Marshal(audits)
@@ -1543,20 +1500,20 @@ func TestGPTAccountTOTPInvalidSaveAndEncryptionFailurePreserveState(t *testing.T
 	require.NoError(t, model.DB.First(&account, account.ID).Error)
 	original := account
 	for _, body := range []string{`{}`, `{"totp_secret":"JBSWY3DPEHPK3PXQ"}`, `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":false}`, `{"totp_secret":"","confirmed_bound":true}`, `{"totp_secret":"AAAAAAAAAAAAAAAAAB","confirmed_bound":true}`, `{"totp_secret":"JBSWY3DPEHPK3PXQ=","confirmed_bound":true}`} {
-		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, "gpt_account.totp.update", UpdateGPTAccountTOTP)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, UpdateGPTAccountTOTP)
 		assert.Equal(t, http.StatusBadRequest, response.Code, response.Body.String())
 	}
-	empty := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, "gpt_account.totp.read", RevealGPTAccountTOTP)
+	empty := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, RevealGPTAccountTOTP)
 	assert.Equal(t, http.StatusNotFound, empty.Code)
 	t.Setenv("GPT_ACCOUNT_ENCRYPTION_KEY_FILE", "")
 	for _, handler := range []struct {
-		fn          gin.HandlerFunc
-		scope, body string
+		fn   gin.HandlerFunc
+		body string
 	}{
-		{UpdateGPTAccountTOTP, "gpt_account.totp.update", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`},
-		{RevealGPTAccountTOTP, "gpt_account.totp.read", `{}`},
+		{UpdateGPTAccountTOTP, `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`},
+		{RevealGPTAccountTOTP, `{}`},
 	} {
-		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, handler.body, handler.scope, handler.fn)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, handler.body, handler.fn)
 		assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 		assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
 	}
@@ -1572,22 +1529,22 @@ func TestGPTAccountTOTPConcurrentCredentialChange(t *testing.T) {
 			require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "old-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
 			require.NoError(t, model.DB.Create(&account).Error)
 			// A concurrent general edit commits after the first account read, before
-			// the dedicated operation can consume its proof and write or reveal.
+			// the dedicated operation can write or reveal.
 			raceRan := false
 			require.NoError(t, model.DB.Callback().Query().After("gorm:query").Register("test:concurrent-gpt-secret", func(tx *gorm.DB) {
 				if snapshot, ok := tx.Statement.Dest.(*model.GPTAccount); !ok || snapshot.ID != account.ID || raceRan {
 					return
 				}
 				raceRan = true
-				updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Managed","email":"owner@example.com","password":"concurrent-password","totp_secret":"JBSWY3DPEHPK3PXQ"}`, "gpt_account.update", UpdateGPTAccount)
+				updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Managed","email":"owner@example.com","password":"concurrent-password","totp_secret":"JBSWY3DPEHPK3PXQ"}`, UpdateGPTAccount)
 				require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
 			}))
 			t.Cleanup(func() { _ = model.DB.Callback().Query().Remove("test:concurrent-gpt-secret") })
-			handler, scope, body := UpdateGPTAccountTOTP, "gpt_account.totp.update", `{"totp_secret":"AAAAAAAAAAAAAAAA","confirmed_bound":true}`
+			handler, body := UpdateGPTAccountTOTP, `{"totp_secret":"AAAAAAAAAAAAAAAA","confirmed_bound":true}`
 			if reveal {
-				handler, scope, body = RevealGPTAccountTOTP, "gpt_account.totp.read", `{}`
+				handler, body = RevealGPTAccountTOTP, `{}`
 			}
-			response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, scope, handler)
+			response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, handler)
 			require.True(t, raceRan)
 			if reveal {
 				assert.Equal(t, http.StatusOK, response.Code)
@@ -1607,33 +1564,105 @@ func TestGPTAccountTOTPConcurrentCredentialChange(t *testing.T) {
 	}
 }
 
-func TestGPTAccountTOTPRevokedSessionRejectsUnusedProofs(t *testing.T) {
+func TestGPTAccountSessionActionsReachServiceWithoutStepUp(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "revoked-account", Generation: 1}
+	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: "direct-actions", Generation: 1, Status: "pending"}
+	require.NoError(t, model.DB.Create(&account).Error)
+	for _, tc := range []struct {
+		name, code string
+		handler    gin.HandlerFunc
+	}{
+		{"login", "automation_unavailable", LoginGPTAccount},
+		{"refresh", "channel_required", RefreshGPTAccount},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, tc.handler)
+			require.Equal(t, http.StatusConflict, response.Code)
+			var result struct {
+				Code string `json:"code"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.Equal(t, tc.code, result.Code)
+		})
+	}
+}
+
+func TestGPTAccountMutationsRejectInvalidDashboardSessions(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "session-guard", Generation: 1}
 	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{TOTPSecret: "JBSWY3DPEHPK3PXP"}))
 	require.NoError(t, model.DB.Create(&account).Error)
-	operation := service.VerificationOperation{Context: []byte(fmt.Sprintf(`{"account_id":%d}`, account.ID))}
-	proofs := map[string]string{}
-	for _, scope := range []string{"gpt_account.totp.update", "gpt_account.totp.read"} {
-		operation.Scope = scope
-		proofs[scope] = issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
-	}
-	revoked, err := model.RevokeUserSession(identity.UserID, identity.SessionID, "test")
+	token, _, err := service.IssueAccessToken(identity)
 	require.NoError(t, err)
-	require.True(t, revoked)
-	for _, endpoint := range []struct {
-		scope, body string
-		handler     gin.HandlerFunc
+	suffix, err := common.GenerateRandomCharsKey(43)
+	require.NoError(t, err)
+	pat := model.AccessTokenPrefix + suffix
+	patRecord := &model.UserAccessToken{Name: "GPT test", TokenHash: model.AccessTokenFingerprint(pat), TokenHint: model.AccessTokenHint(pat), ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	require.NoError(t, patRecord.SetScopes([]string{"gpt_account:manage"}))
+	require.NoError(t, model.CreateUserAccessToken(identity.UserID, patRecord, service.AccessTokenMaxPerUser))
+	endpoints := []struct {
+		method, path string
+		handler      gin.HandlerFunc
 	}{
-		{"gpt_account.totp.update", `{"totp_secret":"JBSWY3DPEHPK3PXQ","confirmed_bound":true}`, UpdateGPTAccountTOTP},
-		{"gpt_account.totp.read", `{}`, RevealGPTAccountTOTP},
+		{http.MethodPost, "/api/gpt-accounts", CreateGPTAccount},
+		{http.MethodPut, "/api/gpt-accounts/config", UpdateGPTAccountsConfig},
+		{http.MethodPost, "/api/gpt-accounts/import-oauth", ImportGPTAccountOAuth},
+		{http.MethodPut, "/api/gpt-accounts/:id", UpdateGPTAccount},
+		{http.MethodDelete, "/api/gpt-accounts/:id", DeleteGPTAccount},
+		{http.MethodPost, "/api/gpt-accounts/:id/totp", UpdateGPTAccountTOTP},
+		{http.MethodPost, "/api/gpt-accounts/:id/totp/reveal", RevealGPTAccountTOTP},
+		{http.MethodPost, "/api/gpt-accounts/:id/login", LoginGPTAccount},
+		{http.MethodGet, "/api/gpt-accounts/:id/oauth", StartGPTAccountOAuth},
+		{http.MethodPost, "/api/gpt-accounts/:id/callback", CompleteGPTAccountOAuth},
+		{http.MethodPost, "/api/gpt-accounts/:id/import-oauth", ImportGPTAccountOAuthForAccount},
+		{http.MethodPost, "/api/gpt-accounts/:id/refresh", RefreshGPTAccount},
+		{http.MethodPost, "/api/gpt-accounts/:id/sync", SyncGPTAccountGateway},
+		{http.MethodPost, "/api/gpt-account-gateways", CreateGPTAccountGateway},
+		{http.MethodPut, "/api/gpt-account-gateways/:id", UpdateGPTAccountGateway},
+		{http.MethodPost, "/api/gpt-account-gateways/import-channel-json", ImportGPTGatewayChannelJSON},
+	}
+	engine := gin.New()
+	engine.Use(middleware.AdminAuth())
+	for _, endpoint := range endpoints {
+		middleware.DeclareAccessTokenPermissionRoute(endpoint.method, endpoint.path, authz.GPTAccountManage)
+		engine.Handle(endpoint.method, endpoint.path, middleware.RequirePermission(authz.GPTAccountManage), endpoint.handler)
+	}
+	permitted := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/gpt-accounts/%d/totp/reveal", account.ID), strings.NewReader(`{}`))
+	permitted.Header.Set("Authorization", "Bearer "+token)
+	permittedResponse := httptest.NewRecorder()
+	engine.ServeHTTP(permittedResponse, permitted)
+	require.Equal(t, http.StatusOK, permittedResponse.Code)
+	assert.Contains(t, permittedResponse.Header().Get("Cache-Control"), "no-store")
+	for _, tc := range []struct {
+		name, credential string
+		status           int
+		changes          map[string]any
+	}{
+		{"anonymous", "", http.StatusUnauthorized, nil},
+		{"personal access token", pat, http.StatusForbidden, nil},
+		{"expired session", token, http.StatusUnauthorized, map[string]any{"expires_at": time.Now().Add(-time.Minute).Unix()}},
+		{"revoked session", token, http.StatusUnauthorized, map[string]any{"expires_at": time.Now().Add(time.Hour).Unix(), "status": model.UserSessionStatusRevoked}},
+		{"changed session version", token, http.StatusUnauthorized, map[string]any{"status": model.UserSessionStatusActive, "version": identity.SessionVersion + 1}},
 	} {
-		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, endpoint.body, "", func(c *gin.Context) {
-			c.Request.Header.Set("X-Security-Proof", proofs[endpoint.scope])
-			endpoint.handler(c)
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.changes != nil {
+				require.NoError(t, model.DB.Model(&model.UserSession{}).Where("sid = ?", identity.SessionID).Updates(tc.changes).Error)
+			}
+			for _, endpoint := range endpoints {
+				req := httptest.NewRequest(endpoint.method, strings.ReplaceAll(endpoint.path, ":id", strconv.Itoa(account.ID)), strings.NewReader(`{}`))
+				req.Header.Set("Content-Type", "application/json")
+				if tc.credential != "" {
+					req.Header.Set("Authorization", "Bearer "+tc.credential)
+				}
+				response := httptest.NewRecorder()
+				engine.ServeHTTP(response, req)
+				assert.Equal(t, tc.status, response.Code, endpoint.path)
+				if tc.name == "personal access token" {
+					assert.Contains(t, response.Body.String(), "authorization_forbidden", endpoint.path)
+				}
+				assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
+			}
 		})
-		assert.Equal(t, http.StatusForbidden, response.Code)
-		assert.NotContains(t, response.Body.String(), "JBSWY3DPEHPK3P")
 	}
 	require.NoError(t, model.DB.First(&account, account.ID).Error)
 	assert.Zero(t, account.TOTPVersion)

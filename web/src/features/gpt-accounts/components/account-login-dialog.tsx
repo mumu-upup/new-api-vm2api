@@ -7,7 +7,6 @@ import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import { formatTimestamp } from '@/lib/format'
 
 import { authorizeGptAccount, finishGptAccountAuthorization } from '../api'
@@ -33,7 +32,6 @@ export function AccountLoginDialog(props: AccountLoginDialogProps) {
     setAuthorization(null)
     setRedirectUrl('')
     const result = await operation.execute(
-      { scope: 'gpt_account.oauth', context: { account_id: props.account.id } },
       authorizeGptAccount.bind(null, props.account.id)
     )
     if (!result) return
@@ -95,7 +93,7 @@ export function AccountLoginDialog(props: AccountLoginDialogProps) {
     const callbackUrl = redirectUrl.trim()
     setRedirectUrl('')
     setAuthorization(null)
-    const result = await operation.execute(null, (_proof, signal) =>
+    const result = await operation.execute((signal) =>
       finishGptAccountAuthorization(props.account.id, callbackUrl, signal)
     )
     if (!result) return
@@ -104,93 +102,88 @@ export function AccountLoginDialog(props: AccountLoginDialogProps) {
   }
 
   return (
-    <>
-      <Dialog
-        open={!operation.verification.isActive}
-        onOpenChange={(open) => {
-          if (!open && !operation.pending) props.onClose()
-        }}
-        title={t('Complete browser sign-in')}
-        description={props.account.email}
-        footer={
-          <Button
-            variant='outline'
-            disabled={operation.pending}
-            onClick={props.onClose}
-          >
-            {t('Close')}
-          </Button>
-        }
-      >
-        <div className='space-y-4'>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Open the official sign-in page, complete any email verification, CAPTCHA or consent, then paste the final localhost URL here. Do not share it.'
-            )}
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !operation.pending) props.onClose()
+      }}
+      title={t('Complete browser sign-in')}
+      description={props.account.email}
+      footer={
+        <Button
+          variant='outline'
+          disabled={operation.pending}
+          onClick={props.onClose}
+        >
+          {t('Close')}
+        </Button>
+      }
+    >
+      <div className='space-y-4'>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Open the official sign-in page, complete any email verification, CAPTCHA or consent, then paste the final localhost URL here. Do not share it.'
+          )}
+        </p>
+        {(validation || operation.error) && (
+          <p role='alert' className='text-destructive text-sm'>
+            {t(validation || operation.error)}
           </p>
-          {(validation || operation.error) && (
-            <p role='alert' className='text-destructive text-sm'>
-              {t(validation || operation.error)}
+        )}
+        <Button onClick={start} disabled={operation.pending}>
+          {operation.pending && <Loader2 className='animate-spin' />}
+          {t('Generate sign-in link')}
+        </Button>
+        {authorization && (
+          <>
+            <div className='flex flex-wrap items-center gap-2'>
+              <Button
+                nativeButton={false}
+                role='link'
+                render={
+                  <a
+                    href={authorization.authorization_url}
+                    target='_blank'
+                    rel='noopener noreferrer'
+                    referrerPolicy='no-referrer'
+                  />
+                }
+              >
+                <ExternalLink />
+                {t('Open official sign-in')}
+              </Button>
+              <CopyButton
+                value={authorization.authorization_url}
+                tooltip={t('Copy sign-in link')}
+              />
+            </div>
+            <p className='text-muted-foreground text-sm'>
+              {t('Expires at {{time}}', {
+                time: formatTimestamp(authorization.expires_at),
+              })}
             </p>
-          )}
-          <Button onClick={start} disabled={operation.pending}>
-            {operation.pending && <Loader2 className='animate-spin' />}
-            {t('Generate sign-in link')}
-          </Button>
-          {authorization && (
-            <>
-              <div className='flex flex-wrap items-center gap-2'>
-                <Button
-                  nativeButton={false}
-                  role='link'
-                  render={
-                    <a
-                      href={authorization.authorization_url}
-                      target='_blank'
-                      rel='noopener noreferrer'
-                      referrerPolicy='no-referrer'
-                    />
-                  }
-                >
-                  <ExternalLink />
-                  {t('Open official sign-in')}
-                </Button>
-                <CopyButton
-                  value={authorization.authorization_url}
-                  tooltip={t('Copy sign-in link')}
-                />
-              </div>
-              <p className='text-muted-foreground text-sm'>
-                {t('Expires at {{time}}', {
-                  time: formatTimestamp(authorization.expires_at),
-                })}
-              </p>
-              <form onSubmit={submit} className='space-y-3'>
-                <Label htmlFor='gpt-account-callback'>
-                  {t('Callback URL')}
-                </Label>
-                <Input
-                  id='gpt-account-callback'
-                  type='password'
-                  value={redirectUrl}
-                  onChange={(event) => setRedirectUrl(event.target.value)}
-                  autoComplete='off'
-                  spellCheck={false}
-                  disabled={operation.pending}
-                  aria-invalid={Boolean(validation)}
-                />
-                <Button
-                  type='submit'
-                  disabled={operation.pending || !redirectUrl.trim()}
-                >
-                  {t('Complete authorization')}
-                </Button>
-              </form>
-            </>
-          )}
-        </div>
-      </Dialog>
-      <SecureVerificationDialog {...operation.verification.dialogProps} />
-    </>
+            <form onSubmit={submit} className='space-y-3'>
+              <Label htmlFor='gpt-account-callback'>{t('Callback URL')}</Label>
+              <Input
+                id='gpt-account-callback'
+                type='password'
+                value={redirectUrl}
+                onChange={(event) => setRedirectUrl(event.target.value)}
+                autoComplete='off'
+                spellCheck={false}
+                disabled={operation.pending}
+                aria-invalid={Boolean(validation)}
+              />
+              <Button
+                type='submit'
+                disabled={operation.pending || !redirectUrl.trim()}
+              >
+                {t('Complete authorization')}
+              </Button>
+            </form>
+          </>
+        )}
+      </div>
+    </Dialog>
   )
 }
