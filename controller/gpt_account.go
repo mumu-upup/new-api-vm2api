@@ -74,6 +74,54 @@ func getManagedGPTAccount(c *gin.Context) (*model.GPTAccount, bool) {
 	return &account, true
 }
 
+// populateGPTAccountChannels reads channel metadata from the database so a
+// deleted channel cannot remain visible through the optional channel cache.
+// A missing channel is reported to operators without mutating the account.
+func populateGPTAccountChannels(accounts []model.GPTAccount) error {
+	ids := make([]int, 0, len(accounts))
+	seen := make(map[int]struct{}, len(accounts))
+	for _, account := range accounts {
+		if account.ChannelID == nil {
+			continue
+		}
+		id := *account.ChannelID
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var channels []struct {
+		ID   int    `gorm:"column:id"`
+		Name string `gorm:"column:name"`
+	}
+	if err := model.DB.Table("channels").Select("id", "name").Where("id IN ?", ids).Find(&channels).Error; err != nil {
+		return err
+	}
+	names := make(map[int]string, len(channels))
+	for _, channel := range channels {
+		names[channel.ID] = channel.Name
+	}
+	for i := range accounts {
+		if accounts[i].ChannelID == nil {
+			continue
+		}
+		channelID := *accounts[i].ChannelID
+		if name, ok := names[channelID]; ok {
+			accounts[i].ChannelName = name
+			continue
+		}
+		if accounts[i].Status == "ready" {
+			accounts[i].Status = "needs_attention"
+			accounts[i].LastErrorCode = "channel_missing"
+		}
+	}
+	return nil
+}
+
 func gptAccountResponse(c *gin.Context, accountID int) {
 	_, _ = service.ReclaimExpiredGPTAccountJobs(time.Now().Unix())
 	var account model.GPTAccount
@@ -94,13 +142,11 @@ func gptAccountResponse(c *gin.Context, accountID int) {
 	if account.Status == "logging_in" && account.LeaseUntil <= time.Now().Unix() {
 		account.Status, account.LastErrorCode = "needs_attention", "login_timeout"
 	}
-	if account.ChannelID != nil {
-		var channel model.Channel
-		if model.DB.Select("id", "name").First(&channel, *account.ChannelID).Error == nil {
-			account.ChannelName = channel.Name
-		}
-	}
 	items := []model.GPTAccount{account}
+	if err := populateGPTAccountChannels(items); err != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
+	}
 	if service.PopulateGPTAccountGateways(items) != nil {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
@@ -133,13 +179,6 @@ func ListGPTAccounts(c *gin.Context) {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
 	}
-	ids := make([]int, 0, len(items))
-	for _, account := range items {
-		if account.ChannelID != nil {
-			ids = append(ids, *account.ChannelID)
-		}
-	}
-	names, _ := model.GetChannelNamesByIds(ids)
 	for i := range items {
 		if secrets, err := service.DecryptGPTAccountSecrets(&items[i]); err == nil {
 			items[i].TOTPProvider = secrets.TOTPProvider
@@ -154,9 +193,10 @@ func ListGPTAccounts(c *gin.Context) {
 			items[i].Status, items[i].LastErrorCode = "needs_attention", "login_timeout"
 		}
 		items[i].CanManage = authz.Can(c.GetInt("id"), c.GetInt("role"), authz.GPTAccountManage)
-		if items[i].ChannelID != nil {
-			items[i].ChannelName = names[*items[i].ChannelID]
-		}
+	}
+	if err := populateGPTAccountChannels(items); err != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
 	}
 	if service.PopulateGPTAccountGateways(items) != nil {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")

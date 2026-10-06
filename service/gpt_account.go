@@ -117,6 +117,8 @@ func releaseGPTAccountJob(account *model.GPTAccount, code string, countFailure b
 			status = "needs_attention"
 		case "login_navigation_blocked", "login_screen_unrecognized", "totp_secret_required", "totp_provider_invalid_response", "invalid_totp_code":
 			status = "needs_attention"
+		case "workspace_selection_required":
+			status = "needs_attention"
 		case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_immutable", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required":
 			status = "needs_attention"
 		}
@@ -369,7 +371,11 @@ func runGPTAccountLogin(account *model.GPTAccount, identity AuthIdentity, refres
 	if secrets.TOTPProvider == "" {
 		secrets.TOTPProvider = "local"
 	}
-	body, err := common.Marshal(map[string]string{"authorization_url": authorization.AuthorizationURL, "state": state, "email": account.Email, "password": secrets.Password, "totp_secret": secrets.TOTPSecret, "totp_provider": secrets.TOTPProvider})
+	payload := map[string]string{"authorization_url": authorization.AuthorizationURL, "state": state, "email": account.Email, "password": secrets.Password, "totp_secret": secrets.TOTPSecret, "totp_provider": secrets.TOTPProvider}
+	if account.AccountID != "" {
+		payload["expected_account_id"] = account.AccountID
+	}
+	body, err := common.Marshal(payload)
 	if err != nil {
 		ReleaseGPTAccountJob(account, "authorization_failed")
 		return
@@ -534,7 +540,7 @@ func GPTAccountErrorCode(err error) string {
 	switch err.Error() {
 	case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_immutable", "gateway_unavailable", "gateway_import_failed", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required", "gateway_channel_json_invalid", "gateway_channel_provider_required", "gateway_channel_url_required", "gateway_channel_url_invalid", "gateway_channel_key_required", "gateway_channel_key_invalid", "gateway_channel_models_invalid", "gateway_channel_create_failed":
 		return err.Error()
-	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code":
+	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code", "workspace_selection_required":
 		return err.Error()
 	case "", "encryption_unavailable", "automation_unavailable", "account_busy", "account_changed", "authorization_invalid", "authorization_failed", "identity_verification_failed", "identity_mismatch", "credentials_required", "worker_unavailable", "worker_busy", "needs_attention", "refresh_failed", "channel_required", "authorization_forbidden", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback":
 		return err.Error()

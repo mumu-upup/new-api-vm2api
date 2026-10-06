@@ -120,7 +120,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
       screen = { kind: 'loading' }
     }
     const diagnosticKind = ['loading', 'navigation_error', 'captcha', 'email_code', 'consent',
-      'additional', 'invalid_totp', 'disabled', 'invalid', 'email', 'password', 'totp'].includes(screen.kind)
+      'additional', 'workspace', 'invalid_totp', 'disabled', 'invalid', 'email', 'password', 'totp'].includes(screen.kind)
       ? screen.kind : 'unknown'
     if (diagnosticKind !== lastScreen) {
       options.onDiagnostic?.({ event: 'screen', kind: diagnosticKind })
@@ -131,6 +131,23 @@ export async function completeLoginPage(page, input, signal, options = {}) {
     }
     if (new URL(page.url()).origin !== loginOrigin) {
       return { status: 'needs_attention', error_code: 'additional_verification_required' }
+    }
+    if (screen.kind === 'workspace') {
+      if (!input.expected_account_id) return { status: 'needs_attention', error_code: 'workspace_selection_required' }
+      if (submitted.has('workspace')) {
+        if (previousKind !== 'workspace') return { status: 'needs_attention', error_code: 'additional_verification_required' }
+      } else {
+        try {
+          await page.selectWorkspace(input.expected_account_id)
+        } catch (error) {
+          if (signal.aborted) break
+          return { status: 'needs_attention', error_code: /untrusted_(?:login_origin|form_action)/.test(error?.message || '')
+            ? 'login_navigation_blocked' : 'workspace_selection_required' }
+        }
+        submitted.add('workspace')
+        previousKind = 'workspace'
+        continue
+      }
     }
     const attention = {
       captcha: 'captcha_required', email_code: 'email_verification_required',
@@ -185,12 +202,6 @@ export async function classifyLoginScreen(tab, navigationError = '') {
   const text = await tab.locator('body').innerText()
   const path = new URL(tab.url()).pathname
   const headings = (await tab.getByRole('heading').allTextContents()).join(' ')
-  // Official Codex may pause after authentication on a workspace/account
-  // selector. It is an explicit human handoff: never choose a workspace from
-  // the worker, and keep the diagnostic to the fixed `additional` enum.
-  if (/(?:choose|select)\s+(?:(?:a|an)\s+)?(?:workspace|account|organization|team)|(?:workspace|organization)\s+(?:selection|selector)/i.test(`${headings} ${text}`)) {
-    return { kind: 'additional' }
-  }
   if (/(?:reset[-_/]?password|password[-_/](?:reset|change)|sign[-_]?up|enroll|create[-_]?account)/i.test(path) ||
       /(?:reset|change|choose|create|set)\b.{0,30}\bpassword|set up\b.{0,40}(?:authenticator|authentication|account)|create your account|重置密码|修改密码|设置.{0,10}(?:密码|验证器)/i.test(headings) ||
       await tab.locator('input[autocomplete="new-password"], input[name="new_password"], input[name="confirm_password"]').filter({ visible: true }).count() ||
@@ -198,6 +209,13 @@ export async function classifyLoginScreen(tab, navigationError = '') {
     return { kind: 'additional' }
   }
   if (await tab.locator('iframe[src*="challenges.cloudflare.com"], #challenge-running, #challenge-stage').filter({ visible: true }).count() || /verify you are human|complete the captcha|security check|人机验证/i.test(text)) return { kind: 'captcha' }
+  const workspaceRadios = tab.locator('input[type="radio"][name="workspace_id"]').filter({ visible: true })
+  if (await workspaceRadios.count()) return { kind: 'workspace' }
+  // Generic selector wording without a concrete official control remains a
+  // manual handoff. It must never authorize a click by itself.
+  if (/(?:choose|select)\s+(?:(?:a|an)\s+)?(?:workspace|account|organization|team)|(?:workspace|organization)\s+(?:selection|selector)|选择.{0,8}(?:工作空间|账户|组织|团队)/i.test(`${headings} ${text}`)) {
+    return { kind: 'additional' }
+  }
   if (/account (?:has been |is )?(?:deactivated|disabled|suspended)|account_deactivated|账号.{0,8}(?:停用|封禁)/i.test(text)) return { kind: 'disabled' }
   if (/incorrect password|wrong password|invalid (?:email or password|credentials)|密码错误/i.test(text)) return { kind: 'invalid' }
   const emailCode = /check your email|code.{0,40}(?:email|inbox)|(?:emailed|sent).{0,40}code|检查.{0,4}邮箱/i
@@ -286,6 +304,37 @@ export async function browserLogin(input, signal, options = {}) {
         await button.click()
         // Wait for this form to disappear before another classification; never resubmit it.
         await field.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {})
+      },
+      selectWorkspace: async expectedAccountID => {
+        if (new URL(tab.url()).origin !== loginOrigin) throw new Error('untrusted_login_origin')
+        const result = await tab.evaluate(({ expected, origin }) => {
+          const visible = element => {
+            const style = window.getComputedStyle(element)
+            return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0
+          }
+          const radios = [...document.querySelectorAll('input[type="radio"][name="workspace_id"]')]
+            .filter(element => visible(element) && !element.disabled)
+          const matches = radios.filter(element => element.value === expected)
+          if (matches.length !== 1) return { ok: false, error: 'workspace_selection_required' }
+          const radio = matches[0]
+          const form = radio.form
+          if (!form || form.method.toLowerCase() !== 'post') return { ok: false, error: 'workspace_selection_required' }
+          let action
+          try { action = new URL(form.getAttribute('action') || window.location.href, window.location.href) } catch { return { ok: false, error: 'workspace_selection_required' } }
+          if (action.origin !== origin || form.target && form.target !== '_self') return { ok: false, error: 'untrusted_form_action' }
+          const submitters = [...form.querySelectorAll('button, input[type="submit"]')]
+            .filter(element => visible(element) && !element.disabled && /^(?:continue|next|submit|继续|下一步)$/i.test((element.textContent || element.value || element.getAttribute('aria-label') || '').trim()))
+          if (submitters.length !== 1) return { ok: false, error: 'workspace_selection_required' }
+          const submitter = submitters[0]
+          if (['formaction', 'formmethod', 'formtarget'].some(attribute => submitter.hasAttribute(attribute))) return { ok: false, error: 'untrusted_form_action' }
+          radio.checked = true
+          radio.dispatchEvent(new Event('input', { bubbles: true }))
+          radio.dispatchEvent(new Event('change', { bubbles: true }))
+          if (!radio.checked || radio.form !== form) return { ok: false, error: 'workspace_selection_required' }
+          form.requestSubmit(submitter)
+          return { ok: true }
+        }, { expected: expectedAccountID, origin: loginOrigin })
+        if (!result.ok) throw new Error(result.error)
       },
     }
     const result = await completeLoginPage(page, input, signal, { ...options, deadline, onDiagnostic })

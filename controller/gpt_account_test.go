@@ -554,7 +554,7 @@ func TestGPTAccountWorkerReceivesTOTPSourceAndReturnsSpecificError(t *testing.T)
 	t.Setenv("GPT_ACCOUNT_WORKER_URL", worker.URL)
 	t.Setenv("GPT_ACCOUNT_WORKER_TOKEN_FILE", tokenFile)
 	for _, provider := range []string{"", "2fa_cn"} {
-		account := model.GPTAccount{OwnerID: identity.UserID, Email: "owner@example.com", SecretID: "worker-source-" + provider, Generation: 1}
+		account := model.GPTAccount{OwnerID: identity.UserID, Email: "owner@example.com", AccountID: "account-id-" + provider, SecretID: "worker-source-" + provider, Generation: 1}
 		require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "fixture-password", TOTPSecret: "JBSWY3DPEHPK3PXP", TOTPProvider: provider}))
 		require.NoError(t, model.DB.Create(&account).Error)
 		require.NoError(t, service.StartGPTAccountLogin(account.ID, identity, false))
@@ -571,6 +571,7 @@ func TestGPTAccountWorkerReceivesTOTPSourceAndReturnsSpecificError(t *testing.T)
 		assert.Equal(t, expected, body["totp_provider"])
 		assert.Equal(t, "fixture-password", body["password"])
 		assert.Equal(t, "JBSWY3DPEHPK3PXP", body["totp_secret"])
+		assert.Equal(t, account.AccountID, body["expected_account_id"])
 		require.Eventually(t, func() bool {
 			return model.DB.First(&account, account.ID).Error == nil && account.LeaseUntil == 0
 		}, 3*time.Second, 10*time.Millisecond)
@@ -864,6 +865,54 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 			for range 2 {
 				require.NoError(t, db.Create(&model.GPTAccount{OwnerID: 1, SecretID: "unlinked"}).Error, "multiple unlinked accounts must remain valid")
 			}
+		})
+	}
+}
+
+func TestGPTAccountDeletedChannelIsNotReportedReady(t *testing.T) {
+	for _, cacheEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("memory_cache_%t", cacheEnabled), func(t *testing.T) {
+			identity := setupGPTAccountTest(t)
+			channel := model.Channel{Type: 57, Name: "Removed channel", Key: "fixture-key", Status: common.ChannelStatusEnabled, Models: "gpt-5", Group: "default"}
+			require.NoError(t, model.DB.Create(&channel).Error)
+			require.NoError(t, channel.AddAbilities(nil))
+			account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", SecretID: "removed-channel", Generation: 1, ChannelID: &channel.Id, Status: "ready"}
+			require.NoError(t, model.DB.Create(&account).Error)
+			if cacheEnabled {
+				common.MemoryCacheEnabled = true
+				model.InitChannelCache()
+			}
+			require.NoError(t, channel.Delete())
+			listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
+			require.Equal(t, http.StatusOK, listed.Code)
+			var list struct {
+				Data struct {
+					Items []model.GPTAccount `json:"items"`
+				} `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(listed.Body.Bytes(), &list))
+			require.Len(t, list.Data.Items, 1)
+			assert.Equal(t, "needs_attention", list.Data.Items[0].Status)
+			assert.Equal(t, "channel_missing", list.Data.Items[0].LastErrorCode)
+			assert.Empty(t, list.Data.Items[0].ChannelName)
+			assert.Equal(t, account.ChannelID, list.Data.Items[0].ChannelID)
+			response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodGet, "", func(c *gin.Context) {
+				gptAccountResponse(c, account.ID)
+			})
+			require.Equal(t, http.StatusOK, response.Code)
+			var detail struct {
+				Data model.GPTAccount `json:"data"`
+			}
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &detail))
+			assert.Equal(t, "needs_attention", detail.Data.Status)
+			assert.Equal(t, "channel_missing", detail.Data.LastErrorCode)
+			var stored model.GPTAccount
+			require.NoError(t, model.DB.First(&stored, account.ID).Error)
+			assert.Equal(t, "ready", stored.Status, "reading metadata must not rewrite account state")
+			assert.Equal(t, account.ChannelID, stored.ChannelID)
+			var channelCount int64
+			require.NoError(t, model.DB.Model(&model.Channel{}).Count(&channelCount).Error)
+			assert.Zero(t, channelCount, "a deleted channel must not be recreated by a read")
 		})
 	}
 }

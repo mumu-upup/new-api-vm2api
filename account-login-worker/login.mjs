@@ -9,6 +9,7 @@ const errorCodes = new Set([
   'login_navigation_blocked', 'login_navigation_failed', 'login_screen_unrecognized',
   'email_submission_failed', 'password_submission_failed', 'totp_submission_failed',
   'email_step_timeout', 'password_step_timeout', 'totp_step_timeout',
+  'workspace_selection_required',
   'totp_secret_required', 'totp_provider_invalid_response',
   'totp_provider_unavailable', 'totp_provider_timeout', 'invalid_totp_code',
 ])
@@ -106,12 +107,13 @@ export async function getLoginTOTP(input, signal, options = {}) {
 
 export function validateLoginRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('invalid_request')
-  const { authorization_url, state, email, password, totp_secret = '', totp_provider = 'local' } = input
+  const { authorization_url, state, email, password, totp_secret = '', totp_provider = 'local', expected_account_id = '' } = input
   if (typeof authorization_url !== 'string' || authorization_url.length > 4096 ||
       typeof state !== 'string' || !/^[A-Za-z0-9_-]{24,128}$/.test(state) ||
       typeof email !== 'string' || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email) ||
       typeof password !== 'string' || !password || password.length > 1024 ||
-      typeof totp_secret !== 'string' || !['', 'local', '2fa_cn'].includes(totp_provider)) throw new Error('invalid_request')
+      typeof totp_secret !== 'string' || !['', 'local', '2fa_cn'].includes(totp_provider) ||
+      typeof expected_account_id !== 'string' || expected_account_id.length > 128 || /[\x00-\x20\x7f]/.test(expected_account_id)) throw new Error('invalid_request')
   const url = new URL(authorization_url)
   if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/oauth/authorize' ||
       url.username || url.password || url.hash ||
@@ -125,7 +127,7 @@ export function validateLoginRequest(input) {
     if (url.searchParams.getAll(key).length !== 1) throw new Error('invalid_request')
   }
   if (totp_secret) decodeSeed(totp_secret).fill(0)
-  return { authorization_url, state, email, password, totp_secret, totp_provider: totp_provider || 'local' }
+  return { authorization_url, state, email, password, totp_secret, totp_provider: totp_provider || 'local', expected_account_id }
 }
 
 export function safeLoginResult(result, state) {

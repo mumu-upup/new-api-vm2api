@@ -90,6 +90,8 @@ test('remote TOTP is bounded by provider timeout and caller cancellation', async
 })
 test('login accepts only the official PKCE flow with matching state and loopback callback', () => {
   assert.equal(validateLoginRequest(request()).email,'account@example.com')
+  assert.equal(validateLoginRequest(request({ expected_account_id: '4a67072b-1cec-4df6-b925-b9b0b7b18788' })).expected_account_id,
+    '4a67072b-1cec-4df6-b925-b9b0b7b18788')
   for (const overrides of [
     {authorization_url:'https://auth.openai.com.attacker.example/oauth/authorize'},
     {authorization_url:request().authorization_url.replace('https:', 'http:')},
@@ -97,6 +99,9 @@ test('login accepts only the official PKCE flow with matching state and loopback
     {state:'a_different_state'},
     {authorization_url:request().authorization_url.replace('S256','plain')},
     {totp_secret:'not-a-base32-seed!'},
+    {expected_account_id:'account id with spaces'},
+    {expected_account_id:'x'.repeat(129)},
+    {expected_account_id:1},
     {password:''},
     {email:'x'.repeat(321)},
   ]) assert.throws(() => validateLoginRequest(request(overrides)))
@@ -187,6 +192,19 @@ test('login stops for CAPTCHA, email verification, consent and disabled accounts
       { wait: () => assert.fail('recognized challenge must be returned immediately') }),{status,error_code})
     assert.deepEqual(page.filled,[])
   }
+})
+
+test('workspace selection is manual without a stored account and exact-match automatic on reauthentication', async () => {
+  const manual = loginPage([{ kind: 'workspace' }])
+  assert.deepEqual(await completeLoginPage(manual, request(), new AbortController().signal),
+    { status: 'needs_attention', error_code: 'workspace_selection_required' })
+  const page = loginPage([{ kind: 'workspace' },
+    { kind: 'callback', url: `http://localhost:1455/auth/callback?code=workspace-code&state=${state}` }])
+  const selected = []
+  page.selectWorkspace = async accountID => { selected.push(accountID); await page.next() }
+  assert.deepEqual(await completeLoginPage(page, request({ expected_account_id: 'account-id' }), new AbortController().signal,
+    { wait: page.next }), { status: 'success', code: 'workspace-code', state })
+  assert.deepEqual(selected, ['account-id'])
 })
 test('login refuses offsite credential fields, repeated password prompts and mismatched callbacks', async () => {
   const offsite=loginPage([{kind:'password',url:'https://evil.example/'}])

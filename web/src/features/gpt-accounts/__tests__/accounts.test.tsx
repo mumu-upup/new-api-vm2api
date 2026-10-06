@@ -1680,6 +1680,14 @@ it.each([
 
 it.each([
   [
+    'channel_missing',
+    'The linked channel no longer exists. Edit this account to choose a channel.',
+  ],
+  [
+    'workspace_selection_required',
+    'Choose the account workspace through browser sign-in.',
+  ],
+  [
     'captcha_required',
     'The sign-in page requires a CAPTCHA. Complete it through browser sign-in.',
   ],
