@@ -10,9 +10,11 @@ import (
 
 func registerGPTAccountRoutes(api *gin.RouterGroup) {
 	group := api.Group("/gpt-accounts", middleware.AdminAuth(), middleware.DisableCache())
+	// Dashboard polling must not consume the budget shared by login and
+	// credential changes. These reads retain the parent API rate limiter.
+	handlePermissionRoute(group, http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccounts)
+	handlePermissionRoute(group, http.MethodGet, "/config", authz.GPTAccountRead, controller.GPTAccountsConfig)
 	for _, route := range []permissionRoute{
-		{http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccounts},
-		{http.MethodGet, "/config", authz.GPTAccountRead, controller.GPTAccountsConfig},
 		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccount},
 		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccount},
 		{http.MethodPost, "/:id/totp", authz.GPTAccountManage, controller.UpdateGPTAccountTOTP},
@@ -24,14 +26,14 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 		{http.MethodPost, "/:id/refresh", authz.GPTAccountManage, controller.RefreshGPTAccount},
 		{http.MethodPost, "/:id/sync", authz.GPTAccountManage, controller.SyncGPTAccountGateway},
 	} {
-		handlePermissionRoute(group, route.method, route.path, route.permission, middleware.CriticalRateLimit(), route.handler)
+		handlePermissionRoute(group, route.method, route.path, route.permission, middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("gpt-account"), route.handler)
 	}
 	gateways := api.Group("/gpt-account-gateways", middleware.AdminAuth(), middleware.DisableCache())
+	handlePermissionRoute(gateways, http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccountGateways)
 	for _, route := range []permissionRoute{
-		{http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccountGateways},
 		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccountGateway},
 		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccountGateway},
 	} {
-		handlePermissionRoute(gateways, route.method, route.path, route.permission, middleware.CriticalRateLimit(), route.handler)
+		handlePermissionRoute(gateways, route.method, route.path, route.permission, middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("gpt-account"), route.handler)
 	}
 }

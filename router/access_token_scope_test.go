@@ -17,8 +17,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -115,6 +117,98 @@ func TestModelPricingRoutesRequireRootSession(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGPTAccountPollingPreservesSensitiveOperationRateLimit(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedis, previousSecret := common.RedisEnabled, common.SessionSecret
+	previousRedisClient := common.RDB
+	previousMaster, previousSQLite := common.IsMasterNode, common.SQLitePath
+	previousCritical, previousLimit, previousDuration := common.CriticalRateLimitEnable, common.CriticalRateLimitNum, common.CriticalRateLimitDuration
+	databasePath := filepath.Join(t.TempDir(), "gpt-polling-routes.db")
+	db, err := gorm.Open(sqlite.Open(databasePath), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Option{}, &model.AuditLog{}, &model.GPTAccount{}, &model.GPTAccountGateway{}, &model.Channel{}))
+	require.NoError(t, sqlDB.Close())
+	t.Setenv("SQL_DSN", "local")
+	t.Setenv("LOG_SQL_DSN", "")
+	common.IsMasterNode, common.SQLitePath = false, databasePath
+	require.NoError(t, model.InitDB())
+	db, model.LOG_DB = model.DB, model.DB
+	sqlDB, err = db.DB()
+	require.NoError(t, err)
+	rateLimitServer := miniredis.RunT(t)
+	rateLimitClient := redis.NewClient(&redis.Options{Addr: rateLimitServer.Addr()})
+	common.RDB = rateLimitClient
+	common.RedisEnabled, common.SessionSecret = true, "gpt-polling-route-test-secret"
+	common.CriticalRateLimitEnable, common.CriticalRateLimitNum, common.CriticalRateLimitDuration = true, 2, 60
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		common.RedisEnabled, common.SessionSecret = previousRedis, previousSecret
+		common.RDB = previousRedisClient
+		common.IsMasterNode, common.SQLitePath = previousMaster, previousSQLite
+		common.CriticalRateLimitEnable, common.CriticalRateLimitNum, common.CriticalRateLimitDuration = previousCritical, previousLimit, previousDuration
+		require.NoError(t, sqlDB.Close())
+		require.NoError(t, rateLimitClient.Close())
+	})
+	user := model.User{Username: "gpt-route-root", AffCode: "gpt-route", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+	require.NoError(t, db.Create(&user).Error)
+	session := model.UserSession{SID: "gpt-route-session", UserID: user.Id, Version: 1, UserAuthVersion: 1,
+		Status: model.UserSessionStatusActive, RefreshHash: "unused-test-hash", LoginMethod: "password", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	require.NoError(t, db.Create(&session).Error)
+	token, _, err := service.IssueAccessToken(service.AuthIdentity{UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1})
+	require.NoError(t, err)
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	require.NoError(t, engine.SetTrustedProxies(nil))
+	api := engine.Group("/api")
+	registerGPTAccountRoutes(api)
+	api.POST("/test-sensitive", middleware.CriticalRateLimit(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	request := func(method, path, credential, ip string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader("{}"))
+		r.RemoteAddr = ip + ":12345"
+		r.Header.Set("Content-Type", "application/json")
+		if credential != "" {
+			r.Header.Set("Authorization", "Bearer "+credential)
+		}
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, r)
+		return response
+	}
+	const pollIP = "192.0.2.251"
+	reads := []string{"/api/gpt-accounts", "/api/gpt-accounts/config", "/api/gpt-account-gateways"}
+	for range 3 {
+		for _, path := range reads {
+			response := request(http.MethodGet, path, token, pollIP)
+			require.Equal(t, http.StatusOK, response.Code, "%s: %s", path, response.Body.String())
+		}
+	}
+	assert.Equal(t, http.StatusNoContent, request(http.MethodPost, "/api/test-sensitive", "", pollIP).Code)
+	assert.Equal(t, http.StatusNoContent, request(http.MethodPost, "/api/test-sensitive", "", pollIP).Code)
+	limited := request(http.MethodPost, "/api/test-sensitive", "", pollIP)
+	assert.Equal(t, http.StatusTooManyRequests, limited.Code)
+	assert.NotEmpty(t, limited.Header().Get("Retry-After"))
+	for _, path := range reads {
+		assert.Equal(t, http.StatusOK, request(http.MethodGet, path, token, pollIP).Code, path)
+		assert.Equal(t, http.StatusUnauthorized, request(http.MethodGet, path, "", pollIP).Code, path)
+	}
+	for _, endpoint := range []struct{ method, path string }{
+		{http.MethodGet, "/api/gpt-accounts/1/oauth"},
+		{http.MethodPost, "/api/gpt-accounts/1/login"},
+		{http.MethodPost, "/api/gpt-accounts/1/totp/reveal"},
+		{http.MethodPost, "/api/gpt-account-gateways"},
+	} {
+		assert.Equal(t, http.StatusTooManyRequests, request(endpoint.method, endpoint.path, token, pollIP).Code, endpoint.path)
+	}
+	assert.Equal(t, http.StatusNotFound, request(http.MethodGet, "/api/gpt-accounts/1/oauth", token, "192.0.2.252").Code)
+	assert.Equal(t, http.StatusNotFound, request(http.MethodPost, "/api/gpt-accounts/1/login", token, "192.0.2.253").Code)
+	assert.Equal(t, http.StatusTooManyRequests, request(http.MethodPost, "/api/gpt-accounts/1/totp/reveal", token, "192.0.2.254").Code,
+		"changing IP must not bypass the authenticated user's sensitive-operation limit")
 }
 
 // accessTokenExemptRoutes are /api routes that never reach dashboard
