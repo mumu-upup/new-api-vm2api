@@ -25,6 +25,7 @@ import { AccountTotpDialog } from './components/account-totp-dialog'
 import { AccountTotpTable } from './components/account-totp-table'
 import { AccountsTable, type AccountAction } from './components/accounts-table'
 import { GatewayFormDialog } from './components/gateway-form-dialog'
+import { GatewayChannelJSONDialog } from './components/gateway-channel-json-dialog'
 import { GatewaysPanel } from './components/gateways-panel'
 import { OAuthImportDialog } from './components/oauth-import-dialog'
 import { useAccountOperation } from './hooks/use-account-operation'
@@ -65,6 +66,7 @@ function GptAccountsPage(props: {
   const [gatewayEditor, setGatewayEditor] = useState<
     GptAccountGateway | 'create' | null
   >(null)
+  const [gatewayChannelImportOpen, setGatewayChannelImportOpen] = useState(false)
   const [oauthImportAccount, setOAuthImportAccount] = useState<GptAccount | null>(null)
   const [oauthImportOpen, setOAuthImportOpen] = useState(false)
   const [deleting, setDeleting] = useState<GptAccount | null>(null)
@@ -290,11 +292,12 @@ function GptAccountsPage(props: {
                       encryptionAvailable={Boolean(
                         config.data?.encryption_available
                       )}
-                      onRetry={() => {
-                        void gateways.refetch()
-                      }}
-                      onEdit={setGatewayEditor}
-                    />
+                    onRetry={() => {
+                      void gateways.refetch()
+                    }}
+                    onEdit={setGatewayEditor}
+                    onImport={() => setGatewayChannelImportOpen(true)}
+                  />
                   </TabsContent>
                 )}
               </Tabs>
@@ -306,6 +309,12 @@ function GptAccountsPage(props: {
         <GatewayFormDialog
           gateway={gatewayEditor === 'create' ? undefined : gatewayEditor}
           onClose={() => setGatewayEditor(null)}
+          onSaved={refresh}
+        />
+      )}
+      {gatewayChannelImportOpen && (
+        <GatewayChannelJSONDialog
+          onClose={() => setGatewayChannelImportOpen(false)}
           onSaved={refresh}
         />
       )}

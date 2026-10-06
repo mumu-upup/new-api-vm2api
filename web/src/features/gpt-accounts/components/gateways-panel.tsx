@@ -15,6 +15,7 @@ export function GatewaysPanel(props: {
   encryptionAvailable: boolean
   onRetry: () => void
   onEdit: (gateway: GptAccountGateway | 'create') => void
+  onImport: () => void
 }) {
   const { t } = useTranslation()
   let content: ReactNode
@@ -81,6 +82,13 @@ export function GatewaysPanel(props: {
             'Accounts added to this gateway share its channel. Requests may use any available account in the gateway.'
           )}
         </p>
+        <Button
+          variant='outline'
+          onClick={props.onImport}
+          disabled={!props.encryptionAvailable}
+        >
+          {t('Import channel JSON')}
+        </Button>
         <Button
           onClick={() => props.onEdit('create')}
           disabled={!props.encryptionAvailable}

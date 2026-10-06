@@ -707,6 +707,19 @@ func TestGPTAccountAbandonedJobRequiresManualRetry(t *testing.T) {
 	require.NoError(t, err, "manual retry can replace the expired lease")
 }
 
+func TestGPTAccountLoginLeaseExpiresBeforeWorkerRequestTimeout(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: "lease-duration", Generation: 1, Status: "pending"}
+	require.NoError(t, model.DB.Create(&account).Error)
+	started := time.Now().Unix()
+	job, err := service.AcquireGPTAccountJob(account.ID, false)
+	require.NoError(t, err)
+	leaseSeconds := job.LeaseUntil - started
+	assert.GreaterOrEqual(t, leaseSeconds, int64(230))
+	assert.LessOrEqual(t, leaseSeconds, int64(250))
+	assert.Equal(t, int64(240), job.NextRetryAt-job.LastAttemptAt)
+}
+
 func TestGPTAccountRefreshRespectsAttentionAndOwnerRevocation(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	channel := model.Channel{Type: 57, Key: `{"access_token":"original","refresh_token":"private-refresh","account_id":"account"}`, Name: "Refresh", Status: common.ChannelStatusEnabled, Models: "gpt-5", Group: "default"}

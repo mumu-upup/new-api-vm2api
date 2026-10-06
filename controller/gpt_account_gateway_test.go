@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/stretchr/testify/assert"
@@ -64,6 +65,78 @@ func TestGPTAccountGatewayRejectsUnsafeConfiguration(t *testing.T) {
 			assert.EqualError(t, err, "invalid_gateway")
 		})
 	}
+}
+
+func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		provider string
+		baseURL  string
+		key      string
+		models   string
+		group    string
+	}{
+		{
+			name:     "CPA aliases",
+			raw:      `{"provider":"cpa","name":"CPA relay","base_url":"https://cpa.example/v1","api_key":"cpa-key","models":["gpt-5","gpt-5-mini"],"group":"premium"}`,
+			provider: "cpa",
+			baseURL:  "https://cpa.example/v1",
+			key:      "cpa-key",
+			models:   "gpt-5,gpt-5-mini",
+			group:    "premium",
+		},
+		{
+			name:     "Sub2API base URL",
+			raw:      `{"type":"sub2api","baseUrl":"https://sub2api.example/v1/","apiKey":"sub-key","model":"gpt-5"}`,
+			provider: "sub2api",
+			baseURL:  "https://sub2api.example",
+			key:      "sub-key",
+			models:   "gpt-5",
+			group:    "default",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := service.ParseGPTGatewayChannelJSON(test.raw)
+			require.NoError(t, err)
+			assert.Equal(t, test.provider, got.Provider)
+			assert.Equal(t, test.baseURL, got.BaseURL)
+			assert.Equal(t, test.key, got.APIKey)
+			assert.Equal(t, test.models, got.Models)
+			assert.Equal(t, test.group, got.Group)
+		})
+	}
+}
+
+func TestParseGPTGatewayChannelJSONRejectsAccountCredentialDocuments(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"oauth","credentials":{"access_token":"private"}}`,
+		`{"provider":"sub2api","base_url":"https://sub2api.example","credentials":{"access_token":"private"}}`,
+		`{"provider":"cpa","base_url":"https://cpa.example"}`,
+		`{"provider":"other","base_url":"https://example.com","api_key":"key"}`,
+		`{"provider":"cpa","base_url":"http://relay.example","api_key":"key"}`,
+		`{"provider":"cpa","base_url":"https://127.0.0.1:8080","api_key":"key"}`,
+		`{"provider":"cpa","base_url":"https://relay.example/?token=secret","api_key":"key"}`,
+	} {
+		_, err := service.ParseGPTGatewayChannelJSON(raw)
+		assert.Error(t, err)
+	}
+}
+
+func TestCreateGPTGatewayChannelCreatesOneRelayChannelAtomically(t *testing.T) {
+	setupGPTAccountGatewayTest(t)
+	input, err := service.ParseGPTGatewayChannelJSON(`{"provider":"sub2api","base_url":"https://sub2api.example/v1","api_key":"relay-key","models":["gpt-5"]}`)
+	require.NoError(t, err)
+	channel, err := service.CreateGPTGatewayChannel(input)
+	require.NoError(t, err)
+	require.NotZero(t, channel.Id)
+	assert.Equal(t, 59, channel.Type)
+	assert.Equal(t, "https://sub2api.example", channel.GetBaseURL())
+	assert.Equal(t, "relay-key", channel.Key)
+	var abilities int64
+	require.NoError(t, model.DB.Model(&model.Ability{}).Where("channel_id = ?", channel.Id).Count(&abilities).Error)
+	assert.Positive(t, abilities)
 }
 
 func setupGPTAccountGatewayTest(t *testing.T) service.AuthIdentity {
@@ -452,6 +525,24 @@ func TestGPTAccountGatewayRootManagementProofAndSafeTargetList(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), "management-secret")
 	assert.NotContains(t, string(raw), "relay-secret")
+}
+
+func TestGPTGatewayChannelJSONImportRequiresRootProofAndCreatesChannel(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	body := `{"config_json":"{\"provider\":\"sub2api\",\"base_url\":\"https://sub2api.example/v1\",\"api_key\":\"relay-secret\",\"models\":[\"gpt-5\"]}"}`
+	proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: "gpt_account_gateway.create", Context: []byte(`{"name":"channel-json"}`)}, service.VerificationMethodPassword)
+	denied := gatewayRequest(t, identity, common.RoleAdminUser, 0, http.MethodPost, body, proof, ImportGPTGatewayChannelJSON)
+	assert.Equal(t, http.StatusForbidden, denied.Code)
+	created := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, proof, ImportGPTGatewayChannelJSON)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	assert.Contains(t, created.Body.String(), `"provider":"sub2api"`)
+	assert.NotContains(t, created.Body.String(), "relay-secret")
+	replay := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, proof, ImportGPTGatewayChannelJSON)
+	assert.Equal(t, http.StatusForbidden, replay.Code)
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel).Error)
+	assert.Equal(t, constant.ChannelTypeSub2API, channel.Type)
+	assert.Equal(t, "https://sub2api.example", channel.GetBaseURL())
 }
 
 func TestGPTAccountGatewayImmutableAssociationAndRevokedOwner(t *testing.T) {

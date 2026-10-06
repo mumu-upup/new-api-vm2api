@@ -13,9 +13,142 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
+
+// GPTGatewayChannelInput is the minimal public channel configuration accepted
+// by the direct CPA/Sub2API JSON importer. It intentionally contains only the
+// relay credentials needed by a channel; management credentials and account
+// OAuth documents are rejected instead of being sent as relay keys.
+type GPTGatewayChannelInput struct {
+	Name     string
+	Provider string
+	BaseURL  string
+	APIKey   string
+	Group    string
+	Models   string
+}
+
+// ParseGPTGatewayChannelJSON normalizes the common CPA and Sub2API channel
+// JSON shapes into one channel input. This is a local parser only: it never
+// contacts a gateway and never returns the supplied credential in an error.
+func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
+	if len(strings.TrimSpace(raw)) == 0 || len(raw) > 128<<10 {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
+	}
+	var document map[string]any
+	if common.UnmarshalJsonStr(raw, &document) != nil || document == nil {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
+	}
+	readString := func(keys ...string) string {
+		for _, key := range keys {
+			if value, ok := document[key].(string); ok && strings.TrimSpace(value) != "" {
+				return strings.TrimSpace(value)
+			}
+		}
+		return ""
+	}
+	provider := strings.ToLower(readString("provider", "provider_type", "platform", "type"))
+	switch provider {
+	case "cpa", "cliproxyapi", "cli-proxy-api", "cli_proxy_api":
+		provider = "cpa"
+	case "sub2api", "sub2-api", "sub2_api":
+		provider = "sub2api"
+	default:
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_provider_required")
+	}
+	baseURL := readString("relay_url", "relayUrl", "base_url", "baseUrl", "endpoint", "url")
+	if baseURL == "" {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_url_required")
+	}
+	allowLocalHTTP := false
+	if value, ok := document["allow_local_http"]; ok {
+		var valid bool
+		allowLocalHTTP, valid = value.(bool)
+		if !valid {
+			return GPTGatewayChannelInput{}, errors.New("gateway_channel_url_invalid")
+		}
+	}
+	var err error
+	baseURL, err = normalizeGPTGatewayURL(baseURL, allowLocalHTTP)
+	if err != nil {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_url_invalid")
+	}
+	if provider == "sub2api" {
+		baseURL = strings.TrimSuffix(baseURL, "/v1")
+	}
+	apiKey := readString("api_key", "apiKey", "relay_key", "relayKey", "key", "token")
+	if apiKey == "" {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_key_required")
+	}
+	if strings.ContainsAny(apiKey, "\r\n") || len(apiKey) > 8192 {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_key_invalid")
+	}
+	models := "gpt-5"
+	if value := readString("model"); value != "" {
+		models = value
+	}
+	if value, ok := document["models"]; ok {
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				models = strings.TrimSpace(typed)
+			}
+		case []any:
+			items := make([]string, 0, len(typed))
+			for _, item := range typed {
+				modelName, ok := item.(string)
+				if !ok || strings.TrimSpace(modelName) == "" {
+					return GPTGatewayChannelInput{}, errors.New("gateway_channel_models_invalid")
+				}
+				items = append(items, strings.TrimSpace(modelName))
+			}
+			if len(items) == 0 {
+				return GPTGatewayChannelInput{}, errors.New("gateway_channel_models_invalid")
+			}
+			models = strings.Join(items, ",")
+		default:
+			return GPTGatewayChannelInput{}, errors.New("gateway_channel_models_invalid")
+		}
+	}
+	group := readString("group", "group_name", "groupName")
+	if group == "" {
+		group = "default"
+	}
+	name := readString("name", "channel_name", "channelName")
+	if name == "" {
+		name = strings.ToUpper(provider) + " channel"
+	}
+	if len(name) > 128 || len(group) > 64 || len(models) > 8192 || strings.ContainsAny(name+group+models, "\r\n") {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
+	}
+	return GPTGatewayChannelInput{Name: name, Provider: provider, BaseURL: baseURL, APIKey: apiKey, Group: group, Models: models}, nil
+}
+
+// CreateGPTGatewayChannel creates the relay channel in the same transaction
+// as its ability rows, so a malformed ability update cannot leave a half-made
+// channel behind.
+func CreateGPTGatewayChannel(input GPTGatewayChannelInput) (*model.Channel, error) {
+	channelType := constant.ChannelTypeOpenAI
+	if input.Provider == "sub2api" {
+		channelType = constant.ChannelTypeSub2API
+	}
+	channel := &model.Channel{Type: channelType, Name: input.Name, Key: input.APIKey, BaseURL: &input.BaseURL, Group: input.Group, Models: input.Models, Status: common.ChannelStatusEnabled, CreatedTime: common.GetTimestamp()}
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(channel).Error; err != nil {
+			return err
+		}
+		return channel.AddAbilities(tx)
+	})
+	if err != nil {
+		return nil, err
+	}
+	model.InitChannelCache()
+	return channel, nil
+}
 
 type GPTAccountGatewayInput struct {
 	Name              string `json:"name"`
