@@ -45,12 +45,10 @@ export function updateGptAccountConfig(defaultGroup: string) {
 export function saveGptAccount(
   id: number | undefined,
   input: GptAccountInput,
-  proof: string,
   signal: AbortSignal
 ) {
   const options = {
     ...authRequestOptions,
-    headers: { 'X-Security-Proof': proof },
     singleUseAuthorization: true,
     signal,
   }
@@ -70,7 +68,6 @@ export function importGptAccountOAuth(
     models?: string
     auto_relogin?: boolean
   },
-  proof: string,
   signal: AbortSignal
 ) {
   return authResult<GptAccount>(
@@ -81,7 +78,6 @@ export function importGptAccountOAuth(
       input,
       {
         ...authRequestOptions,
-        headers: { 'X-Security-Proof': proof },
         singleUseAuthorization: true,
         signal,
       }
@@ -92,7 +88,6 @@ export function importGptAccountOAuth(
 export function runGptAccountAction(
   id: number,
   action: 'login' | 'refresh' | 'sync',
-  proof: string,
   signal: AbortSignal
 ) {
   return authResult<GptAccount>(
@@ -101,7 +96,6 @@ export function runGptAccountAction(
       {},
       {
         ...authRequestOptions,
-        headers: { 'X-Security-Proof': proof },
         singleUseAuthorization: true,
         signal,
       }
@@ -118,12 +112,10 @@ export function listGptAccountGateways(signal?: AbortSignal) {
 export function saveGptAccountGateway(
   id: number | undefined,
   input: GptAccountGatewayInput,
-  proof: string,
   signal: AbortSignal
 ) {
   const options = {
     ...authRequestOptions,
-    headers: { 'X-Security-Proof': proof },
     singleUseAuthorization: true,
     signal,
   }
@@ -136,7 +128,6 @@ export function saveGptAccountGateway(
 
 export function importGptGatewayChannelJSON(
   configJson: string,
-  proof: string,
   signal: AbortSignal
 ) {
   return authResult<{ channel_id: number; name: string; provider: string }>(
@@ -145,7 +136,6 @@ export function importGptGatewayChannelJSON(
       { config_json: configJson },
       {
         ...authRequestOptions,
-        headers: { 'X-Security-Proof': proof },
         singleUseAuthorization: true,
         signal,
       }
@@ -153,14 +143,9 @@ export function importGptGatewayChannelJSON(
   )
 }
 
-export async function deleteGptAccount(
-  id: number,
-  proof: string,
-  signal: AbortSignal
-) {
+export async function deleteGptAccount(id: number, signal: AbortSignal) {
   const response = await api.delete(`/api/gpt-accounts/${id}`, {
     ...authRequestOptions,
-    headers: { 'X-Security-Proof': proof },
     singleUseAuthorization: true,
     signal,
   })
@@ -172,15 +157,10 @@ export async function deleteGptAccount(
   )
 }
 
-export function authorizeGptAccount(
-  id: number,
-  proof: string,
-  signal: AbortSignal
-) {
+export function authorizeGptAccount(id: number, signal: AbortSignal) {
   return authResult<GptAccountAuthorization>(
     api.get(`/api/gpt-accounts/${id}/oauth`, {
       ...authRequestOptions,
-      headers: { 'X-Security-Proof': proof },
       singleUseAuthorization: true,
       disableDuplicate: true,
       signal,
@@ -209,31 +189,24 @@ export function finishGptAccountAuthorization(
 export function saveGptAccountTotp(
   id: number,
   input: { totp_secret: string; confirmed_bound: boolean },
-  proof: string,
   signal: AbortSignal
 ) {
   return authResult<GptAccount>(
     api.post(`/api/gpt-accounts/${id}/totp`, input, {
       ...authRequestOptions,
-      headers: { 'X-Security-Proof': proof },
       singleUseAuthorization: true,
       signal,
     })
   )
 }
 
-export function revealGptAccountTotp(
-  id: number,
-  proof: string,
-  signal: AbortSignal
-) {
+export function revealGptAccountTotp(id: number, signal: AbortSignal) {
   return authResult<GptAccountTotpReveal>(
     api.post(
       `/api/gpt-accounts/${id}/totp/reveal`,
       {},
       {
         ...authRequestOptions,
-        headers: { 'X-Security-Proof': proof },
         singleUseAuthorization: true,
         signal,
       }

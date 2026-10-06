@@ -8,7 +8,6 @@ import { ErrorState } from '@/components/error-state'
 import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -146,25 +145,17 @@ function GptAccountsPage(props: {
       }
       return
     }
-    const result = await operation.execute(
-      {
-        scope:
-          kind === 'sync' ? 'gpt_account.gateway.sync' : `gpt_account.${kind}`,
-        context: { account_id: account.id },
-      },
-      (proof, signal) => runGptAccountAction(account.id, kind, proof, signal)
+    const result = await operation.execute((signal) =>
+      runGptAccountAction(account.id, kind, signal)
     )
     if (result) refresh()
   }
   const remove = async () => {
     if (!deleting) return
-    const result = await operation.execute(
-      { scope: 'gpt_account.delete', context: { account_id: deleting.id } },
-      async (proof, signal) => {
-        await deleteGptAccount(deleting.id, proof, signal)
-        return true
-      }
-    )
+    const result = await operation.execute(async (signal) => {
+      await deleteGptAccount(deleting.id, signal)
+      return true
+    })
     if (!result) return
     setDeleting(null)
     refresh()
@@ -373,7 +364,7 @@ function GptAccountsPage(props: {
         />
       )}
       <ConfirmDialog
-        open={Boolean(deleting) && !operation.verification.isActive}
+        open={Boolean(deleting)}
         onOpenChange={(open) => {
           if (!open && !operation.pending) setDeleting(null)
         }}
@@ -394,7 +385,6 @@ function GptAccountsPage(props: {
           </p>
         )}
       </ConfirmDialog>
-      <SecureVerificationDialog {...operation.verification.dialogProps} />
     </>
   )
 }

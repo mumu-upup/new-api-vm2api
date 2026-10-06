@@ -74,23 +74,6 @@ func getManagedGPTAccount(c *gin.Context) (*model.GPTAccount, bool) {
 	return &account, true
 }
 
-func gptAccountProof(c *gin.Context, scope string, accountID int, email string) bool {
-	var binding any = struct {
-		AccountID int `json:"account_id"`
-	}{accountID}
-	if scope == "gpt_account.create" || scope == "gpt_account.oauth_import.create" {
-		binding = struct {
-			Email string `json:"email"`
-		}{email}
-	}
-	encoded, err := common.Marshal(binding)
-	if err != nil {
-		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
-		return false
-	}
-	return middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: scope, Context: encoded}) != nil
-}
-
 func gptAccountResponse(c *gin.Context, accountID int) {
 	_, _ = service.ReclaimExpiredGPTAccountJobs(time.Now().Unix())
 	var account model.GPTAccount
@@ -293,9 +276,6 @@ func UpdateGPTAccountTOTP(c *gin.Context) {
 		gptAccountError(c, http.StatusBadRequest, "invalid_totp_secret")
 		return
 	}
-	if !gptAccountProof(c, "gpt_account.totp.update", account.ID, "") {
-		return
-	}
 	secrets, err := service.DecryptGPTAccountSecrets(account)
 	if err != nil {
 		gptAccountError(c, http.StatusServiceUnavailable, "encryption_unavailable")
@@ -334,11 +314,7 @@ func RevealGPTAccountTOTP(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !gptAccountProof(c, "gpt_account.totp.read", account.ID, "") {
-		return
-	}
-	// Proof verification can overlap a replacement; disclose the current stored
-	// secret and recheck ownership after verification completes.
+	// Recheck ownership and the current secret immediately before disclosure.
 	account, ok = getManagedGPTAccount(c)
 	if !ok {
 		return
@@ -431,9 +407,6 @@ func CreateGPTAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !gptAccountProof(c, "gpt_account.create", 0, input.Email) {
-		return
-	}
 	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: uuid.NewString(), Generation: 1, Status: "pending", AutoRelogin: true}
 	if !applyGPTAccountInput(c, &account, input) {
 		return
@@ -459,9 +432,6 @@ func UpdateGPTAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !gptAccountProof(c, "gpt_account.update", account.ID, "") {
-		return
-	}
 	if !applyGPTAccountInput(c, account, input) {
 		return
 	}
@@ -480,9 +450,6 @@ func DeleteGPTAccount(c *gin.Context) {
 	}
 	account, ok := getManagedGPTAccount(c)
 	if !ok {
-		return
-	}
-	if !gptAccountProof(c, "gpt_account.delete", account.ID, "") {
 		return
 	}
 	if model.DB.Delete(account).Error != nil {
@@ -507,9 +474,6 @@ func LoginGPTAccount(c *gin.Context) {
 		gptAccountError(c, http.StatusNotFound, "account_not_found")
 		return
 	}
-	if !gptAccountProof(c, "gpt_account.login", account.ID, "") {
-		return
-	}
 	if err := service.StartGPTAccountLogin(account.ID, identity, false); err != nil {
 		gptAccountError(c, http.StatusConflict, service.GPTAccountErrorCode(err))
 		return
@@ -518,24 +482,24 @@ func LoginGPTAccount(c *gin.Context) {
 	gptAccountResponse(c, account.ID)
 }
 
-func normalizeGPTAccountOAuthImport(c *gin.Context) (*service.GPTAccountOAuthImportInput, *service.CodexOAuthKey, bool) {
+func normalizeGPTAccountOAuthImport(c *gin.Context) (*service.GPTAccountOAuthImportInput, bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	var request gptAccountOAuthImportRequest
 	if c.ShouldBindJSON(&request) != nil {
 		gptAccountError(c, http.StatusBadRequest, "oauth_import_invalid")
-		return nil, nil, false
+		return nil, false
 	}
-	key, err := service.ParseCodexOAuthImport(request.OAuthJSON)
+	_, err := service.ParseCodexOAuthImport(request.OAuthJSON)
 	if err != nil {
 		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
-		return nil, nil, false
+		return nil, false
 	}
 	request.Name, request.Group, request.Models = strings.TrimSpace(request.Name), strings.TrimSpace(request.Group), strings.TrimSpace(request.Models)
 	if len(request.Name) > 128 || len(request.Group) > 64 || len(request.Models) > 8192 || strings.ContainsAny(request.Group, "\r\n") || strings.ContainsAny(request.Models, "\r\n") {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
-		return nil, nil, false
+		return nil, false
 	}
-	return &service.GPTAccountOAuthImportInput{OAuthJSON: request.OAuthJSON, Name: request.Name, Group: request.Group, Models: request.Models, AutoRelogin: request.AutoRelogin}, &key, true
+	return &service.GPTAccountOAuthImportInput{OAuthJSON: request.OAuthJSON, Name: request.Name, Group: request.Group, Models: request.Models, AutoRelogin: request.AutoRelogin}, true
 }
 
 func gptAccountOAuthImportError(c *gin.Context, err error) {
@@ -559,11 +523,8 @@ func ImportGPTAccountOAuth(c *gin.Context) {
 	if !ok {
 		return
 	}
-	input, key, ok := normalizeGPTAccountOAuthImport(c)
+	input, ok := normalizeGPTAccountOAuthImport(c)
 	if !ok {
-		return
-	}
-	if !gptAccountProof(c, "gpt_account.oauth_import.create", 0, key.Email) {
 		return
 	}
 	account, err := service.ImportGPTAccountOAuth(c.Request.Context(), identity.UserID, 0, *input)
@@ -588,11 +549,8 @@ func ImportGPTAccountOAuthForAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	input, _, ok := normalizeGPTAccountOAuthImport(c)
+	input, ok := normalizeGPTAccountOAuthImport(c)
 	if !ok {
-		return
-	}
-	if !gptAccountProof(c, "gpt_account.oauth_import.update", account.ID, "") {
 		return
 	}
 	// Root operators may manage an account owned by another administrator;
@@ -617,9 +575,6 @@ func StartGPTAccountOAuth(c *gin.Context) {
 	}
 	account, ok := getManagedGPTAccount(c)
 	if !ok {
-		return
-	}
-	if !gptAccountProof(c, "gpt_account.oauth", account.ID, "") {
 		return
 	}
 	result, err := service.StartGPTAccountAuthorization(account.ID, identity)
@@ -664,9 +619,6 @@ func RefreshGPTAccount(c *gin.Context) {
 	}
 	account, ok := getManagedGPTAccount(c)
 	if !ok {
-		return
-	}
-	if !gptAccountProof(c, "gpt_account.refresh", account.ID, "") {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
