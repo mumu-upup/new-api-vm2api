@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -25,9 +26,10 @@ type GPTAccountOAuthImportInput struct {
 }
 
 // ParseCodexOAuthImport validates the shape and lifetime of an operator-supplied
-// Codex OAuth bundle. The ID token subject is checked for fencing, but its
-// signature is not treated as proof; the caller must still pass the admin
-// security-verification flow before importing it.
+// Codex OAuth bundle. Historical ID-token claims are unverified account-binding
+// metadata, not proof of authentication, and may outlive that token's expiry.
+// Access JWT claims are checked for consistency and expiry, not verified here.
+// The caller must pass the administrator security-verification flow.
 func ParseCodexOAuthImport(raw string) (CodexOAuthKey, error) {
 	if len(raw) == 0 || len(raw) > maxGPTAccountOAuthImportBytes {
 		return CodexOAuthKey{}, errors.New("oauth_import_invalid")
@@ -51,6 +53,14 @@ func ParseCodexOAuthImport(raw string) (CodexOAuthKey, error) {
 	claims, err := parseCodexOAuthClaims(key.IDToken)
 	if err != nil || !claims.EmailVerified || !strings.EqualFold(strings.TrimSpace(claims.Email), key.Email) || claims.AccountID != key.AccountID {
 		return CodexOAuthKey{}, errors.New("oauth_import_invalid")
+	}
+	if accessClaims, ok := parseCodexAccessClaims(key.AccessToken); ok {
+		if !accessClaims.Valid || accessClaims.AccountID != key.AccountID || !strings.EqualFold(accessClaims.Email, key.Email) || accessClaims.Subject != claims.Subject {
+			return CodexOAuthKey{}, errors.New("oauth_import_invalid")
+		}
+		if expired.Unix() > accessClaims.ExpiresAt {
+			key.Expired = time.Unix(accessClaims.ExpiresAt, 0).Format(time.RFC3339)
+		}
 	}
 	return key, nil
 }
@@ -81,7 +91,7 @@ func parseCodexOAuthClaims(raw string) (codexOAuthClaims, error) {
 		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
 	}
 	expires, ok := claims["exp"].(float64)
-	if !ok || int64(expires) <= time.Now().Unix() {
+	if !ok || !validUnixClaim(expires) {
 		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
 	}
 	email, ok := claims["email"].(string)
@@ -101,6 +111,67 @@ func parseCodexOAuthClaims(raw string) (codexOAuthClaims, error) {
 		return codexOAuthClaims{}, errors.New("oauth_import_invalid")
 	}
 	return codexOAuthClaims{Subject: strings.TrimSpace(subject), Email: email, EmailVerified: emailVerified, AccountID: strings.TrimSpace(accountID)}, nil
+}
+
+type codexAccessClaims struct {
+	Valid     bool
+	Subject   string
+	Email     string
+	AccountID string
+	ExpiresAt int64
+}
+
+// parseCodexAccessClaims validates claims only when an access token has the
+// JWT shape. Opaque access tokens remain compatible with existing channels;
+// this parser is still deliberately unverified because imports are gated by a
+// server-side administrator proof and this token is not an authentication
+// assertion for the gateway.
+func parseCodexAccessClaims(raw string) (codexAccessClaims, bool) {
+	if strings.Count(raw, ".") != 2 {
+		return codexAccessClaims{}, false
+	}
+	claims := jwt.MapClaims{}
+	parsed, _, err := jwt.NewParser(jwt.WithValidMethods([]string{"RS256"})).ParseUnverified(raw, claims)
+	if err != nil || parsed.Method.Alg() != "RS256" {
+		return codexAccessClaims{}, true
+	}
+	issuer, issuerOK := claims["iss"].(string)
+	if !issuerOK || issuer != "https://auth.openai.com" {
+		return codexAccessClaims{}, true
+	}
+	audience, err := claims.GetAudience()
+	if err != nil || len(audience) != 1 || audience[0] != "https://api.openai.com/v1" {
+		return codexAccessClaims{}, true
+	}
+	expires, expiresOK := claims["exp"].(float64)
+	if !expiresOK || !validUnixClaim(expires) || int64(expires) <= time.Now().Unix() {
+		return codexAccessClaims{}, true
+	}
+	if notBefore, ok := claims["nbf"]; ok {
+		value, valueOK := notBefore.(float64)
+		if !valueOK || !validUnixClaim(value) || int64(value) > time.Now().Unix() {
+			return codexAccessClaims{}, true
+		}
+	}
+	subject, subjectOK := claims["sub"].(string)
+	auth, authOK := claims[codexJWTClaimPath].(map[string]any)
+	accountID, accountOK := auth["chatgpt_account_id"].(string)
+	profile, profileOK := claims["https://api.openai.com/profile"].(map[string]any)
+	email, emailOK := profile["email"].(string)
+	if !subjectOK || strings.TrimSpace(subject) == "" || !authOK || !accountOK || strings.TrimSpace(accountID) == "" || !profileOK || !emailOK || strings.TrimSpace(email) == "" {
+		return codexAccessClaims{}, true
+	}
+	if rootEmail, ok := claims["email"]; ok {
+		value, valueOK := rootEmail.(string)
+		if !valueOK || !strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(email)) {
+			return codexAccessClaims{}, true
+		}
+	}
+	return codexAccessClaims{Valid: true, Subject: strings.TrimSpace(subject), Email: strings.TrimSpace(email), AccountID: strings.TrimSpace(accountID), ExpiresAt: int64(expires)}, true
+}
+
+func validUnixClaim(value float64) bool {
+	return value > 0 && value <= 253402300799 && value == math.Trunc(value)
 }
 
 func parseCodexOAuthSubject(raw string) (string, error) {

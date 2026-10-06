@@ -182,6 +182,12 @@ export async function classifyLoginScreen(tab, navigationError = '') {
   const text = await tab.locator('body').innerText()
   const path = new URL(tab.url()).pathname
   const headings = (await tab.getByRole('heading').allTextContents()).join(' ')
+  // Official Codex may pause after authentication on a workspace/account
+  // selector. It is an explicit human handoff: never choose a workspace from
+  // the worker, and keep the diagnostic to the fixed `additional` enum.
+  if (/(?:choose|select)\s+(?:(?:a|an)\s+)?(?:workspace|account|organization|team)|(?:workspace|organization)\s+(?:selection|selector)/i.test(`${headings} ${text}`)) {
+    return { kind: 'additional' }
+  }
   if (/(?:reset[-_/]?password|password[-_/](?:reset|change)|sign[-_]?up|enroll|create[-_]?account)/i.test(path) ||
       /(?:reset|change|choose|create|set)\b.{0,30}\bpassword|set up\b.{0,40}(?:authenticator|authentication|account)|create your account|重置密码|修改密码|设置.{0,10}(?:密码|验证器)/i.test(headings) ||
       await tab.locator('input[autocomplete="new-password"], input[name="new_password"], input[name="confirm_password"]').filter({ visible: true }).count() ||

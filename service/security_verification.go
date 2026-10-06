@@ -2,6 +2,7 @@ package service
 
 import (
 	"crypto/hmac"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"slices"
@@ -16,26 +17,27 @@ import (
 )
 
 const (
-	VerificationMethodTwoFA              = "2fa"
-	VerificationMethodPasskey            = "passkey"
-	VerificationMethodPassword           = "password"
-	VerificationMethodOAuth              = "oauth"
-	VerificationMethodSession            = "session"
-	VerificationScopeChannelKeyRead      = "channel.key.read"
-	VerificationScopePasskeyRegister     = "passkey.register"
-	VerificationScopePasskeyDelete       = "passkey.delete"
-	VerificationScopeTwoFASetup          = "2fa.setup"
-	VerificationScopeTwoFADisable        = "2fa.disable"
-	VerificationScopeTwoFABackupCodes    = "2fa.backup_codes.regenerate"
-	VerificationScopeLogin               = "auth.login"
-	VerificationScopeAccessTokenGenerate = "access_token.generate"
-	VerificationScopeAccessTokenRevoke   = "access_token.revoke"
-	VerificationScopeAccessTokenUpdate   = "access_token.update"
-	VerificationScopeAccountBind         = "account.binding.bind"
-	VerificationScopeAccountUnbind       = "account.binding.unbind"
-	VerificationScopePasswordSet         = "account.password.set"
-	VerificationScopePasswordChange      = "account.password.change"
-	VerificationScopeAccountDelete       = "account.delete"
+	VerificationMethodTwoFA                  = "2fa"
+	VerificationMethodPasskey                = "passkey"
+	VerificationMethodPassword               = "password"
+	VerificationMethodOAuth                  = "oauth"
+	VerificationMethodSession                = "session"
+	VerificationScopeChannelKeyRead          = "channel.key.read"
+	VerificationScopePasskeyRegister         = "passkey.register"
+	VerificationScopePasskeyDelete           = "passkey.delete"
+	VerificationScopeTwoFASetup              = "2fa.setup"
+	VerificationScopeTwoFADisable            = "2fa.disable"
+	VerificationScopeTwoFABackupCodes        = "2fa.backup_codes.regenerate"
+	VerificationScopeLogin                   = "auth.login"
+	VerificationScopeAccessTokenGenerate     = "access_token.generate"
+	VerificationScopeAccessTokenRevoke       = "access_token.revoke"
+	VerificationScopeAccessTokenUpdate       = "access_token.update"
+	VerificationScopeAccountBind             = "account.binding.bind"
+	VerificationScopeAccountUnbind           = "account.binding.unbind"
+	VerificationScopePasswordSet             = "account.password.set"
+	VerificationScopePasswordChange          = "account.password.change"
+	VerificationScopeAccountDelete           = "account.delete"
+	VerificationScopeGPTGatewayChannelImport = "gpt_account_gateway.channel_import"
 	// Administrative step-up scopes bind the managed user into the proof so a
 	// proof issued for one account cannot be replayed against another.
 	VerificationScopeAdminUserCreate       = "admin.user.create"
@@ -163,6 +165,18 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 	}
 	var normalized any
 	switch operation.Scope {
+	case VerificationScopeGPTGatewayChannelImport:
+		var context struct {
+			ConfigSHA256 string `json:"config_sha256"`
+		}
+		if len(fields) != 1 || common.Unmarshal(operation.Context, &context) != nil || len(context.ConfigSHA256) != 64 {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		if _, err := hex.DecodeString(context.ConfigSHA256); err != nil {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		context.ConfigSHA256 = strings.ToLower(context.ConfigSHA256)
+		normalized = context
 	case "gpt_account_gateway.create":
 		var context struct {
 			Name string `json:"name"`
@@ -365,7 +379,7 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 			return nil, model.ErrTwoFANotEnabled
 		}
 	case "gpt_account.create", "gpt_account.oauth_import.create", "gpt_account.update", "gpt_account.oauth_import.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read",
-		"gpt_account.gateway.sync", "gpt_account_gateway.create", "gpt_account_gateway.update",
+		"gpt_account.gateway.sync", "gpt_account_gateway.create", "gpt_account_gateway.update", VerificationScopeGPTGatewayChannelImport,
 		VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenUpdate, VerificationScopeAccessTokenRevoke,
 		VerificationScopeAccountBind, VerificationScopeAccountUnbind,
