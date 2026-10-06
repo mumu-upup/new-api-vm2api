@@ -364,3 +364,38 @@ test('a failed main navigation produces a safe navigation error while failed ass
     assert.deepEqual(errors, mainNavigation ? ['login_navigation_failed'] : [])
   }
 })
+
+test('login network diagnostics identify failures without disclosing URLs or credentials', async () => {
+  for (const [url, method, status, destination, event] of [
+    ['https://sentinel.openai.com/private?code=private-code', 'POST', 200, 'sentinel.openai.com', 'request_blocked'],
+    ['https://private-secret.example/private?password=private-password', 'GET', 200, 'other', 'request_blocked'],
+    ['https://auth.openai.com/private?state=private-state', 'POST', 403, 'auth.openai.com', 'http_error'],
+  ]) {
+    const fixture = routedRequest(url, status, undefined, method)
+    fixture.route.request = () => ({ url: () => url, method: () => method,
+      isNavigationRequest: () => false, frame: () => 'main' })
+    const events = []
+    fixture.context.onDiagnostic = value => events.push(value)
+    await handleLoginRequest(fixture.route, fixture.context)
+    assert.deepEqual(events, [{ event, destination, method, navigation: false,
+      ...(event === 'http_error' ? { status } : {}) }])
+    assert.doesNotMatch(JSON.stringify(events), /private|password|code=|state=/)
+  }
+  const fixture = routedRequest('https://auth.openai.com/private?secret=private', 200)
+  fixture.route.fetch = async () => { throw new Error('private password provider response') }
+  const events = []
+  fixture.context.onDiagnostic = value => events.push(value)
+  await handleLoginRequest(fixture.route, fixture.context)
+  assert.deepEqual(events, [{ event: 'request_failed', destination: 'auth.openai.com', method: 'GET', navigation: true }])
+})
+
+test('login stage diagnostics report transitions only and exclude form values', async () => {
+  const page = loginPage([{ kind: 'password' }, { kind: 'password' }, { kind: 'totp' },
+    { kind: 'callback', url: `http://localhost:1455/auth/callback?code=private-code&state=${state}` }])
+  const events = []
+  const result = await completeLoginPage(page, request(), new AbortController().signal,
+    { wait: page.next, onDiagnostic: value => events.push(value) })
+  assert.equal(result.status, 'success')
+  assert.deepEqual(events, [{ event: 'screen', kind: 'password' }, { event: 'screen', kind: 'totp' }])
+  assert.doesNotMatch(JSON.stringify(events), /fixture-password|private-code|state|GEZDG/)
+})
