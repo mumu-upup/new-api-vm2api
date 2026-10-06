@@ -31,6 +31,14 @@ type gptAccountInput struct {
 	GatewayID    *int    `json:"gateway_id"`
 }
 
+type gptAccountOAuthImportRequest struct {
+	OAuthJSON   string `json:"oauth_json"`
+	Name        string `json:"name"`
+	Group       string `json:"group"`
+	Models      string `json:"models"`
+	AutoRelogin *bool  `json:"auto_relogin"`
+}
+
 func gptAccountError(c *gin.Context, status int, code string) {
 	c.JSON(status, gin.H{"success": false, "message": code, "code": code})
 }
@@ -70,7 +78,7 @@ func gptAccountProof(c *gin.Context, scope string, accountID int, email string) 
 	var binding any = struct {
 		AccountID int `json:"account_id"`
 	}{accountID}
-	if scope == "gpt_account.create" {
+	if scope == "gpt_account.create" || scope == "gpt_account.oauth_import.create" {
 		binding = struct {
 			Email string `json:"email"`
 		}{email}
@@ -84,6 +92,7 @@ func gptAccountProof(c *gin.Context, scope string, accountID int, email string) 
 }
 
 func gptAccountResponse(c *gin.Context, accountID int) {
+	_, _ = service.ReclaimExpiredGPTAccountJobs(time.Now().Unix())
 	var account model.GPTAccount
 	if model.DB.First(&account, accountID).Error != nil {
 		gptAccountError(c, http.StatusNotFound, "account_not_found")
@@ -120,6 +129,7 @@ func ListGPTAccounts(c *gin.Context) {
 	if _, ok := gptAccountIdentity(c, false); !ok {
 		return
 	}
+	_, _ = service.ReclaimExpiredGPTAccountJobs(time.Now().Unix())
 	page, _ := strconv.Atoi(c.Query("p"))
 	size, _ := strconv.Atoi(c.Query("page_size"))
 	if size == 0 {
@@ -455,6 +465,11 @@ func LoginGPTAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
+	_, _ = service.ReclaimExpiredGPTAccountJobs(time.Now().Unix())
+	if model.DB.First(account, account.ID).Error != nil {
+		gptAccountError(c, http.StatusNotFound, "account_not_found")
+		return
+	}
 	if !gptAccountProof(c, "gpt_account.login", account.ID, "") {
 		return
 	}
@@ -464,6 +479,88 @@ func LoginGPTAccount(c *gin.Context) {
 	}
 	recordManageAudit(c, "gpt_account.login", map[string]any{"account_id": account.ID})
 	gptAccountResponse(c, account.ID)
+}
+
+func normalizeGPTAccountOAuthImport(c *gin.Context) (*service.GPTAccountOAuthImportInput, *service.CodexOAuthKey, bool) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
+	var request gptAccountOAuthImportRequest
+	if c.ShouldBindJSON(&request) != nil {
+		gptAccountError(c, http.StatusBadRequest, "oauth_import_invalid")
+		return nil, nil, false
+	}
+	key, err := service.ParseCodexOAuthImport(request.OAuthJSON)
+	if err != nil {
+		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
+		return nil, nil, false
+	}
+	request.Name, request.Group, request.Models = strings.TrimSpace(request.Name), strings.TrimSpace(request.Group), strings.TrimSpace(request.Models)
+	if len(request.Name) > 128 || len(request.Group) > 64 || len(request.Models) > 8192 || strings.ContainsAny(request.Group, "\r\n") || strings.ContainsAny(request.Models, "\r\n") {
+		gptAccountError(c, http.StatusBadRequest, "invalid_account")
+		return nil, nil, false
+	}
+	return &service.GPTAccountOAuthImportInput{OAuthJSON: request.OAuthJSON, Name: request.Name, Group: request.Group, Models: request.Models, AutoRelogin: request.AutoRelogin}, &key, true
+}
+
+func gptAccountOAuthImportError(c *gin.Context, err error) {
+	code := service.GPTAccountErrorCode(err)
+	status := http.StatusBadRequest
+	switch code {
+	case "account_not_found":
+		status = http.StatusNotFound
+	case "account_conflict", "account_busy", "account_changed", "identity_mismatch", "gateway_immutable":
+		status = http.StatusConflict
+	case "authorization_forbidden":
+		status = http.StatusForbidden
+	case "encryption_unavailable":
+		status = http.StatusServiceUnavailable
+	}
+	gptAccountError(c, status, code)
+}
+
+func ImportGPTAccountOAuth(c *gin.Context) {
+	identity, ok := gptAccountIdentity(c, true)
+	if !ok {
+		return
+	}
+	input, key, ok := normalizeGPTAccountOAuthImport(c)
+	if !ok {
+		return
+	}
+	if !gptAccountProof(c, "gpt_account.oauth_import.create", 0, key.Email) {
+		return
+	}
+	account, err := service.ImportGPTAccountOAuth(c.Request.Context(), identity.UserID, 0, *input)
+	if err != nil {
+		gptAccountOAuthImportError(c, err)
+		return
+	}
+	recordManageAudit(c, "gpt_account.oauth_import", map[string]any{"account_id": account.ID})
+	gptAccountResponse(c, account.ID)
+}
+
+func ImportGPTAccountOAuthForAccount(c *gin.Context) {
+	identity, ok := gptAccountIdentity(c, true)
+	if !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	input, _, ok := normalizeGPTAccountOAuthImport(c)
+	if !ok {
+		return
+	}
+	if !gptAccountProof(c, "gpt_account.oauth_import.update", account.ID, "") {
+		return
+	}
+	updated, err := service.ImportGPTAccountOAuth(c.Request.Context(), identity.UserID, account.ID, *input)
+	if err != nil {
+		gptAccountOAuthImportError(c, err)
+		return
+	}
+	recordManageAudit(c, "gpt_account.oauth_import", map[string]any{"account_id": updated.ID})
+	gptAccountResponse(c, updated.ID)
 }
 
 func StartGPTAccountOAuth(c *gin.Context) {

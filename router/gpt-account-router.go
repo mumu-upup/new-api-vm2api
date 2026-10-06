@@ -16,11 +16,13 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 	handlePermissionRoute(group, http.MethodGet, "/config", authz.GPTAccountRead, controller.GPTAccountsConfig)
 	for _, route := range []permissionRoute{
 		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccount},
+		{http.MethodPost, "/import-oauth", authz.GPTAccountManage, controller.ImportGPTAccountOAuth},
 		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccount},
 		{http.MethodPost, "/:id/totp", authz.GPTAccountManage, controller.UpdateGPTAccountTOTP},
 		{http.MethodPost, "/:id/totp/reveal", authz.GPTAccountManage, controller.RevealGPTAccountTOTP},
 		{http.MethodDelete, "/:id", authz.GPTAccountManage, controller.DeleteGPTAccount},
 		{http.MethodPost, "/:id/login", authz.GPTAccountManage, controller.LoginGPTAccount},
+		{http.MethodPost, "/:id/import-oauth", authz.GPTAccountManage, controller.ImportGPTAccountOAuthForAccount},
 		{http.MethodGet, "/:id/oauth", authz.GPTAccountManage, controller.StartGPTAccountOAuth},
 		{http.MethodPost, "/:id/callback", authz.GPTAccountManage, controller.CompleteGPTAccountOAuth},
 		{http.MethodPost, "/:id/refresh", authz.GPTAccountManage, controller.RefreshGPTAccount},

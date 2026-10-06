@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw } from 'lucide-react'
+import { FileJson, Plus, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -24,8 +24,9 @@ import { AccountLoginDialog } from './components/account-login-dialog'
 import { AccountTotpDialog } from './components/account-totp-dialog'
 import { AccountTotpTable } from './components/account-totp-table'
 import { AccountsTable, type AccountAction } from './components/accounts-table'
-import { GatewaysPanel } from './components/gateways-panel'
 import { GatewayFormDialog } from './components/gateway-form-dialog'
+import { GatewaysPanel } from './components/gateways-panel'
+import { OAuthImportDialog } from './components/oauth-import-dialog'
 import { useAccountOperation } from './hooks/use-account-operation'
 import type { GptAccount, GptAccountGateway } from './types'
 
@@ -61,7 +62,10 @@ function GptAccountsPage(props: {
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [editor, setEditor] = useState<GptAccount | 'create' | null>(null)
   const [login, setLogin] = useState<GptAccount | null>(null)
-  const [gatewayEditor, setGatewayEditor] = useState<GptAccountGateway | 'create' | null>(null)
+  const [gatewayEditor, setGatewayEditor] = useState<
+    GptAccountGateway | 'create' | null
+  >(null)
+  const [oauthImportOpen, setOAuthImportOpen] = useState(false)
   const [deleting, setDeleting] = useState<GptAccount | null>(null)
   const query = useQuery({
     queryKey: [
@@ -175,6 +179,14 @@ function GptAccountsPage(props: {
             <Plus />
             {t('Add GPT account')}
           </Button>
+          <Button
+            variant='outline'
+            onClick={() => setOAuthImportOpen(true)}
+            disabled={!config.data?.encryption_available}
+          >
+            <FileJson />
+            {t('Import OAuth JSON')}
+          </Button>
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
           <div className='flex h-full min-h-0 flex-col gap-3'>
@@ -284,7 +296,13 @@ function GptAccountsPage(props: {
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>
-      {gatewayEditor && <GatewayFormDialog gateway={gatewayEditor === 'create' ? undefined : gatewayEditor} onClose={() => setGatewayEditor(null)} onSaved={refresh} />}
+      {gatewayEditor && (
+        <GatewayFormDialog
+          gateway={gatewayEditor === 'create' ? undefined : gatewayEditor}
+          onClose={() => setGatewayEditor(null)}
+          onSaved={refresh}
+        />
+      )}
       {totp && (
         <AccountTotpDialog
           account={totp.account}
@@ -310,6 +328,12 @@ function GptAccountsPage(props: {
         <AccountLoginDialog
           account={login}
           onClose={() => setLogin(null)}
+          onSaved={refresh}
+        />
+      )}
+      {oauthImportOpen && (
+        <OAuthImportDialog
+          onClose={() => setOAuthImportOpen(false)}
           onSaved={refresh}
         />
       )}

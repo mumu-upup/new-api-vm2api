@@ -533,6 +533,8 @@ func GPTAccountErrorCode(err error) string {
 		return err.Error()
 	case "", "encryption_unavailable", "automation_unavailable", "account_busy", "account_changed", "authorization_invalid", "authorization_failed", "identity_verification_failed", "identity_mismatch", "credentials_required", "worker_unavailable", "worker_busy", "needs_attention", "refresh_failed", "channel_required", "authorization_forbidden", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback":
 		return err.Error()
+	case "oauth_import_invalid", "account_not_found", "account_conflict":
+		return err.Error()
 	default:
 		return "operation_failed"
 	}
