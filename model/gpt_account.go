@@ -12,6 +12,42 @@ import (
 	"gorm.io/gorm"
 )
 
+const GPTAccountDefaultGroupKey = "GPTAccountDefaultGroup"
+
+func ValidateGPTAccountGroup(group string) error {
+	if strings.TrimSpace(group) == "" || len(group) > 64 || strings.ContainsAny(group, "\r\n\x00") {
+		return errors.New("invalid_account")
+	}
+	for name := range strings.SplitSeq(group, ",") {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("invalid_account")
+		}
+	}
+	return nil
+}
+
+// ResolveGPTAccountGroup reads persisted defaults at submission time so a
+// change applies immediately across administrators and application nodes.
+// Existing accounts retain the concrete routing group saved on creation.
+func ResolveGPTAccountGroup(group string) (string, error) {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		var option Option
+		err := DB.Where(&Option{Key: GPTAccountDefaultGroupKey}).First(&option).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			group = "default"
+		} else if err != nil {
+			return "", err
+		} else {
+			group = strings.TrimSpace(option.Value)
+		}
+	}
+	if err := ValidateGPTAccountGroup(group); err != nil {
+		return "", err
+	}
+	return group, nil
+}
+
 // GPTAccount contains management metadata. Recoverable login secrets never
 // participate in JSON responses; channels retain their existing OAuth format.
 type GPTAccount struct {

@@ -78,7 +78,11 @@ beforeEach(() => {
       return {
         data: {
           success: true,
-          data: { encryption_available: true, automation_available: true },
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+          },
         },
       }
     }
@@ -137,6 +141,173 @@ async function verify() {
   await userEvent.click(screen.getByRole('button', { name: 'Verify' }))
 }
 
+it('shows a persistent global default and leaves new account group blank to inherit it', async () => {
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'team',
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  expect(await screen.findByLabelText('Global default group')).toHaveValue(
+    'team'
+  )
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  expect(screen.getByLabelText('Group')).toHaveValue('')
+  expect(screen.getByLabelText('Group')).toHaveAttribute(
+    'placeholder',
+    'Use global default: team'
+  )
+})
+
+it('saves the global default on the server and displays it after reloading', async () => {
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: true, data: { default_group: 'team' } },
+  })
+  const view = renderPage()
+  const input = await screen.findByLabelText('Global default group')
+  await userEvent.clear(input)
+  await userEvent.type(input, 'team')
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Save default group' })
+  )
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      '/api/gpt-accounts/config',
+      { default_group: 'team' },
+      expect.anything()
+    )
+  )
+  view.unmount()
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) =>
+    url === '/api/gpt-accounts/config'
+      ? {
+          data: {
+            success: true,
+            data: {
+              encryption_available: true,
+              automation_available: true,
+              default_group: 'team',
+            },
+          },
+        }
+      : originalGet(url, config)
+  )
+  client.clear()
+  renderPage()
+  expect(await screen.findByLabelText('Global default group')).toHaveValue(
+    'team'
+  )
+})
+
+it('keeps an unsaved group visible and reports a failed default update', async () => {
+  vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: false, code: 'authorization_forbidden' },
+  })
+  renderPage()
+  const input = await screen.findByLabelText('Global default group')
+  await userEvent.clear(input)
+  await userEvent.type(input, 'team')
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Save default group' })
+  )
+  expect(await screen.findByRole('alert')).toBeVisible()
+  expect(input).toHaveValue('team')
+  expect(
+    screen.getByRole('button', { name: 'Save default group' })
+  ).toBeEnabled()
+})
+
+it('allows administrators to read the global group but not change it', async () => {
+  useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: 10 })
+  renderPage()
+  expect(await screen.findByLabelText('Global default group')).toHaveAttribute(
+    'readonly'
+  )
+  expect(
+    screen.queryByRole('button', { name: 'Save default group' })
+  ).not.toBeInTheDocument()
+})
+
+it('sends an explicit OAuth import group after verification', async () => {
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Import OAuth JSON' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import Codex OAuth JSON',
+  })
+  fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
+    target: { value: '{"email":"import@example.com"}' },
+  })
+  await userEvent.type(within(dialog).getByLabelText('Group'), 'premium')
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
+  )
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/import-oauth',
+      { oauth_json: '{"email":"import@example.com"}', group: 'premium' },
+      expect.anything()
+    )
+  )
+})
+
+it('binds a channel JSON group override to the same proof as the submitted JSON', async () => {
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Import channel JSON' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import CPA/Sub2API channel JSON',
+  })
+  fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
+    target: { value: '{"provider":"cpa","group":"old"}' },
+  })
+  await userEvent.type(within(dialog).getByLabelText('Group'), 'premium')
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Create channel' })
+  )
+  await verify()
+  const submitted = '{"provider":"cpa","group":"premium"}'
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-account-gateways/import-channel-json',
+      { config_json: submitted },
+      expect.anything()
+    )
+  )
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(submitted)
+  )
+  const hash = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({ context: { config_sha256: hash } }),
+    expect.anything()
+  )
+})
+
 it('denies ordinary users without requesting managed account data', async () => {
   useAuthStore.getState().auth.setUser({ id: 2, username: 'user', role: 1 })
   renderPage()
@@ -176,6 +347,7 @@ it('masks credential inputs and starts creation only after scoped admin verifica
       '/api/gpt-accounts',
       expect.objectContaining({
         email: 'second@example.com',
+        group: '',
         password: 'upstream-password',
         totp_secret: 'JBSWY3DPEHPK3PXP',
         totp_provider: 'local',
@@ -1320,7 +1492,7 @@ it('submits a masked account line in one step with normalized credentials and th
         totp_secret: 'JBSWY3DPEHPK3PXP',
         totp_provider: '2fa_cn',
         auto_relogin: true,
-        group: 'default',
+        group: '',
         models: '',
         channel_id: undefined,
         gateway_id: 0,
@@ -1873,7 +2045,9 @@ it('imports a direct CPA or Sub2API channel JSON only after scoped verification'
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: { value: configJSON },
   })
-  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Create channel' })
+  )
   await verify()
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
@@ -1909,7 +2083,9 @@ it('rejects non-object channel JSON before requesting security verification', as
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: { value: '[]' },
   })
-  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Create channel' })
+  )
   expect(
     await within(dialog).findByText(
       'Paste a valid CPA or Sub2API channel JSON object.'
@@ -1928,7 +2104,10 @@ it('abandons channel JSON verification when the page closes during hashing', asy
   const digest = vi
     .spyOn(globalThis.crypto.subtle, 'digest')
     .mockImplementationOnce(
-      () => new Promise<ArrayBuffer>((resolve) => { finishDigest = resolve })
+      () =>
+        new Promise<ArrayBuffer>((resolve) => {
+          finishDigest = resolve
+        })
     )
   const page = renderPage()
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
@@ -1938,13 +2117,18 @@ it('abandons channel JSON verification when the page closes during hashing', asy
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: {
-      value: '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
+      value:
+        '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
     },
   })
-  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Create channel' })
+  )
   await waitFor(() => expect(digest).toHaveBeenCalledOnce())
   page.unmount()
-  await act(async () => { finishDigest(new Uint8Array(32).buffer) })
+  await act(async () => {
+    finishDigest(new Uint8Array(32).buffer)
+  })
   expect(api.get).not.toHaveBeenCalledWith(
     '/api/verify/methods',
     expect.anything()
@@ -1962,17 +2146,22 @@ it('does not import channel JSON when security verification is cancelled', async
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: {
-      value: '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
+      value:
+        '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
     },
   })
-  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Create channel' })
+  )
   const verification = await screen.findByRole('dialog', {
     name: 'Security verification',
   })
   await user.click(within(verification).getByRole('button', { name: 'Cancel' }))
-  expect(await screen.findByRole('dialog', {
-    name: 'Import CPA/Sub2API channel JSON',
-  })).toBeVisible()
+  expect(
+    await screen.findByRole('dialog', {
+      name: 'Import CPA/Sub2API channel JSON',
+    })
+  ).toBeVisible()
   expect(api.post).not.toHaveBeenCalled()
 })
 

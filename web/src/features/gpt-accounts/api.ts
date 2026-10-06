@@ -32,6 +32,16 @@ export function getGptAccountConfig(signal?: AbortSignal) {
   )
 }
 
+export function updateGptAccountConfig(defaultGroup: string) {
+  return authResult<GptAccountConfig>(
+    api.put(
+      '/api/gpt-accounts/config',
+      { default_group: defaultGroup },
+      authRequestOptions
+    )
+  )
+}
+
 export function saveGptAccount(
   id: number | undefined,
   input: GptAccountInput,
@@ -52,8 +62,8 @@ export function saveGptAccount(
 }
 
 export function importGptAccountOAuth(
-	accountId: number | undefined,
-	input: {
+  accountId: number | undefined,
+  input: {
     oauth_json: string
     name?: string
     group?: string
@@ -63,13 +73,19 @@ export function importGptAccountOAuth(
   proof: string,
   signal: AbortSignal
 ) {
-	return authResult<GptAccount>(
-		api.post(accountId ? `/api/gpt-accounts/${accountId}/import-oauth` : '/api/gpt-accounts/import-oauth', input, {
-      ...authRequestOptions,
-      headers: { 'X-Security-Proof': proof },
-      singleUseAuthorization: true,
-      signal,
-    })
+  return authResult<GptAccount>(
+    api.post(
+      accountId
+        ? `/api/gpt-accounts/${accountId}/import-oauth`
+        : '/api/gpt-accounts/import-oauth',
+      input,
+      {
+        ...authRequestOptions,
+        headers: { 'X-Security-Proof': proof },
+        singleUseAuthorization: true,
+        signal,
+      }
+    )
   )
 }
 

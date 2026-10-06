@@ -25,6 +25,7 @@ import { gatewayFormSchema, type GatewayFormValues } from '../lib/gateway-form'
 import type { GptAccountGateway } from '../types'
 
 export function GatewayFormDialog(props: {
+  defaultGroup?: string
   gateway?: GptAccountGateway
   onClose: () => void
   onSaved: () => void
@@ -41,7 +42,7 @@ export function GatewayFormDialog(props: {
       relay_url: props.gateway?.relay_url ?? '',
       allow_local_http: props.gateway?.allow_local_http ?? false,
       remote_group_id: props.gateway?.remote_group_id ?? 0,
-      group: props.gateway?.group ?? 'default',
+      group: props.gateway?.group ?? '',
       models: props.gateway?.models ?? 'gpt-5',
       management_key: '',
       relay_key: '',
@@ -213,6 +214,13 @@ export function GatewayFormDialog(props: {
                             {...field}
                             disabled={operation.pending}
                             readOnly={Boolean(props.gateway) && entry.immutable}
+                            placeholder={
+                              entry.name === 'group'
+                                ? t('Use global default: {{group}}', {
+                                    group: props.defaultGroup ?? 'default',
+                                  })
+                                : undefined
+                            }
                             autoComplete='off'
                           />
                         )}

@@ -202,6 +202,7 @@ func TestGPTAccountPollingPreservesSensitiveOperationRateLimit(t *testing.T) {
 		{http.MethodPost, "/api/gpt-accounts/1/login"},
 		{http.MethodPost, "/api/gpt-accounts/1/totp/reveal"},
 		{http.MethodPost, "/api/gpt-account-gateways"},
+		{http.MethodPut, "/api/gpt-accounts/config"},
 	} {
 		assert.Equal(t, http.StatusTooManyRequests, request(endpoint.method, endpoint.path, token, pollIP).Code, endpoint.path)
 	}
@@ -275,6 +276,7 @@ var accessTokenHelperRoutes = map[string]authz.Permission{
 	"GET /api/task_plugin_options":                       authz.TaskPluginBind,
 	"GET /api/audit":                                     authz.AuditRead,
 	"POST /api/gpt-account-gateways/import-channel-json": authz.GPTAccountManage,
+	"PUT /api/gpt-accounts/config":                       authz.GPTAccountManage,
 }
 
 func newAccessTokenScopeTestEngine(t *testing.T) *gin.Engine {

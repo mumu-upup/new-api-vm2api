@@ -24,8 +24,9 @@ import { AccountLoginDialog } from './components/account-login-dialog'
 import { AccountTotpDialog } from './components/account-totp-dialog'
 import { AccountTotpTable } from './components/account-totp-table'
 import { AccountsTable, type AccountAction } from './components/accounts-table'
-import { GatewayFormDialog } from './components/gateway-form-dialog'
+import { DefaultGroupForm } from './components/default-group-form'
 import { GatewayChannelJSONDialog } from './components/gateway-channel-json-dialog'
+import { GatewayFormDialog } from './components/gateway-form-dialog'
 import { GatewaysPanel } from './components/gateways-panel'
 import { OAuthImportDialog } from './components/oauth-import-dialog'
 import { useAccountOperation } from './hooks/use-account-operation'
@@ -66,8 +67,10 @@ function GptAccountsPage(props: {
   const [gatewayEditor, setGatewayEditor] = useState<
     GptAccountGateway | 'create' | null
   >(null)
-  const [gatewayChannelImportOpen, setGatewayChannelImportOpen] = useState(false)
-  const [oauthImportAccount, setOAuthImportAccount] = useState<GptAccount | null>(null)
+  const [gatewayChannelImportOpen, setGatewayChannelImportOpen] =
+    useState(false)
+  const [oauthImportAccount, setOAuthImportAccount] =
+    useState<GptAccount | null>(null)
   const [oauthImportOpen, setOAuthImportOpen] = useState(false)
   const [deleting, setDeleting] = useState<GptAccount | null>(null)
   const query = useQuery({
@@ -198,6 +201,14 @@ function GptAccountsPage(props: {
         </SectionPageLayout.Actions>
         <SectionPageLayout.Content>
           <div className='flex h-full min-h-0 flex-col gap-3'>
+            {config.data && (
+              <DefaultGroupForm
+                key={config.data.default_group ?? 'default'}
+                defaultGroup={config.data.default_group ?? 'default'}
+                canEdit={props.role === ROLE.SUPER_ADMIN}
+                onSaved={refresh}
+              />
+            )}
             {config.isError && (
               <p role='alert' className='text-destructive text-sm'>
                 {t(
@@ -292,12 +303,12 @@ function GptAccountsPage(props: {
                       encryptionAvailable={Boolean(
                         config.data?.encryption_available
                       )}
-                    onRetry={() => {
-                      void gateways.refetch()
-                    }}
-                    onEdit={setGatewayEditor}
-                    onImport={() => setGatewayChannelImportOpen(true)}
-                  />
+                      onRetry={() => {
+                        void gateways.refetch()
+                      }}
+                      onEdit={setGatewayEditor}
+                      onImport={() => setGatewayChannelImportOpen(true)}
+                    />
                   </TabsContent>
                 )}
               </Tabs>
@@ -307,6 +318,7 @@ function GptAccountsPage(props: {
       </SectionPageLayout>
       {gatewayEditor && (
         <GatewayFormDialog
+          defaultGroup={config.data?.default_group}
           gateway={gatewayEditor === 'create' ? undefined : gatewayEditor}
           onClose={() => setGatewayEditor(null)}
           onSaved={refresh}
@@ -314,6 +326,7 @@ function GptAccountsPage(props: {
       )}
       {gatewayChannelImportOpen && (
         <GatewayChannelJSONDialog
+          defaultGroup={config.data?.default_group}
           onClose={() => setGatewayChannelImportOpen(false)}
           onSaved={refresh}
         />
@@ -328,6 +341,7 @@ function GptAccountsPage(props: {
       )}
       {editor && (
         <AccountFormDialog
+          defaultGroup={config.data?.default_group}
           account={editor === 'create' ? undefined : editor}
           onClose={() => setEditor(null)}
           onSaved={refresh}
@@ -346,15 +360,17 @@ function GptAccountsPage(props: {
           onSaved={refresh}
         />
       )}
-        {oauthImportOpen && (
-          <OAuthImportDialog
-            accountId={oauthImportAccount?.id}
-            onClose={() => {
-              setOAuthImportOpen(false)
-              setOAuthImportAccount(null)
-            }}
-            onSaved={refresh}
-          />
+      {oauthImportOpen && (
+        <OAuthImportDialog
+          defaultGroup={config.data?.default_group}
+          accountGroup={oauthImportAccount?.group}
+          accountId={oauthImportAccount?.id}
+          onClose={() => {
+            setOAuthImportOpen(false)
+            setOAuthImportAccount(null)
+          }}
+          onSaved={refresh}
+        />
       )}
       <ConfirmDialog
         open={Boolean(deleting) && !operation.verification.isActive}

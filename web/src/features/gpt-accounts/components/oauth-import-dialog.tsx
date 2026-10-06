@@ -4,14 +4,18 @@ import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 
 import { importGptAccountOAuth } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
+import { accountGroupSchema } from '../lib/group-form'
 
 interface OAuthImportDialogProps {
+  defaultGroup?: string
+  accountGroup?: string
   accountId?: number
   onClose: () => void
   onSaved: () => void
@@ -34,6 +38,7 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
   const { t } = useTranslation()
   const operation = useAccountOperation()
   const [oauthJSON, setOAuthJSON] = useState('')
+  const [group, setGroup] = useState('')
   const [validation, setValidation] = useState('')
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -44,6 +49,11 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
       setValidation(
         'Paste a valid Codex OAuth JSON object containing an email.'
       )
+      return
+    }
+    const parsedGroup = accountGroupSchema.safeParse(group)
+    if (!parsedGroup.success) {
+      setValidation('Enter a valid group of up to 64 bytes.')
       return
     }
     const result = props.accountId
@@ -66,7 +76,15 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
             context: { email },
           },
           (proof, signal) =>
-            importGptAccountOAuth(undefined, { oauth_json: oauthJSON }, proof, signal)
+            importGptAccountOAuth(
+              undefined,
+              {
+                oauth_json: oauthJSON,
+                ...(parsedGroup.data ? { group: parsedGroup.data } : {}),
+              },
+              proof,
+              signal
+            )
         )
     if (!result) return
     setOAuthJSON('')
@@ -82,7 +100,9 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
           if (!open && !operation.pending) props.onClose()
         }}
         title={t(
-          props.accountId ? 'Update Codex OAuth JSON' : 'Import Codex OAuth JSON'
+          props.accountId
+            ? 'Update Codex OAuth JSON'
+            : 'Import Codex OAuth JSON'
         )}
         description={t(
           'Import a Codex OAuth JSON credential and create or update the matching GPT account channel.'
@@ -122,6 +142,24 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
               'The credential is stored encrypted and never shown in the account list or audit log. Do not paste passwords or unrelated tokens.'
             )}
           </p>
+          <div className='space-y-2'>
+            <Label htmlFor='gpt-oauth-import-group'>{t('Group')}</Label>
+            <Input
+              id='gpt-oauth-import-group'
+              value={props.accountId ? (props.accountGroup ?? '') : group}
+              readOnly={Boolean(props.accountId)}
+              disabled={operation.pending}
+              onChange={(event) => setGroup(event.target.value)}
+              placeholder={t('Use global default: {{group}}', {
+                group: props.defaultGroup ?? 'default',
+              })}
+            />
+            <p className='text-muted-foreground text-sm'>
+              {props.accountId
+                ? t('Manage routing settings in the associated channel.')
+                : t('Existing matching accounts keep their current group.')}
+            </p>
+          </div>
           <div className='space-y-2'>
             <Label htmlFor='gpt-oauth-import-json'>{t('OAuth JSON')}</Label>
             <Textarea
