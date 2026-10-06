@@ -107,6 +107,8 @@ export function getAccountErrorMessage(
     case 'invalid_account':
     case 'invalid_credentials':
       return t('Check the account details and try again.')
+    case 'oauth_import_invalid':
+      return t('The OAuth JSON is invalid or expired.')
     case 'account_conflict':
       return t('An account already uses this email address or channel.')
     case 'account_disabled':

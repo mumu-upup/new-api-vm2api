@@ -201,6 +201,46 @@ it('masks credential inputs and starts creation only after scoped admin verifica
   )
 })
 
+it('imports Codex OAuth JSON only after email-scoped verification', async () => {
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Import OAuth JSON' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import Codex OAuth JSON',
+  })
+  const oauth =
+    '{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id","account_id":"test-account","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}'
+  fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
+    target: { value: oauth },
+  })
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
+  )
+  await verify()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/import-oauth',
+      { oauth_json: oauth },
+      expect.objectContaining({
+        headers: { 'X-Security-Proof': 'proof' },
+        singleUseAuthorization: true,
+      })
+    )
+  )
+  expect(api.post).toHaveBeenCalledWith(
+    '/api/verify',
+    expect.objectContaining({
+      scope: 'gpt_account.oauth_import.create',
+      context: { email: 'import@example.com' },
+    }),
+    expect.anything()
+  )
+  expect(
+    screen.queryByRole('dialog', { name: 'Import Codex OAuth JSON' })
+  ).not.toBeInTheDocument()
+})
+
 it('editing never prefills stored credentials and cancelling clears entered replacements', async () => {
   renderPage()
   await userEvent.click(

@@ -183,7 +183,7 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
-	case "gpt_account.create":
+	case "gpt_account.create", "gpt_account.oauth_import.create":
 		var context struct {
 			Email string `json:"email"`
 		}
@@ -195,7 +195,7 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
-	case "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read", "gpt_account.gateway.sync":
+	case "gpt_account.update", "gpt_account.oauth_import.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read", "gpt_account.gateway.sync":
 		var context struct {
 			AccountID int `json:"account_id"`
 		}
@@ -364,7 +364,7 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 		if !state.HasTwoFA {
 			return nil, model.ErrTwoFANotEnabled
 		}
-	case "gpt_account.create", "gpt_account.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read",
+	case "gpt_account.create", "gpt_account.oauth_import.create", "gpt_account.update", "gpt_account.oauth_import.update", "gpt_account.delete", "gpt_account.login", "gpt_account.oauth", "gpt_account.refresh", "gpt_account.totp.update", "gpt_account.totp.read",
 		"gpt_account.gateway.sync", "gpt_account_gateway.create", "gpt_account_gateway.update",
 		VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenUpdate, VerificationScopeAccessTokenRevoke,
