@@ -282,6 +282,75 @@ func TestGPTAccountGatewaySub2APIUnknownCreateIsNeverBlindlyRepeated(t *testing.
 	assert.Equal(t, 1, creates)
 }
 
+func TestGPTAccountGatewayRejectedImportsCanRetry(t *testing.T) {
+	for _, provider := range []string{"cpa", "sub2api"} {
+		for _, status := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity, http.StatusTooManyRequests} {
+			t.Run(fmt.Sprintf("%s/%d", provider, status), func(t *testing.T) {
+				identity := setupGPTAccountGatewayTest(t)
+				var remote map[string]any
+				posts := 0
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method == http.MethodPost {
+						posts++
+						if posts == 1 {
+							w.WriteHeader(status)
+							_, _ = w.Write([]byte(`{"message":"private rejection details"}`))
+							return
+						}
+						require.NoError(t, common.DecodeJson(r.Body, &remote))
+						if provider == "cpa" {
+							_, _ = w.Write([]byte(`{"status":"ok"}`))
+							return
+						}
+						remote["id"] = 42
+					}
+					var data any = remote
+					if provider == "cpa" && remote == nil {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					if provider == "sub2api" {
+						if r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/accounts" {
+							items := []map[string]any{}
+							if remote != nil {
+								items = append(items, remote)
+							}
+							data = map[string]any{"items": items, "total": len(items)}
+						}
+						data = map[string]any{"code": 0, "data": data}
+					}
+					body, err := common.Marshal(data)
+					require.NoError(t, err)
+					_, _ = w.Write(body)
+				}))
+				defer upstream.Close()
+				version := ""
+				if provider == "cpa" {
+					version = "v8"
+				}
+				gateway := gatewayFixture(t, provider, upstream.URL, version)
+				snapshot, key := gatewayAccountFixture(t, identity, gateway, "rejected")
+				err := service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key)
+				require.EqualError(t, err, "gateway_import_failed")
+				service.ReleaseGPTAccountJob(snapshot, err.Error())
+				if status == http.StatusUnauthorized {
+					// A fresh verified login must also recover from a rejected import.
+					snapshot, err = service.AcquireGPTAccountJob(snapshot.ID, false)
+					require.NoError(t, err)
+					err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key)
+					service.ReleaseGPTAccountJob(snapshot, service.GPTAccountErrorCode(err))
+					require.NoError(t, err)
+				} else {
+					require.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+				}
+				assert.Equal(t, 2, posts)
+				require.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+				assert.Equal(t, 2, posts, "confirmed imports must not be submitted again")
+			})
+		}
+	}
+}
+
 func TestGPTAccountGatewayRejectsRedirectAndOversizeWithoutLeakingCredentials(t *testing.T) {
 	for _, mode := range []string{"redirect", "oversize"} {
 		t.Run(mode, func(t *testing.T) {
