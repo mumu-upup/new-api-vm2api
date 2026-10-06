@@ -34,6 +34,8 @@ export function getAccountErrorMessage(
       return t('The signed-in account does not match this email address.')
     case 'needs_attention':
       return t('Complete browser sign-in to continue.')
+    case 'workspace_selection_required':
+      return t('Choose the account workspace through browser sign-in.')
     case 'captcha_required':
       return t(
         'The sign-in page requires a CAPTCHA. Complete it through browser sign-in.'
@@ -92,6 +94,10 @@ export function getAccountErrorMessage(
       return t('Credential refresh failed. Sign in again.')
     case 'channel_required':
       return t('Authorize this account to create its channel first.')
+    case 'channel_missing':
+      return t(
+        'The linked channel no longer exists. Edit this account to choose a channel.'
+      )
     case 'authorization_forbidden':
       return t('You do not have permission to manage this account.')
     case 'totp_confirmation_required':

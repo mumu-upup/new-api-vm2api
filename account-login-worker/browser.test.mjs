@@ -235,4 +235,7 @@ test('actual login DOM hands password reset and authenticator enrollment to a pe
     await tab.getByRole('heading').first().waitFor()
     assert.deepEqual(await classifyLoginScreen(tab), { kind })
   }
+  html = '<h1>选择一个工作空间</h1><form method="post" action="/workspace"><label><input type="radio" name="workspace_id" value="workspace-id">我的工作空间</label><button>继续</button></form>'
+  await tab.goto('https://auth.openai.com/workspace')
+  assert.deepEqual(await classifyLoginScreen(tab), { kind: 'workspace' })
 })
