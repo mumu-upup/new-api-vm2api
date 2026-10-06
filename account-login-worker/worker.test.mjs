@@ -335,6 +335,24 @@ test('blocked third-party assets do not prevent ordinary credential login', asyn
   assert.equal(fixture.effects.blocked, false)
 })
 
+test('official Sentinel assets load without allowing credential posts or main-frame navigation', async () => {
+  for (const [url, method, navigation, allowed] of [
+    ['https://sentinel.openai.com/backend-api/sentinel/sdk.js', 'GET', false, true],
+    ['https://sentinel.openai.com/sentinel/fixture/sdk.js', 'GET', false, true],
+    ['https://sentinel.openai.com/backend-api/sentinel/sdk.js', 'POST', false, false],
+    ['https://sentinel.openai.com/backend-api/sentinel/sdk.js', 'GET', true, false],
+    ['https://sentinel.openai.com.evil.example/sdk.js', 'GET', false, false],
+    ['https://sentinel.openai.com:8443/sdk.js', 'GET', false, false],
+  ]) {
+    const fixture = routedRequest(url, 200, undefined, method)
+    fixture.route.request = () => ({ url: () => url, method: () => method,
+      isNavigationRequest: () => navigation, frame: () => 'main' })
+    await handleLoginRequest(fixture.route, fixture.context)
+    assert.equal(fixture.effects.fetched.length, allowed ? 1 : 0, `${method} ${url}`)
+    assert.equal(fixture.effects.aborted, !allowed)
+  }
+})
+
 test('asset redirects do not consume the login navigation redirect budget', async () => {
   const fixture = routedRequest('https://auth.openai.com/asset', 302, '/asset-final')
   fixture.context.redirects = 12
