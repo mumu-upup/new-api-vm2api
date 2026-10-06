@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -513,31 +512,28 @@ func TestGPTAccountGatewayConfigChangeFencesLateRemoteImport(t *testing.T) {
 	assert.Zero(t, account.GatewaySyncedAt)
 }
 
-func gatewayRequest(t *testing.T, identity service.AuthIdentity, role, id int, method, body, proof string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
-	t.Helper()
-	return gptAccountRequest(t, identity, role, id, method, body, "", func(c *gin.Context) { c.Request.Header.Set("X-Security-Proof", proof); handler(c) })
-}
-
-func TestGPTAccountGatewayRootManagementProofAndSafeTargetList(t *testing.T) {
+func TestGPTAccountGatewayRootSessionAndSafeTargetList(t *testing.T) {
 	identity := setupGPTAccountGatewayTest(t)
 	body := `{"name":"Pool","provider":"cpa","management_version":"v8","management_url":"https://cpa.example","relay_url":"https://relay.example","management_key":"management-secret","relay_key":"relay-secret","group":"default","models":"gpt-5"}`
-	proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: "gpt_account_gateway.create", Context: []byte(`{"name":"Pool"}`)}, service.VerificationMethodPassword)
 	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
-		denied := gatewayRequest(t, identity, role, 0, http.MethodPost, body, proof, CreateGPTAccountGateway)
+		denied := gptAccountRequest(t, identity, role, 0, http.MethodPost, body, CreateGPTAccountGateway)
 		assert.Equal(t, http.StatusForbidden, denied.Code)
 	}
-	denied := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "", CreateGPTAccountGateway)
-	assert.Equal(t, http.StatusForbidden, denied.Code)
-	created := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, proof, CreateGPTAccountGateway)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, CreateGPTAccountGateway)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	assert.NotContains(t, created.Body.String(), "management-secret")
 	assert.NotContains(t, created.Body.String(), "relay-secret")
-	replay := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, proof, CreateGPTAccountGateway)
-	assert.Equal(t, http.StatusForbidden, replay.Code)
 	var gateway model.GPTAccountGateway
 	require.NoError(t, model.DB.First(&gateway).Error)
+	updatedBody := strings.Replace(body, `"name":"Pool"`, `"name":"Updated pool"`, 1)
+	updated := gptAccountRequest(t, identity, common.RoleRootUser, gateway.ID, http.MethodPut, updatedBody, UpdateGPTAccountGateway)
+	require.Equal(t, http.StatusOK, updated.Code)
+	require.NoError(t, model.DB.First(&gateway, gateway.ID).Error)
+	assert.Equal(t, "Updated pool", gateway.Name)
+	assert.NotContains(t, updated.Body.String(), "management-secret")
+	assert.NotContains(t, updated.Body.String(), "relay-secret")
 	for _, role := range []int{common.RoleAdminUser, common.RoleRootUser} {
-		listed := gatewayRequest(t, identity, role, 0, http.MethodGet, "", "", ListGPTAccountGateways)
+		listed := gptAccountRequest(t, identity, role, 0, http.MethodGet, "", ListGPTAccountGateways)
 		require.Equal(t, http.StatusOK, listed.Code, listed.Body.String())
 		assert.Contains(t, listed.Body.String(), `"items":[`)
 		assert.Contains(t, listed.Header().Get("Cache-Control"), "no-store")
@@ -548,14 +544,14 @@ func TestGPTAccountGatewayRootManagementProofAndSafeTargetList(t *testing.T) {
 			assert.NotContains(t, listed.Body.String(), "relay_url")
 		}
 	}
-	ordinary := gatewayRequest(t, identity, common.RoleCommonUser, 0, http.MethodGet, "", "", ListGPTAccountGateways)
+	ordinary := gptAccountRequest(t, identity, common.RoleCommonUser, 0, http.MethodGet, "", ListGPTAccountGateways)
 	assert.Equal(t, http.StatusForbidden, ordinary.Code)
-	createdAccount := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, fmt.Sprintf(`{"name":"Pooled","email":"owner@example.com","gateway_id":%d}`, gateway.ID), "gpt_account.create", CreateGPTAccount)
+	createdAccount := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, fmt.Sprintf(`{"name":"Pooled","email":"owner@example.com","gateway_id":%d}`, gateway.ID), CreateGPTAccount)
 	require.Equal(t, http.StatusOK, createdAccount.Code, createdAccount.Body.String())
 	assert.Contains(t, createdAccount.Body.String(), fmt.Sprintf(`"gateway_id":%d`, gateway.ID))
 	assert.Contains(t, createdAccount.Body.String(), fmt.Sprintf(`"gateway_channel_id":%d`, *gateway.ChannelID))
 	assert.Contains(t, createdAccount.Body.String(), `"channel_id":null`)
-	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", ListGPTAccounts)
+	listed := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", ListGPTAccounts)
 	assert.Contains(t, listed.Body.String(), `"gateway_provider":"cpa"`)
 	var audits []model.AuditLog
 	require.NoError(t, model.LOG_DB.Find(&audits).Error)
@@ -565,32 +561,20 @@ func TestGPTAccountGatewayRootManagementProofAndSafeTargetList(t *testing.T) {
 	assert.NotContains(t, string(raw), "relay-secret")
 }
 
-func TestGPTGatewayChannelJSONImportRequiresRootProofAndCreatesChannel(t *testing.T) {
+func TestGPTGatewayChannelJSONImportRequiresRootSessionAndCreatesChannel(t *testing.T) {
 	identity := setupGPTAccountGatewayTest(t)
 	body := `{"config_json":"{\"provider\":\"sub2api\",\"name\":\"测试渠道\",\"base_url\":\"https://sub2api.example/v1\",\"api_key\":\"relay-secret\",\"models\":[\"gpt-5\"]}"}`
-	gatewayProof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: "gpt_account_gateway.create", Context: []byte(`{"name":"channel-json"}`)}, service.VerificationMethodPassword)
-	wrongScope := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, gatewayProof, ImportGPTGatewayChannelJSON)
-	assert.Equal(t, http.StatusForbidden, wrongScope.Code)
-	assert.Contains(t, wrongScope.Body.String(), "SECURITY_PROOF_SCOPE_MISMATCH")
-	operation := service.VerificationOperation{Scope: "gpt_account_gateway.channel_import", Context: []byte(`{"config_sha256":"3477af6d92429ec7f8da7a6c5667abd9571305a70bdfed6227e62fa012a689a0"}`)}
-	proof := issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
-	denied := gatewayRequest(t, identity, common.RoleAdminUser, 0, http.MethodPost, body, proof, ImportGPTGatewayChannelJSON)
-	assert.Equal(t, http.StatusForbidden, denied.Code)
-	for _, change := range [][2]string{{"sub2api.example", "replacement.example"}, {"relay-secret", "replacement-key"}, {"gpt-5", "gpt-5-mini"}, {"测试渠道", "另一个渠道"}} {
-		changed := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, strings.Replace(body, change[0], change[1], 1), proof, ImportGPTGatewayChannelJSON)
-		assert.Equal(t, http.StatusForbidden, changed.Code)
-		assert.Contains(t, changed.Body.String(), "SECURITY_PROOF_CONTEXT_MISMATCH")
+	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
+		denied := gptAccountRequest(t, identity, role, 0, http.MethodPost, body, ImportGPTGatewayChannelJSON)
+		assert.Equal(t, http.StatusForbidden, denied.Code)
 	}
 	var count int64
 	require.NoError(t, model.DB.Model(&model.Channel{}).Count(&count).Error)
-	assert.Zero(t, count, "a rejected proof must not create a channel")
-	created := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, proof, ImportGPTGatewayChannelJSON)
+	assert.Zero(t, count)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, ImportGPTGatewayChannelJSON)
 	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
 	assert.Contains(t, created.Body.String(), `"provider":"sub2api"`)
 	assert.NotContains(t, created.Body.String(), "relay-secret")
-	replay := gatewayRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, proof, ImportGPTGatewayChannelJSON)
-	assert.Equal(t, http.StatusForbidden, replay.Code)
-	assert.Contains(t, replay.Body.String(), "SECURITY_PROOF_CONSUMED")
 	var channel model.Channel
 	require.NoError(t, model.DB.First(&channel).Error)
 	assert.Equal(t, constant.ChannelTypeSub2API, channel.Type)
@@ -748,15 +732,16 @@ func TestGPTAccountGatewayCPARefreshUsesConfirmedRemoteContract(t *testing.T) {
 	assert.Equal(t, 1, refreshes)
 }
 
-func TestGPTAccountGatewaySyncRequiresScopedOwnedAuthorization(t *testing.T) {
+func TestGPTAccountGatewaySyncRequiresOwnedAdminSession(t *testing.T) {
 	identity := setupGPTAccountGatewayTest(t)
 	gateway := gatewayFixture(t, "cpa", "http://127.0.0.1:1", "v8")
 	account, _ := gatewayAccountFixture(t, identity, gateway, "first")
-	for _, scope := range []string{"", "gpt_account.update"} {
-		response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, scope, SyncGPTAccountGateway)
-		assert.Equal(t, http.StatusForbidden, response.Code)
-	}
+	// A permitted request reaches the gateway service and reports its unavailable
+	// connection, without prompting for a second password or a security proof.
+	response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, SyncGPTAccountGateway)
+	assert.Equal(t, http.StatusConflict, response.Code)
+	assert.NotContains(t, response.Body.String(), "SECURITY_PROOF")
 	require.NoError(t, model.DB.Model(account).Update("owner_id", identity.UserID+1).Error)
-	response := gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, `{}`, "", SyncGPTAccountGateway)
+	response = gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, `{}`, SyncGPTAccountGateway)
 	assert.Equal(t, http.StatusNotFound, response.Code)
 }

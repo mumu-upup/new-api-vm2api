@@ -2,20 +2,14 @@ import { useMutation } from '@tanstack/react-query'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  useSecureVerification,
-  type RequestVerificationOptions,
-} from '@/features/auth/secure-verification'
 import { AuthOperationError } from '@/lib/secure-verification'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getAccountErrorMessage } from '../lib/account-error'
 
-/** Keep one-use proofs and account credentials confined to a cancellable operation. */
+/** Keep account credentials confined to a cancellable operation. */
 export function useAccountOperation() {
   const { t } = useTranslation()
-  const verification = useSecureVerification()
-  const cancelVerification = verification.cancel
   const userId = useAuthStore((state) => state.auth.user?.id)
   const role = useAuthStore((state) => state.auth.user?.role)
   const sessionId = useAuthStore((state) => state.auth.session?.sid)
@@ -26,7 +20,7 @@ export function useAccountOperation() {
     'code' | 'message'
   > | null>(null)
   const mutation = useMutation({
-    // Do not retain credential closures, proof tokens, or results in the cache.
+    // Do not retain credential closures or results in the cache.
     mutationFn: async () => {
       try {
         await activeAction.current?.()
@@ -45,14 +39,12 @@ export function useAccountOperation() {
       controller.current?.abort()
       controller.current = null
       activeAction.current = null
-      cancelVerification()
     },
-    [cancelVerification, userId, role, sessionId]
+    [userId, role, sessionId]
   )
 
   const execute = async <T>(
-    request: RequestVerificationOptions | null,
-    action: (proof: string, signal: AbortSignal) => Promise<T>
+    action: (signal: AbortSignal) => Promise<T>
   ): Promise<T | undefined> => {
     if (controller.current) return undefined
     const current = new AbortController()
@@ -61,12 +53,8 @@ export function useAccountOperation() {
     try {
       let result: T | undefined
       activeAction.current = async () => {
-        const proof = request
-          ? await verification.requestVerification(request)
-          : null
         current.signal.throwIfAborted()
-        if (request && !proof) return undefined
-        result = await action(proof?.proof_token ?? '', current.signal)
+        result = await action(current.signal)
         current.signal.throwIfAborted()
       }
       await mutation.mutateAsync()
@@ -92,6 +80,5 @@ export function useAccountOperation() {
     error: error
       ? getAccountErrorMessage(error.code ?? error.message, t, error.message)
       : '',
-    verification,
   }
 }

@@ -17,7 +17,6 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form'
-import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 
 import { revealGptAccountTotp, saveGptAccountTotp } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
@@ -68,13 +67,8 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
   const save = async (values: AccountTotpValues) => {
     form.reset()
     if (!props.account.can_manage) return
-    const saved = await operation.execute(
-      {
-        scope: 'gpt_account.totp.update',
-        context: { account_id: props.account.id },
-      },
-      (proof, signal) =>
-        saveGptAccountTotp(props.account.id, values, proof, signal)
+    const saved = await operation.execute((signal) =>
+      saveGptAccountTotp(props.account.id, values, signal)
     )
     if (!saved) return
     props.onSaved()
@@ -82,177 +76,164 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
   }
   const reveal = async () => {
     if (!props.account.can_manage || !props.account.has_totp) return
-    await operation.execute(
-      {
-        scope: 'gpt_account.totp.read',
-        context: { account_id: props.account.id },
-      },
-      async (proof, signal) => {
-        const result = await revealGptAccountTotp(
-          props.account.id,
-          proof,
-          signal
-        )
-        signal.throwIfAborted()
-        if (
-          document.visibilityState === 'hidden' ||
-          result.expires_at * 1000 <= Date.now()
-        ) {
-          return
-        }
-        // Only the mounted dialog owns the secret; mutation results stay empty.
-        setRevealed({
-          ...result,
-          expires_at: Math.min(result.expires_at, Date.now() / 1000 + 30),
-        })
+    await operation.execute(async (signal) => {
+      const result = await revealGptAccountTotp(props.account.id, signal)
+      signal.throwIfAborted()
+      if (
+        document.visibilityState === 'hidden' ||
+        result.expires_at * 1000 <= Date.now()
+      ) {
+        return
       }
-    )
+      // Only the mounted dialog owns the secret; mutation results stay empty.
+      setRevealed({
+        ...result,
+        expires_at: Math.min(result.expires_at, Date.now() / 1000 + 30),
+      })
+    })
   }
   return (
-    <>
-      <Dialog
-        open={!operation.verification.isActive}
-        onOpenChange={(open) => {
-          if (!open) props.onClose()
-        }}
-        title={
-          props.mode === 'save'
-            ? t('Save replacement secret')
-            : t('Current TOTP secret')
-        }
-        description={`${props.account.name} · ${props.account.email}`}
-        footer={
-          <>
-            <Button variant='outline' onClick={props.onClose}>
-              {revealed ? t('Done') : t('Cancel')}
-            </Button>
-            {props.mode === 'save' && (
-              <Button
-                type='submit'
-                form='gpt-account-totp-form'
-                disabled={operation.pending}
-              >
-                {operation.pending && <Loader2 className='animate-spin' />}
-                {t('Save replacement secret')}
-              </Button>
-            )}
-            {props.mode === 'reveal' && !revealed && (
-              <Button
-                onClick={() => {
-                  void reveal()
-                }}
-                disabled={operation.pending}
-              >
-                {operation.pending && <Loader2 className='animate-spin' />}
-                {t('Reveal secret')}
-              </Button>
-            )}
-          </>
-        }
-      >
-        <div className='space-y-4'>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Complete authenticator binding on the official OpenAI website before saving. This gateway does not verify upstream binding.'
-            )}
-          </p>
-          {operation.error && (
-            <p role='alert' className='text-destructive text-sm'>
-              {operation.error}
-            </p>
-          )}
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose()
+      }}
+      title={
+        props.mode === 'save'
+          ? t('Save replacement secret')
+          : t('Current TOTP secret')
+      }
+      description={`${props.account.name} · ${props.account.email}`}
+      footer={
+        <>
+          <Button variant='outline' onClick={props.onClose}>
+            {revealed ? t('Done') : t('Cancel')}
+          </Button>
           {props.mode === 'save' && (
-            <>
-              <p className='text-muted-foreground text-sm'>
-                {t(
-                  'On the official website, replace the authenticator yourself. After binding the new secret, return here to save it.'
-                )}
-              </p>
-              <Button
-                nativeButton={false}
-                role='link'
-                variant='outline'
-                render={
-                  <a
-                    href='https://chatgpt.com/#settings/Security'
-                    target='_blank'
-                    rel='noopener noreferrer'
-                    referrerPolicy='no-referrer'
-                  />
-                }
-              >
-                <ExternalLink />
-                {t('Open ChatGPT security settings')}
-              </Button>
-              <Form {...form}>
-                <form
-                  id='gpt-account-totp-form'
-                  onSubmit={form.handleSubmit(save)}
-                  className='space-y-4'
-                >
-                  <FormField
-                    control={form.control}
-                    name='totp_secret'
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>{t('Replacement TOTP secret')}</FormLabel>
-                        <FormControl>
-                          <PasswordInput
-                            {...field}
-                            disabled={operation.pending}
-                            autoComplete='new-password'
-                            spellCheck={false}
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name='confirmed_bound'
-                    render={({ field }) => (
-                      <FormItem>
-                        <div className='flex items-start gap-2'>
-                          <FormControl>
-                            <Checkbox
-                              checked={field.value}
-                              onCheckedChange={field.onChange}
-                              disabled={operation.pending}
-                            />
-                          </FormControl>
-                          <FormLabel>
-                            {t(
-                              'I completed binding this secret on the official OpenAI website.'
-                            )}
-                          </FormLabel>
-                        </div>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </form>
-              </Form>
-            </>
+            <Button
+              type='submit'
+              form='gpt-account-totp-form'
+              disabled={operation.pending}
+            >
+              {operation.pending && <Loader2 className='animate-spin' />}
+              {t('Save replacement secret')}
+            </Button>
           )}
-          {props.mode === 'reveal' && (
+          {props.mode === 'reveal' && !revealed && (
+            <Button
+              onClick={() => {
+                void reveal()
+              }}
+              disabled={operation.pending}
+            >
+              {operation.pending && <Loader2 className='animate-spin' />}
+              {t('Reveal secret')}
+            </Button>
+          )}
+        </>
+      }
+    >
+      <div className='space-y-4'>
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'Complete authenticator binding on the official OpenAI website before saving. This gateway does not verify upstream binding.'
+          )}
+        </p>
+        {operation.error && (
+          <p role='alert' className='text-destructive text-sm'>
+            {operation.error}
+          </p>
+        )}
+        {props.mode === 'save' && (
+          <>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'The secret is hidden after 30 seconds or when you leave this dialog or browser tab. Copied secrets remain on your clipboard.'
+                'On the official website, replace the authenticator yourself. After binding the new secret, return here to save it.'
               )}
             </p>
-          )}
-          {revealed && (
-            <div className='flex items-center gap-2'>
-              <code className='min-w-0 flex-1 break-all select-all'>
-                {revealed.totp_secret}
-              </code>
-              <CopyButton value={revealed.totp_secret} />
-            </div>
-          )}
-        </div>
-      </Dialog>
-      <SecureVerificationDialog {...operation.verification.dialogProps} />
-    </>
+            <Button
+              nativeButton={false}
+              role='link'
+              variant='outline'
+              render={
+                <a
+                  href='https://chatgpt.com/#settings/Security'
+                  target='_blank'
+                  rel='noopener noreferrer'
+                  referrerPolicy='no-referrer'
+                />
+              }
+            >
+              <ExternalLink />
+              {t('Open ChatGPT security settings')}
+            </Button>
+            <Form {...form}>
+              <form
+                id='gpt-account-totp-form'
+                onSubmit={form.handleSubmit(save)}
+                className='space-y-4'
+              >
+                <FormField
+                  control={form.control}
+                  name='totp_secret'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Replacement TOTP secret')}</FormLabel>
+                      <FormControl>
+                        <PasswordInput
+                          {...field}
+                          disabled={operation.pending}
+                          autoComplete='new-password'
+                          spellCheck={false}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name='confirmed_bound'
+                  render={({ field }) => (
+                    <FormItem>
+                      <div className='flex items-start gap-2'>
+                        <FormControl>
+                          <Checkbox
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                            disabled={operation.pending}
+                          />
+                        </FormControl>
+                        <FormLabel>
+                          {t(
+                            'I completed binding this secret on the official OpenAI website.'
+                          )}
+                        </FormLabel>
+                      </div>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </form>
+            </Form>
+          </>
+        )}
+        {props.mode === 'reveal' && (
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'The secret is hidden after 30 seconds or when you leave this dialog or browser tab. Copied secrets remain on your clipboard.'
+            )}
+          </p>
+        )}
+        {revealed && (
+          <div className='flex items-center gap-2'>
+            <code className='min-w-0 flex-1 break-all select-all'>
+              {revealed.totp_secret}
+            </code>
+            <CopyButton value={revealed.totp_secret} />
+          </div>
+        )}
+      </div>
+    </Dialog>
   )
 }

@@ -2,14 +2,12 @@ package controller
 
 import (
 	"context"
-	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -80,13 +78,6 @@ func ImportGPTGatewayChannelJSON(c *gin.Context) {
 		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
 		return
 	}
-	// Recompute the digest from the submitted bytes; never trust a client-sent
-	// digest to authorize a different relay target or credential.
-	digest := hex.EncodeToString(common.Sha256Raw([]byte(request.ConfigJSON)))
-	context, err := common.Marshal(map[string]string{"config_sha256": digest})
-	if err != nil || middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeGPTGatewayChannelImport, Context: context}) == nil {
-		return
-	}
 	channel, err := service.CreateGPTGatewayChannel(input)
 	if err != nil {
 		gptAccountError(c, http.StatusBadRequest, "gateway_channel_create_failed")
@@ -113,7 +104,6 @@ func saveGPTAccountGateway(c *gin.Context, update bool) {
 	}
 	input.Name = strings.TrimSpace(input.Name)
 	scope := "gpt_account_gateway.create"
-	var binding any = map[string]string{"name": input.Name}
 	var existing *model.GPTAccountGateway
 	if update {
 		id, err := strconv.Atoi(c.Param("id"))
@@ -126,15 +116,7 @@ func saveGPTAccountGateway(c *gin.Context, update bool) {
 			gptAccountError(c, http.StatusNotFound, "gateway_not_found")
 			return
 		}
-		scope, binding = "gpt_account_gateway.update", map[string]int{"gateway_id": id}
-	}
-	encoded, err := common.Marshal(binding)
-	if err != nil {
-		gptAccountError(c, http.StatusBadRequest, "invalid_gateway")
-		return
-	}
-	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: scope, Context: encoded}) == nil {
-		return
+		scope = "gpt_account_gateway.update"
 	}
 	gateway, err := service.SaveGPTAccountGateway(existing, input)
 	if err != nil {
@@ -155,9 +137,6 @@ func SyncGPTAccountGateway(c *gin.Context) {
 	}
 	if account.GatewayID == nil {
 		gptAccountError(c, http.StatusBadRequest, "invalid_gateway")
-		return
-	}
-	if !gptAccountProof(c, "gpt_account.gateway.sync", account.ID, "") {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)

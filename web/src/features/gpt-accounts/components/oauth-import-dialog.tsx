@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { SecureVerificationDialog } from '@/features/auth/secure-verification'
 
 import { importGptAccountOAuth } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
@@ -56,36 +55,18 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
       setValidation('Enter a valid group of up to 64 bytes.')
       return
     }
-    const result = props.accountId
-      ? await operation.execute(
-          {
-            scope: 'gpt_account.oauth_import.update',
-            context: { account_id: props.accountId },
-          },
-          (proof, signal) =>
-            importGptAccountOAuth(
-              props.accountId,
-              { oauth_json: oauthJSON },
-              proof,
-              signal
-            )
-        )
-      : await operation.execute(
-          {
-            scope: 'gpt_account.oauth_import.create',
-            context: { email },
-          },
-          (proof, signal) =>
-            importGptAccountOAuth(
-              undefined,
-              {
-                oauth_json: oauthJSON,
-                ...(parsedGroup.data ? { group: parsedGroup.data } : {}),
-              },
-              proof,
-              signal
-            )
-        )
+    const result = await operation.execute((signal) =>
+      importGptAccountOAuth(
+        props.accountId,
+        {
+          oauth_json: oauthJSON,
+          ...(!props.accountId && parsedGroup.data
+            ? { group: parsedGroup.data }
+            : {}),
+        },
+        signal
+      )
+    )
     if (!result) return
     setOAuthJSON('')
     props.onSaved()
@@ -93,92 +74,83 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
   }
 
   return (
-    <>
-      <Dialog
-        open={!operation.verification.isActive}
-        onOpenChange={(open) => {
-          if (!open && !operation.pending) props.onClose()
-        }}
-        title={t(
-          props.accountId
-            ? 'Update Codex OAuth JSON'
-            : 'Import Codex OAuth JSON'
-        )}
-        description={t(
-          'Import a Codex OAuth JSON credential and create or update the matching GPT account channel.'
-        )}
-        footer={
-          <>
-            <Button
-              variant='outline'
-              onClick={props.onClose}
-              disabled={operation.pending}
-            >
-              {t('Cancel')}
-            </Button>
-            <Button
-              type='submit'
-              form='gpt-oauth-import-form'
-              disabled={operation.pending}
-            >
-              {operation.pending && <Loader2 className='animate-spin' />}
-              {t('Import OAuth JSON')}
-            </Button>
-          </>
-        }
-      >
-        <form
-          id='gpt-oauth-import-form'
-          onSubmit={submit}
-          className='space-y-4'
-        >
-          {(validation || operation.error) && (
-            <p role='alert' className='text-destructive text-sm'>
-              {t(validation || operation.error)}
-            </p>
-          )}
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'The credential is stored encrypted and never shown in the account list or audit log. Do not paste passwords or unrelated tokens.'
-            )}
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !operation.pending) props.onClose()
+      }}
+      title={t(
+        props.accountId ? 'Update Codex OAuth JSON' : 'Import Codex OAuth JSON'
+      )}
+      description={t(
+        'Import a Codex OAuth JSON credential and create or update the matching GPT account channel.'
+      )}
+      footer={
+        <>
+          <Button
+            variant='outline'
+            onClick={props.onClose}
+            disabled={operation.pending}
+          >
+            {t('Cancel')}
+          </Button>
+          <Button
+            type='submit'
+            form='gpt-oauth-import-form'
+            disabled={operation.pending}
+          >
+            {operation.pending && <Loader2 className='animate-spin' />}
+            {t('Import OAuth JSON')}
+          </Button>
+        </>
+      }
+    >
+      <form id='gpt-oauth-import-form' onSubmit={submit} className='space-y-4'>
+        {(validation || operation.error) && (
+          <p role='alert' className='text-destructive text-sm'>
+            {t(validation || operation.error)}
           </p>
-          <div className='space-y-2'>
-            <Label htmlFor='gpt-oauth-import-group'>{t('Group')}</Label>
-            <Input
-              id='gpt-oauth-import-group'
-              value={props.accountId ? (props.accountGroup ?? '') : group}
-              readOnly={Boolean(props.accountId)}
-              disabled={operation.pending}
-              onChange={(event) => setGroup(event.target.value)}
-              placeholder={t('Use global default: {{group}}', {
-                group: props.defaultGroup ?? 'default',
-              })}
-            />
-            <p className='text-muted-foreground text-sm'>
-              {props.accountId
-                ? t('Manage routing settings in the associated channel.')
-                : t('Existing matching accounts keep their current group.')}
-            </p>
-          </div>
-          <div className='space-y-2'>
-            <Label htmlFor='gpt-oauth-import-json'>{t('OAuth JSON')}</Label>
-            <Textarea
-              id='gpt-oauth-import-json'
-              value={oauthJSON}
-              onChange={(event) => {
-                setOAuthJSON(event.target.value)
-                setValidation('')
-              }}
-              rows={10}
-              disabled={operation.pending}
-              autoComplete='off'
-              spellCheck={false}
-              aria-invalid={Boolean(validation)}
-            />
-          </div>
-        </form>
-      </Dialog>
-      <SecureVerificationDialog {...operation.verification.dialogProps} />
-    </>
+        )}
+        <p className='text-muted-foreground text-sm'>
+          {t(
+            'The credential is stored encrypted and never shown in the account list or audit log. Do not paste passwords or unrelated tokens.'
+          )}
+        </p>
+        <div className='space-y-2'>
+          <Label htmlFor='gpt-oauth-import-group'>{t('Group')}</Label>
+          <Input
+            id='gpt-oauth-import-group'
+            value={props.accountId ? (props.accountGroup ?? '') : group}
+            readOnly={Boolean(props.accountId)}
+            disabled={operation.pending}
+            onChange={(event) => setGroup(event.target.value)}
+            placeholder={t('Use global default: {{group}}', {
+              group: props.defaultGroup ?? 'default',
+            })}
+          />
+          <p className='text-muted-foreground text-sm'>
+            {props.accountId
+              ? t('Manage routing settings in the associated channel.')
+              : t('Existing matching accounts keep their current group.')}
+          </p>
+        </div>
+        <div className='space-y-2'>
+          <Label htmlFor='gpt-oauth-import-json'>{t('OAuth JSON')}</Label>
+          <Textarea
+            id='gpt-oauth-import-json'
+            value={oauthJSON}
+            onChange={(event) => {
+              setOAuthJSON(event.target.value)
+              setValidation('')
+            }}
+            rows={10}
+            disabled={operation.pending}
+            autoComplete='off'
+            spellCheck={false}
+            aria-invalid={Boolean(validation)}
+          />
+        </div>
+      </form>
+    </Dialog>
   )
 }

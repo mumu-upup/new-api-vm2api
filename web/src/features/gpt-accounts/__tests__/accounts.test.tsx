@@ -67,7 +67,7 @@ beforeEach(() => {
   client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  vi.spyOn(api, 'get').mockImplementation(async (url, config) => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url === '/api/gpt-account-gateways') {
       return { data: { success: true, data: { items: gateways } } }
     }
@@ -86,59 +86,36 @@ beforeEach(() => {
         },
       }
     }
-    if (url === '/api/verify/methods') {
-      return {
-        data: {
-          success: true,
-          data: {
-            scope: config?.params?.scope,
-            methods: [{ method: 'password', available: true }],
-            oauth_providers: [],
-            password_encryption_enabled: false,
-          },
-        },
-      }
-    }
     throw new Error(`Unexpected GET ${url}`)
   })
-  vi.spyOn(api, 'post').mockImplementation(async (url, body) => {
-    if (url === '/api/verify') {
-      return {
-        data: {
-          success: true,
-          data: {
-            proof_token: 'proof',
-            scope: (body as { scope: string }).scope,
-            method: 'password',
-            expires_at: Date.now() / 1000 + 60,
-          },
-        },
-      }
-    }
+  vi.spyOn(api, 'post').mockImplementation(async () => {
     return {
       data: { success: true, data: { ...account, status: 'logging_in' } },
     }
   })
 })
 afterEach(() => {
+  const verificationRequested = [
+    ...vi.mocked(api.get).mock.calls,
+    ...vi.mocked(api.post).mock.calls,
+  ].some(([url]) => url.startsWith('/api/verify'))
+  const verificationDialog = screen.queryByRole('dialog', {
+    name: 'Security verification',
+  })
   client.clear()
   useAuthStore.getState().auth.reset()
   vi.restoreAllMocks()
   vi.useRealTimers()
+  expect(verificationRequested).toBe(false)
+  expect(verificationDialog).not.toBeInTheDocument()
 })
+
 function renderPage() {
   return render(
     <QueryClientProvider client={client}>
       <GptAccounts />
     </QueryClientProvider>
   )
-}
-async function verify() {
-  await userEvent.type(
-    await screen.findByLabelText('Password', { selector: 'input' }),
-    'admin-password'
-  )
-  await userEvent.click(screen.getByRole('button', { name: 'Verify' }))
 }
 
 it('shows a persistent global default and leaves new account group blank to inherit it', async () => {
@@ -244,7 +221,7 @@ it('allows administrators to read the global group but not change it', async () 
   ).not.toBeInTheDocument()
 })
 
-it('sends an explicit OAuth import group after verification', async () => {
+it('sends an explicit OAuth import group directly', async () => {
   renderPage()
   await userEvent.click(
     await screen.findByRole('button', { name: 'Import OAuth JSON' })
@@ -259,7 +236,7 @@ it('sends an explicit OAuth import group after verification', async () => {
   await userEvent.click(
     within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
   )
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/import-oauth',
@@ -269,7 +246,7 @@ it('sends an explicit OAuth import group after verification', async () => {
   )
 })
 
-it('binds a channel JSON group override to the same proof as the submitted JSON', async () => {
+it('merges a channel JSON group override into the submitted JSON', async () => {
   renderPage()
   await userEvent.click(await screen.findByRole('tab', { name: 'Gateways' }))
   await userEvent.click(
@@ -285,7 +262,7 @@ it('binds a channel JSON group override to the same proof as the submitted JSON'
   await userEvent.click(
     within(dialog).getByRole('button', { name: 'Create channel' })
   )
-  await verify()
+
   const submitted = '{"provider":"cpa","group":"premium"}'
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
@@ -293,18 +270,6 @@ it('binds a channel JSON group override to the same proof as the submitted JSON'
       { config_json: submitted },
       expect.anything()
     )
-  )
-  const digest = await crypto.subtle.digest(
-    'SHA-256',
-    new TextEncoder().encode(submitted)
-  )
-  const hash = [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({ context: { config_sha256: hash } }),
-    expect.anything()
   )
 })
 
@@ -315,7 +280,7 @@ it('denies ordinary users without requesting managed account data', async () => 
   expect(api.get).not.toHaveBeenCalled()
 })
 
-it('masks credential inputs and starts creation only after scoped admin verification', async () => {
+it('masks credential inputs and starts creation directly', async () => {
   renderPage()
   await userEvent.click(
     await screen.findByRole('button', { name: 'Add GPT account' })
@@ -336,12 +301,6 @@ it('masks credential inputs and starts creation only after scoped admin verifica
   await userEvent.type(password, 'upstream-password')
   await userEvent.type(totp, 'JBSWY3DPEHPK3PXP')
   await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/gpt-accounts',
-    expect.anything(),
-    expect.anything()
-  )
-  await verify()
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts',
@@ -354,17 +313,8 @@ it('masks credential inputs and starts creation only after scoped admin verifica
       }),
       expect.objectContaining({
         singleUseAuthorization: true,
-        headers: { 'X-Security-Proof': 'proof' },
       })
     )
-  )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.create',
-      context: { email: 'second@example.com' },
-    }),
-    expect.anything()
   )
   await waitFor(() =>
     expect(
@@ -373,7 +323,7 @@ it('masks credential inputs and starts creation only after scoped admin verifica
   )
 })
 
-it('imports Codex OAuth JSON only after email-scoped verification', async () => {
+it('imports Codex OAuth JSON directly', async () => {
   renderPage()
   await userEvent.click(
     await screen.findByRole('button', { name: 'Import OAuth JSON' })
@@ -389,28 +339,55 @@ it('imports Codex OAuth JSON only after email-scoped verification', async () => 
   await userEvent.click(
     within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
   )
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/import-oauth',
       { oauth_json: oauth },
       expect.objectContaining({
-        headers: { 'X-Security-Proof': 'proof' },
         singleUseAuthorization: true,
       })
     )
   )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.oauth_import.create',
-      context: { email: 'import@example.com' },
-    }),
-    expect.anything()
-  )
   expect(
     screen.queryByRole('dialog', { name: 'Import Codex OAuth JSON' })
   ).not.toBeInTheDocument()
+})
+
+it('updates account OAuth JSON directly while preserving its existing group', async () => {
+  items = [{ ...account, group: 'team' }]
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', {
+      name: 'Import OAuth JSON for Work account',
+    })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Update Codex OAuth JSON',
+  })
+  const group = within(dialog).getByLabelText('Group')
+  expect(group).toHaveValue('team')
+  expect(group).toHaveAttribute('readonly')
+  const oauthJSON = '{"email":"owner@example.com","access_token":"test-access"}'
+  fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
+    target: { value: oauthJSON },
+  })
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
+  )
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/import-oauth',
+      { oauth_json: oauthJSON },
+      expect.objectContaining({
+        singleUseAuthorization: true,
+        signal: expect.any(AbortSignal),
+      })
+    )
+  )
+  expect(
+    vi.mocked(api.post).mock.calls[0]?.[2]?.headers ?? {}
+  ).not.toHaveProperty('X-Security-Proof')
 })
 
 it('editing never prefills stored credentials and cancelling clears entered replacements', async () => {
@@ -446,20 +423,7 @@ it('shows upstream authentication failure as account status while preserving the
 
 it('keeps a failed login action visible and does not report the account as ready', async () => {
   items = [{ ...account, status: 'error' }]
-  vi.mocked(api.post).mockImplementation(async (url, body) => {
-    if (url === '/api/verify') {
-      return {
-        data: {
-          success: true,
-          data: {
-            proof_token: 'proof',
-            scope: (body as { scope: string }).scope,
-            method: 'password',
-            expires_at: Date.now() / 1000 + 60,
-          },
-        },
-      }
-    }
+  vi.mocked(api.post).mockImplementation(async () => {
     return {
       data: {
         success: false,
@@ -472,14 +436,14 @@ it('keeps a failed login action visible and does not report the account as ready
   await userEvent.click(
     await screen.findByRole('button', { name: 'Sign in Work account' })
   )
-  await verify()
+
   expect(await screen.findByRole('alert')).toHaveTextContent(
     'Add an account password to enable automatic sign-in.'
   )
   expect(screen.queryByText('Ready')).not.toBeInTheDocument()
 })
 
-it('requires scoped verification for an official browser link and submits callback only to the server', async () => {
+it('generates an official browser link directly and submits callback only to the server', async () => {
   const originalGet = vi.mocked(api.get).getMockImplementation()
   if (!originalGet) throw new Error('GET fixture is unavailable')
   vi.mocked(api.get).mockImplementation(async (url, config) => {
@@ -506,11 +470,6 @@ it('requires scoped verification for an official browser link and submits callba
   await userEvent.click(
     screen.getByRole('button', { name: 'Generate sign-in link' })
   )
-  expect(api.get).not.toHaveBeenCalledWith(
-    '/api/gpt-accounts/1/oauth',
-    expect.anything()
-  )
-  await verify()
   const browserDialog = await screen.findByRole('dialog', {
     name: 'Complete browser sign-in',
   })
@@ -525,7 +484,6 @@ it('requires scoped verification for an official browser link and submits callba
   expect(api.get).toHaveBeenCalledWith(
     '/api/gpt-accounts/1/oauth',
     expect.objectContaining({
-      headers: { 'X-Security-Proof': 'proof' },
       singleUseAuthorization: true,
     })
   )
@@ -561,18 +519,32 @@ it('keeps existing-channel linking out of an ordinary admin form', async () => {
   ).not.toBeInTheDocument()
 })
 
-it('cancelling admin verification sends no account mutation', async () => {
+it('starts login directly and blocks duplicate requests while it is pending', async () => {
+  vi.mocked(api.post).mockImplementation(() => new Promise(() => undefined))
   renderPage()
-  await userEvent.click(
-    await screen.findByRole('button', { name: 'Sign in Work account' })
+  const login = await screen.findByRole('button', {
+    name: 'Sign in Work account',
+  })
+  await userEvent.click(login)
+  await waitFor(() => expect(api.post).toHaveBeenCalledOnce())
+  await waitFor(() =>
+    expect(
+      screen.getByRole('button', { name: 'Sign in Work account' })
+    ).toBeDisabled()
   )
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await userEvent.keyboard('{Escape}')
-  expect(api.post).not.toHaveBeenCalledWith(
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in Work account' }))
+  expect(api.post).toHaveBeenCalledOnce()
+  expect(api.post).toHaveBeenCalledWith(
     '/api/gpt-accounts/1/login',
-    expect.anything(),
-    expect.anything()
+    {},
+    expect.objectContaining({
+      singleUseAuthorization: true,
+      signal: expect.any(AbortSignal),
+    })
   )
+  expect(
+    vi.mocked(api.post).mock.calls[0]?.[2]?.headers ?? {}
+  ).not.toHaveProperty('X-Security-Proof')
 })
 
 it('updates processing status to ready after the server returns successful authentication', async () => {
@@ -586,7 +558,10 @@ it('updates processing status to ready after the server returns successful authe
   expect(await screen.findByText('Ready')).toBeVisible()
 })
 
-it('clears submitted replacement credentials when verification is cancelled', async () => {
+it('clears submitted replacement credentials after a failed save', async () => {
+  vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: false, code: 'account_changed' },
+  })
   renderPage()
   await userEvent.click(
     await screen.findByRole('button', { name: 'Edit Work account' })
@@ -594,8 +569,7 @@ it('clears submitted replacement credentials when verification is cancelled', as
   await userEvent.type(screen.getByLabelText('Account password'), 'replacement')
   await userEvent.type(screen.getByLabelText('TOTP secret'), 'JBSWY3DPEHPK3PXP')
   await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await userEvent.keyboard('{Escape}')
+  await screen.findByRole('alert')
   expect(await screen.findByLabelText('Account password')).toHaveValue('')
   expect(screen.getByLabelText('TOTP secret')).toHaveValue('')
 })
@@ -623,26 +597,60 @@ it.each([
   }
 )
 
-it('cancels pending verification and clears the editor when the administrator changes', async () => {
-  renderPage()
-  await userEvent.click(
-    await screen.findByRole('button', { name: 'Sign in Work account' })
-  )
-  await screen.findByLabelText('Password', { selector: 'input' })
-  act(() =>
-    useAuthStore
-      .getState()
-      .auth.setUser({ id: 7, username: 'another-admin', role: 10 })
-  )
-  expect(
-    screen.queryByLabelText('Password', { selector: 'input' })
-  ).not.toBeInTheDocument()
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/gpt-accounts/1/login',
-    expect.anything(),
-    expect.anything()
-  )
-})
+it.each(['user', 'role', 'session'] as const)(
+  'aborts an account save and clears its editor when the %s changes',
+  async (kind) => {
+    let finishSave!: (value: unknown) => void
+    const put = vi.spyOn(api, 'put').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishSave = resolve
+        })
+    )
+    renderPage()
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Edit Work account' })
+    )
+    await userEvent.type(
+      screen.getByLabelText('Account password'),
+      'replacement'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(put).toHaveBeenCalledOnce())
+    const signal = put.mock.calls[0]?.[2]?.signal
+    act(() => {
+      if (kind === 'session') {
+        useAuthStore.setState((state) => ({
+          auth: {
+            ...state.auth,
+            session: {
+              sid: 'replacement',
+              current: true,
+              login_method: 'password',
+              ip: '',
+              user_agent: '',
+              created_at: 0,
+              last_active_at: 0,
+              expires_at: 0,
+            },
+          },
+        }))
+      } else {
+        useAuthStore.getState().auth.setUser({
+          id: kind === 'user' ? 7 : 1,
+          username: 'another-admin',
+          role: kind === 'role' ? 10 : 100,
+        })
+      }
+    })
+    expect(signal?.aborted).toBe(true)
+    expect(screen.queryByLabelText('Account password')).not.toBeInTheDocument()
+    await act(async () =>
+      finishSave({ data: { success: true, data: account } })
+    )
+    expect(screen.queryByLabelText('Account password')).not.toBeInTheDocument()
+  }
+)
 
 async function startBrowserAuthorization() {
   const originalGet = vi.mocked(api.get).getMockImplementation()
@@ -671,7 +679,7 @@ async function startBrowserAuthorization() {
   await userEvent.click(
     screen.getByRole('button', { name: 'Generate sign-in link' })
   )
-  await verify()
+
   await screen.findByLabelText('Callback URL')
 }
 
@@ -718,17 +726,19 @@ it('clears a spent callback after server failure and requires a new authorizatio
   ).toBeEnabled()
 })
 
-it('discards the previous link and callback when a replacement authorization is cancelled', async () => {
+it('discards the previous link and callback when a replacement authorization fails', async () => {
   await startBrowserAuthorization()
   await userEvent.type(
     screen.getByLabelText('Callback URL'),
     'http://localhost:1455/auth/callback?code=old-code&state=expected'
   )
+  vi.mocked(api.get).mockResolvedValueOnce({
+    data: { success: false, code: 'authorization_failed' },
+  })
   await userEvent.click(
     screen.getByRole('button', { name: 'Generate sign-in link' })
   )
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await userEvent.keyboard('{Escape}')
+  await screen.findByRole('alert')
   await screen.findByRole('dialog', { name: 'Complete browser sign-in' })
   expect(screen.queryByLabelText('Callback URL')).not.toBeInTheDocument()
   expect(
@@ -787,24 +797,15 @@ it('submits blank replacement credentials when saving existing account settings'
     await screen.findByRole('button', { name: 'Edit Work account' })
   )
   await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-  await verify()
+
   await waitFor(() =>
     expect(api.put).toHaveBeenCalledWith(
       '/api/gpt-accounts/1',
       expect.objectContaining({ password: '', totp_secret: '' }),
       expect.objectContaining({
         singleUseAuthorization: true,
-        headers: { 'X-Security-Proof': 'proof' },
       })
     )
-  )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.update',
-      context: { account_id: 1 },
-    }),
-    expect.anything()
   )
 })
 
@@ -835,7 +836,7 @@ it('allows sign-in for an account awaiting authorization after settings were sav
   await userEvent.click(
     screen.getByRole('button', { name: 'Sign in Work account' })
   )
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/1/login',
@@ -869,7 +870,7 @@ it('shows a rejected deletion inside the confirmation and keeps the account visi
     await screen.findByRole('button', { name: 'Delete Work account' })
   )
   await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
-  await verify()
+
   const confirmation = await screen.findByRole('alertdialog', {
     name: 'Delete GPT account?',
   })
@@ -911,8 +912,11 @@ it.each([
     message: 'Enter a Base32 TOTP secret',
   },
 ])(
-  'rejects invalid $field before requesting verification ($value.length characters)',
+  'rejects invalid $field before submitting ($value.length characters)',
   async ({ field, value, message }) => {
+    const put = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true, data: account } })
     const user = userEvent.setup()
     renderPage()
     await user.click(
@@ -923,10 +927,7 @@ it.each([
     await user.click(screen.getByRole('button', { name: 'Save' }))
     expect(await screen.findByText(message)).toBeVisible()
     expect(screen.getByLabelText(field)).toHaveAttribute('aria-invalid', 'true')
-    expect(api.get).not.toHaveBeenCalledWith(
-      '/api/verify/methods',
-      expect.anything()
-    )
+    expect(put).not.toHaveBeenCalled()
   }
 )
 
@@ -945,7 +946,7 @@ it('normalizes a valid spaced lowercase TOTP seed and accepts a password at the 
   await user.click(screen.getByLabelText('TOTP secret'))
   await user.paste(' jbsw y3dp ehpk 3pxp ')
   await user.click(screen.getByRole('button', { name: 'Save' }))
-  await verify()
+
   await waitFor(() =>
     expect(api.put).toHaveBeenCalledWith(
       '/api/gpt-accounts/1',
@@ -1036,7 +1037,7 @@ async function revealTotp() {
     })
   )
   await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
-  await verify()
+
   return screen.findByText('JBSWY3DPEHPK3PXP')
 }
 
@@ -1099,7 +1100,7 @@ it('2FA actions honor server management permission and disable reveal for absent
   expect(within(panel).getByText('Saved')).toBeVisible()
 })
 
-it('requires a canonical seed and explicit completed-binding confirmation before verification', async () => {
+it('requires a canonical seed and explicit completed-binding confirmation before submitting', async () => {
   const dialog = await openTotpSave()
   const input = within(dialog).getByLabelText('Replacement TOTP secret')
   expect(input).toHaveValue('')
@@ -1124,13 +1125,10 @@ it('requires a canonical seed and explicit completed-binding confirmation before
     within(dialog).getByRole('button', { name: 'Save replacement secret' })
   )
   expect(await screen.findByText('Enter a Base32 TOTP secret')).toBeVisible()
-  expect(api.get).not.toHaveBeenCalledWith(
-    '/api/verify/methods',
-    expect.anything()
-  )
+  expect(api.post).not.toHaveBeenCalled()
 })
 
-it('saves a normalized replacement only with account-scoped proof and refreshes safe metadata', async () => {
+it('saves a normalized replacement directly and refreshes safe metadata', async () => {
   const originalPost = vi.mocked(api.post).getMockImplementation()
   if (!originalPost) throw new Error('POST fixture is unavailable')
   vi.mocked(api.post).mockImplementation(async (url, body, config) => {
@@ -1160,24 +1158,15 @@ it('saves a normalized replacement only with account-scoped proof and refreshes 
   await userEvent.click(
     within(dialog).getByRole('button', { name: 'Save replacement secret' })
   )
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/1/totp',
       { totp_secret: 'JBSWY3DPEHPK3PXP', confirmed_bound: true },
       expect.objectContaining({
         singleUseAuthorization: true,
-        headers: { 'X-Security-Proof': 'proof' },
       })
     )
-  )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.totp.update',
-      context: { account_id: 1 },
-    }),
-    expect.anything()
   )
   expect(await screen.findByText('Operator confirmed')).toBeVisible()
   expect(
@@ -1193,7 +1182,10 @@ it('saves a normalized replacement only with account-scoped proof and refreshes 
   ).not.toContain('JBSWY3DPEHPK3PXP')
 })
 
-it('cancelling replacement verification clears the seed and confirmation without saving', async () => {
+it('a failed replacement clears the seed and completed-binding confirmation', async () => {
+  vi.mocked(api.post).mockResolvedValue({
+    data: { success: false, code: 'account_changed' },
+  })
   const dialog = await openTotpSave()
   await userEvent.type(
     within(dialog).getByLabelText('Replacement TOTP secret'),
@@ -1207,8 +1199,7 @@ it('cancelling replacement verification clears the seed and confirmation without
   await userEvent.click(
     within(dialog).getByRole('button', { name: 'Save replacement secret' })
   )
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await userEvent.keyboard('{Escape}')
+  await screen.findByRole('alert')
   expect(await screen.findByLabelText('Replacement TOTP secret')).toHaveValue(
     ''
   )
@@ -1217,14 +1208,10 @@ it('cancelling replacement verification clears the seed and confirmation without
       name: 'I completed binding this secret on the official OpenAI website.',
     })
   ).not.toBeChecked()
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/gpt-accounts/1/totp',
-    expect.anything(),
-    expect.anything()
-  )
+  expect(api.post).toHaveBeenCalledOnce()
 })
 
-it('reveals only after scoped proof and never puts the secret in query or mutation cache', async () => {
+it('reveals directly and never puts the secret in query or mutation cache', async () => {
   const mutationStates: unknown[] = []
   const unsubscribe = client
     .getMutationCache()
@@ -1232,19 +1219,10 @@ it('reveals only after scoped proof and never puts the secret in query or mutati
   await revealTotp()
   unsubscribe()
   expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.totp.read',
-      context: { account_id: 1 },
-    }),
-    expect.anything()
-  )
-  expect(api.post).toHaveBeenCalledWith(
     '/api/gpt-accounts/1/totp/reveal',
     {},
     expect.objectContaining({
       singleUseAuthorization: true,
-      headers: { 'X-Security-Proof': 'proof' },
     })
   )
   const dialog = screen.getByRole('dialog', { name: 'Current TOTP secret' })
@@ -1294,14 +1272,9 @@ it('removes a revealed secret at its 30-second deadline', async () => {
   await userEvent.click(
     screen.getByRole('button', { name: 'Reveal secret for Work account' })
   )
-  await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
-  await userEvent.type(
-    await screen.findByLabelText('Password', { selector: 'input' }),
-    'admin-password'
-  )
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
   await act(async () =>
-    fireEvent.click(screen.getByRole('button', { name: 'Verify' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
   )
   expect(screen.getByText('JBSWY3DPEHPK3PXP')).toBeVisible()
   await act(async () => vi.advanceTimersByTimeAsync(30_001))
@@ -1360,7 +1333,7 @@ it('hiding a pending reveal aborts the request and discards a late response', as
     screen.getByRole('button', { name: 'Reveal secret for Work account' })
   )
   await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/1/totp/reveal',
@@ -1429,7 +1402,7 @@ it.each([
     await userEvent.click(
       within(dialog).getByRole('button', { name: 'Save replacement secret' })
     )
-    await verify()
+
     expect(await screen.findByRole('alert')).toHaveTextContent(message)
     expect(screen.getByLabelText('Replacement TOTP secret')).toHaveValue('')
     unsubscribe()
@@ -1444,26 +1417,20 @@ it.each([
   }
 )
 
-it('cancelling reveal verification never fetches a secret', async () => {
+it('closing the reveal dialog before requesting a secret sends no mutation', async () => {
   renderPage()
   await openTotpTab()
   await userEvent.click(
     screen.getByRole('button', { name: 'Reveal secret for Work account' })
   )
-  await userEvent.click(screen.getByRole('button', { name: 'Reveal secret' }))
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await userEvent.keyboard('{Escape}')
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
   expect(
-    await screen.findByRole('dialog', { name: 'Current TOTP secret' })
-  ).toBeVisible()
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/gpt-accounts/1/totp/reveal',
-    expect.anything(),
-    expect.anything()
-  )
+    screen.queryByRole('dialog', { name: 'Current TOTP secret' })
+  ).not.toBeInTheDocument()
+  expect(api.post).not.toHaveBeenCalled()
 })
 
-it('submits a masked account line in one step with normalized credentials and the exact password after verification', async () => {
+it('submits a masked account line in one step with normalized credentials and the exact password directly', async () => {
   const user = userEvent.setup()
   const password = '  password----with delimiter  '
   const line = `MixedCase@example.com----${password}----jbsw y3dp ehpk 3pxp`
@@ -1480,8 +1447,6 @@ it('submits a masked account line in one step with normalized credentials and th
   await user.click(input)
   await user.paste(line)
   await user.click(screen.getByRole('button', { name: 'Save' }))
-  expect(api.post).not.toHaveBeenCalled()
-  await verify()
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts',
@@ -1499,17 +1464,8 @@ it('submits a masked account line in one step with normalized credentials and th
       },
       expect.objectContaining({
         singleUseAuthorization: true,
-        headers: { 'X-Security-Proof': 'proof' },
       })
     )
-  )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.create',
-      context: { email: 'mixedcase@example.com' },
-    }),
-    expect.anything()
   )
   unsubscribe()
   const cache = JSON.stringify({
@@ -1540,7 +1496,7 @@ it.each([
     'owner@example.com----password----JBSWY3DPEHPK3PXP\nother@example.com----password----JBSWY3DPEHPK3PXP',
   ],
 ])(
-  'rejects an account line with %s before verification or account mutation',
+  'rejects an account line with %s before account mutation',
   async (_reason, line) => {
     const user = userEvent.setup()
     renderPage()
@@ -1557,15 +1513,14 @@ it.each([
       'aria-invalid',
       'true'
     )
-    expect(api.get).not.toHaveBeenCalledWith(
-      '/api/verify/methods',
-      expect.anything()
-    )
     expect(api.post).not.toHaveBeenCalled()
   }
 )
 
-it('keeps a supplied account name when applying a line and clears imported secrets after canceled verification', async () => {
+it('keeps a supplied account name and clears imported secrets after a failed save', async () => {
+  vi.mocked(api.post).mockResolvedValue({
+    data: { success: false, code: 'account_changed' },
+  })
   const user = userEvent.setup()
   renderPage()
   await user.click(
@@ -1575,14 +1530,13 @@ it('keeps a supplied account name when applying a line and clears imported secre
   await user.click(screen.getByLabelText('Account line'))
   await user.paste('owner@example.com----password----JBSWY3DPEHPK3PXP')
   await user.click(screen.getByRole('button', { name: 'Save' }))
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await user.keyboard('{Escape}')
+  await screen.findByRole('alert')
   expect(await screen.findByLabelText('Account password')).toHaveValue('')
   expect(screen.getByLabelText('Name')).toHaveValue('My account')
   expect(screen.getByLabelText('TOTP secret')).toHaveValue('')
   await user.click(screen.getByRole('tab', { name: 'Paste account' }))
   expect(screen.getByLabelText('Account line')).toHaveValue('')
-  expect(api.post).not.toHaveBeenCalled()
+  expect(api.post).toHaveBeenCalledOnce()
 })
 
 it.each(['cancel', 'identity'] as const)(
@@ -1685,7 +1639,7 @@ it('shows the third-party secret disclosure with 2fa.cn selected for pasted acco
   await user.click(screen.getByLabelText('Account line'))
   await user.paste('owner@example.com----password----JBSWY3DPEHPK3PXP')
   await user.click(screen.getByRole('button', { name: 'Save' }))
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts',
@@ -1713,7 +1667,7 @@ it.each([
     )
     expect(screen.getByRole('radio', { name: provider.selected })).toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Save' }))
-    await verify()
+
     await waitFor(() =>
       expect(api.put).toHaveBeenCalledWith(
         '/api/gpt-accounts/1',
@@ -1831,7 +1785,7 @@ it('lets administrators choose a configured gateway during one-line creation wit
     'pool@example.com----password----JBSWY3DPEHPK3PXP'
   )
   await user.click(screen.getByRole('button', { name: 'Save' }))
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts',
@@ -1841,7 +1795,7 @@ it('lets administrators choose a configured gateway during one-line creation wit
   )
 })
 
-it('shows gateway channel and sync status and retries import only after account-scoped verification', async () => {
+it('shows gateway channel and sync status and retries import directly', async () => {
   items = [
     {
       ...account,
@@ -1862,34 +1816,19 @@ it('shows gateway channel and sync status and retries import only after account-
   await user.click(
     screen.getByRole('button', { name: 'Sync gateway for Work account' })
   )
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/gpt-accounts/1/sync',
-    expect.anything(),
-    expect.anything()
-  )
-  await verify()
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/1/sync',
       {},
       expect.objectContaining({
         singleUseAuthorization: true,
-        headers: { 'X-Security-Proof': 'proof' },
       })
     )
-  )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account.gateway.sync',
-      context: { account_id: 1 },
-    }),
-    expect.anything()
   )
 })
 
 it.each(['cpa', 'sub2api'] as const)(
-  'refreshes a %s gateway account without a direct channel after scoped verification',
+  'refreshes a %s gateway account without a direct channel directly',
   async (provider) => {
     items = [
       {
@@ -1906,29 +1845,14 @@ it.each(['cpa', 'sub2api'] as const)(
     })
     expect(refresh).toBeEnabled()
     await userEvent.click(refresh)
-    expect(api.post).not.toHaveBeenCalledWith(
-      '/api/gpt-accounts/1/refresh',
-      expect.anything(),
-      expect.anything()
-    )
-    await verify()
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith(
         '/api/gpt-accounts/1/refresh',
         {},
         expect.objectContaining({
           singleUseAuthorization: true,
-          headers: { 'X-Security-Proof': 'proof' },
         })
       )
-    )
-    expect(api.post).toHaveBeenCalledWith(
-      '/api/verify',
-      expect.objectContaining({
-        scope: 'gpt_account.refresh',
-        context: { account_id: 1 },
-      }),
-      expect.anything()
     )
   }
 )
@@ -1957,7 +1881,7 @@ it('keeps the account destination immutable when editing a gateway account', asy
   ).not.toBeInTheDocument()
 })
 
-it('creates a gateway with masked keys only after name-scoped verification and keeps keys out of caches', async () => {
+it('creates a gateway with masked keys directly and keeps keys out of caches', async () => {
   const user = userEvent.setup()
   const mutationStates: unknown[] = []
   const unsubscribe = client
@@ -1993,12 +1917,6 @@ it('creates a gateway with masked keys only after name-scoped verification and k
     'gateway-relay-secret'
   )
   await user.click(within(dialog).getByRole('button', { name: 'Save' }))
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/gpt-account-gateways',
-    expect.anything(),
-    expect.anything()
-  )
-  await verify()
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-account-gateways',
@@ -2012,14 +1930,6 @@ it('creates a gateway with masked keys only after name-scoped verification and k
       expect.objectContaining({ singleUseAuthorization: true })
     )
   )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account_gateway.create',
-      context: { name: 'Second pool' },
-    }),
-    expect.anything()
-  )
   unsubscribe()
   const cache = JSON.stringify({
     queries: client
@@ -2032,7 +1942,7 @@ it('creates a gateway with masked keys only after name-scoped verification and k
   expect(cache).not.toContain('gateway-relay-secret')
 })
 
-it('imports a direct CPA or Sub2API channel JSON only after scoped verification', async () => {
+it('imports a direct CPA or Sub2API channel JSON only directly', async () => {
   const user = userEvent.setup()
   const configJSON =
     '{"provider":"sub2api","name":"测试渠道","base_url":"https://sub2api.example/v1","api_key":"relay-secret","models":["gpt-5"]}'
@@ -2048,31 +1958,19 @@ it('imports a direct CPA or Sub2API channel JSON only after scoped verification'
   await user.click(
     within(dialog).getByRole('button', { name: 'Create channel' })
   )
-  await verify()
+
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-account-gateways/import-channel-json',
       { config_json: configJSON },
       expect.objectContaining({
-        headers: { 'X-Security-Proof': 'proof' },
         singleUseAuthorization: true,
       })
     )
   )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account_gateway.channel_import',
-      context: {
-        config_sha256:
-          '3477af6d92429ec7f8da7a6c5667abd9571305a70bdfed6227e62fa012a689a0',
-      },
-    }),
-    expect.anything()
-  )
 })
 
-it('rejects non-object channel JSON before requesting security verification', async () => {
+it('rejects non-object channel JSON before importing', async () => {
   const user = userEvent.setup()
   renderPage()
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
@@ -2091,78 +1989,76 @@ it('rejects non-object channel JSON before requesting security verification', as
       'Paste a valid CPA or Sub2API channel JSON object.'
     )
   ).toBeVisible()
-  expect(api.post).not.toHaveBeenCalledWith(
-    '/api/verify',
-    expect.anything(),
-    expect.anything()
-  )
+  expect(api.post).not.toHaveBeenCalled()
 })
 
-it('abandons channel JSON verification when the page closes during hashing', async () => {
-  const user = userEvent.setup()
-  let finishDigest!: (digest: ArrayBuffer) => void
-  const digest = vi
-    .spyOn(globalThis.crypto.subtle, 'digest')
-    .mockImplementationOnce(
-      () =>
-        new Promise<ArrayBuffer>((resolve) => {
-          finishDigest = resolve
-        })
-    )
+it('aborts a channel JSON import when the page closes and discards its late response', async () => {
+  let finishImport!: (value: unknown) => void
+  vi.mocked(api.post).mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishImport = resolve
+      })
+  )
   const page = renderPage()
-  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
-  await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
+  await userEvent.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Import channel JSON' })
+  )
   const dialog = await screen.findByRole('dialog', {
     name: 'Import CPA/Sub2API channel JSON',
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
-    target: {
-      value:
-        '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
-    },
+    target: { value: '{"provider":"cpa","api_key":"relay-secret"}' },
   })
-  await user.click(
+  await userEvent.click(
     within(dialog).getByRole('button', { name: 'Create channel' })
   )
-  await waitFor(() => expect(digest).toHaveBeenCalledOnce())
+  await waitFor(() => expect(api.post).toHaveBeenCalledOnce())
+  const signal = vi.mocked(api.post).mock.calls[0]?.[2]?.signal
   page.unmount()
-  await act(async () => {
-    finishDigest(new Uint8Array(32).buffer)
-  })
-  expect(api.get).not.toHaveBeenCalledWith(
-    '/api/verify/methods',
-    expect.anything()
+  expect(signal?.aborted).toBe(true)
+  await act(async () =>
+    finishImport({
+      data: {
+        success: true,
+        data: { channel_id: 23, name: 'CPA', provider: 'cpa' },
+      },
+    })
   )
-  expect(api.post).not.toHaveBeenCalled()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })
 
-it('does not import channel JSON when security verification is cancelled', async () => {
-  const user = userEvent.setup()
+it('imports channel JSON without browser digest support', async () => {
+  vi.spyOn(globalThis.crypto, 'subtle', 'get').mockReturnValue(
+    undefined as unknown as SubtleCrypto
+  )
   renderPage()
-  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
-  await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
+  await userEvent.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Import channel JSON' })
+  )
   const dialog = await screen.findByRole('dialog', {
     name: 'Import CPA/Sub2API channel JSON',
   })
+  const configJSON =
+    '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}'
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
-    target: {
-      value:
-        '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
-    },
+    target: { value: configJSON },
   })
-  await user.click(
+  await userEvent.click(
     within(dialog).getByRole('button', { name: 'Create channel' })
   )
-  const verification = await screen.findByRole('dialog', {
-    name: 'Security verification',
-  })
-  await user.click(within(verification).getByRole('button', { name: 'Cancel' }))
-  expect(
-    await screen.findByRole('dialog', {
-      name: 'Import CPA/Sub2API channel JSON',
-    })
-  ).toBeVisible()
-  expect(api.post).not.toHaveBeenCalled()
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-account-gateways/import-channel-json',
+      { config_json: configJSON },
+      expect.objectContaining({
+        singleUseAuthorization: true,
+        signal: expect.any(AbortSignal),
+      })
+    )
+  )
 })
 
 it('edits gateway display settings without exposing saved keys or changing connection identity', async () => {
@@ -2188,7 +2084,7 @@ it('edits gateway display settings without exposing saved keys or changing conne
   await user.clear(within(dialog).getByLabelText('Name'))
   await user.type(within(dialog).getByLabelText('Name'), 'Renamed pool')
   await user.click(within(dialog).getByRole('button', { name: 'Save' }))
-  await verify()
+
   await waitFor(() =>
     expect(api.put).toHaveBeenCalledWith(
       '/api/gpt-account-gateways/5',
@@ -2202,17 +2098,12 @@ it('edits gateway display settings without exposing saved keys or changing conne
       expect.anything()
     )
   )
-  expect(api.post).toHaveBeenCalledWith(
-    '/api/verify',
-    expect.objectContaining({
-      scope: 'gpt_account_gateway.update',
-      context: { gateway_id: 5 },
-    }),
-    expect.anything()
-  )
 })
 
-it('clears replacement gateway keys when verification is cancelled', async () => {
+it('clears replacement gateway keys after a failed save', async () => {
+  vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: false, code: 'account_changed' },
+  })
   const user = userEvent.setup()
   renderPage()
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
@@ -2221,19 +2112,13 @@ it('clears replacement gateway keys when verification is cancelled', async () =>
   )
   await user.type(screen.getByLabelText('Management key'), 'replacement-secret')
   await user.click(screen.getByRole('button', { name: 'Save' }))
-  await screen.findByLabelText('Password', { selector: 'input' })
-  await waitFor(() =>
-    expect(
-      screen.getByRole('dialog', { name: 'Security verification' })
-    ).toContainElement(document.activeElement as HTMLElement)
-  )
-  await user.keyboard('{Escape}')
+  await screen.findByRole('alert')
   expect(await screen.findByLabelText('Management key')).toHaveValue('')
   expect(screen.getByLabelText('Relay key')).toHaveValue('')
   expect(api.post).not.toHaveBeenCalled()
 })
 
-it('requires both gateway keys and a valid Sub2API group before requesting verification', async () => {
+it('requires both gateway keys and a valid Sub2API group before submitting', async () => {
   const user = userEvent.setup()
   renderPage()
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
@@ -2257,8 +2142,80 @@ it('requires both gateway keys and a valid Sub2API group before requesting verif
   expect(
     screen.getByText('Choose a Sub2API group ID greater than zero.')
   ).toBeVisible()
-  expect(api.get).not.toHaveBeenCalledWith(
-    '/api/verify/methods',
-    expect.anything()
+  expect(api.post).not.toHaveBeenCalled()
+})
+
+it('keeps deletion behind confirmation and sends it directly only after confirming', async () => {
+  const remove = vi
+    .spyOn(api, 'delete')
+    .mockResolvedValue({ data: { success: true } })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Delete Work account' })
   )
+  expect(remove).not.toHaveBeenCalled()
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+  expect(remove).not.toHaveBeenCalled()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Delete Work account' })
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  await waitFor(() => expect(remove).toHaveBeenCalledOnce())
+  expect(remove).toHaveBeenCalledWith(
+    '/api/gpt-accounts/1',
+    expect.objectContaining({
+      singleUseAuthorization: true,
+      signal: expect.any(AbortSignal),
+    })
+  )
+  expect(remove.mock.calls[0]?.[1]?.headers ?? {}).not.toHaveProperty(
+    'X-Security-Proof'
+  )
+  await waitFor(() =>
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  )
+})
+
+it('does not retry a failed operation or retain its credential-bearing error in the mutation cache', async () => {
+  client.setDefaultOptions({
+    queries: { retry: false },
+    mutations: { retry: 3, retryDelay: 0 },
+  })
+  const mutationStates: unknown[] = []
+  const unsubscribe = client
+    .getMutationCache()
+    .subscribe((event) => mutationStates.push(event.mutation?.state))
+  vi.mocked(api.post).mockRejectedValue(
+    Object.assign(new Error('account changed'), {
+      isAxiosError: true,
+      config: { data: 'credential-from-request' },
+      response: { status: 409, data: { code: 'account_changed' } },
+    })
+  )
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Sign in Work account' })
+  )
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'The account changed. Refresh and try again.'
+  )
+  await waitFor(() =>
+    expect(client.getMutationCache().getAll()).toHaveLength(0)
+  )
+  expect(api.post).toHaveBeenCalledOnce()
+  expect(JSON.stringify(mutationStates)).not.toContain(
+    'credential-from-request'
+  )
+  expect(
+    mutationStates.every(
+      (state) =>
+        (state as { variables?: unknown } | undefined)?.variables === undefined
+    )
+  ).toBe(true)
+  expect(
+    mutationStates.every(
+      (state) => !(state as { error?: Error } | undefined)?.error?.cause
+    )
+  ).toBe(true)
+  unsubscribe()
 })
