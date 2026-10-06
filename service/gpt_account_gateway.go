@@ -77,9 +77,9 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 	if err != nil {
 		return GPTGatewayChannelInput{}, errors.New("gateway_channel_url_invalid")
 	}
-	if provider == "sub2api" {
-		baseURL = strings.TrimSuffix(baseURL, "/v1")
-	}
+	// Both relay adaptors append the versioned request path. Accept the
+	// client-facing /v1 URL without producing /v1/v1 when forwarding.
+	baseURL = strings.TrimSuffix(baseURL, "/v1")
 	apiKey := readString("api_key", "apiKey", "relay_key", "relayKey", "key", "token")
 	if apiKey == "" {
 		return GPTGatewayChannelInput{}, errors.New("gateway_channel_key_required")
@@ -94,9 +94,7 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 	if value, ok := document["models"]; ok {
 		switch typed := value.(type) {
 		case string:
-			if strings.TrimSpace(typed) != "" {
-				models = strings.TrimSpace(typed)
-			}
+			models = strings.TrimSpace(typed)
 		case []any:
 			items := make([]string, 0, len(typed))
 			for _, item := range typed {
@@ -114,6 +112,15 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 			return GPTGatewayChannelInput{}, errors.New("gateway_channel_models_invalid")
 		}
 	}
+	modelNames := make([]string, 0)
+	for modelName := range strings.SplitSeq(models, ",") {
+		modelName = strings.TrimSpace(modelName)
+		if modelName == "" || len(modelName) > 255 {
+			return GPTGatewayChannelInput{}, errors.New("gateway_channel_models_invalid")
+		}
+		modelNames = append(modelNames, modelName)
+	}
+	models = strings.Join(modelNames, ",")
 	group := readString("group", "group_name", "groupName")
 	if group == "" {
 		group = "default"

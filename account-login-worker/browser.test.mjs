@@ -213,6 +213,8 @@ test('actual login DOM hands password reset and authenticator enrollment to a pe
   await tab.goto('https://auth.openai.com/mfa')
   assert.deepEqual(await classifyLoginScreen(tab), { kind: 'totp' })
   for (const [fixture, kind] of [
+    ['<h1>Choose a workspace</h1><button>Personal</button><button>Continue</button>', 'additional'],
+    ['<h1>Select an account</h1><p>Personal account</p><button>Continue</button>', 'additional'],
     ['<h1>Enter your authenticator code</h1><input name="code"><a>Send a code to your email instead</a>', 'totp'],
     ['<h1>Check your email</h1><input name="code"><a>Use your authenticator instead</a>', 'email_code'],
     ['<h1>Enter your authenticator code</h1><input name="code"><div role="alert">Incorrect code</div>', 'invalid_totp'],
@@ -220,7 +222,9 @@ test('actual login DOM hands password reset and authenticator enrollment to a pe
     ['<h1>Check your email</h1><input name="code"><div role="alert">Incorrect code</div><a>Use your authenticator instead</a>', 'email_code'],
   ]) {
     html = fixture
-    await tab.goto('https://auth.openai.com/mfa')
+    const path = fixture.includes('workspace') ? '/workspace' : fixture.includes('Select an account') ? '/account-select' : '/mfa'
+    await tab.goto(`https://auth.openai.com${path}`)
+    await tab.getByRole('heading').first().waitFor()
     assert.deepEqual(await classifyLoginScreen(tab), { kind })
   }
 })

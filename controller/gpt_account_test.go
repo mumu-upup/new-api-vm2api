@@ -67,6 +67,24 @@ func testCodexOAuthIDTokenWithExpiryAndIssuer(email, accountID, subject string, 
 	return signed
 }
 
+func testCodexOAuthAccessToken(t *testing.T, email, accountID, subject string, expires int64, overrides jwt.MapClaims) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"iss": "https://auth.openai.com", "aud": []string{"https://api.openai.com/v1"}, "sub": subject,
+		"exp": expires, "nbf": time.Now().Add(-time.Minute).Unix(),
+		"https://api.openai.com/auth":    map[string]any{"chatgpt_account_id": accountID},
+		"https://api.openai.com/profile": map[string]any{"email": email, "email_verified": true},
+	}
+	for key, value := range overrides {
+		claims[key] = value
+	}
+	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
+	require.NoError(t, err)
+	signed, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(privateKey)
+	require.NoError(t, err)
+	return signed
+}
+
 func TestGPTAccountRecoveryPreservesConcurrentAndStaleCredentials(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	channel := model.Channel{Type: 57, Key: `{"access_token":"original","account_id":"account"}`, Name: "Recovery", Status: common.ChannelStatusEnabled, Models: "gpt-5", Group: "default"}
@@ -119,7 +137,7 @@ func TestGPTAccountOAuthImportValidation(t *testing.T) {
 	assert.Equal(t, "codex", key.Type)
 	for _, invalid := range []string{
 		fmt.Sprintf(`{"access_token":"access","refresh_token":"refresh","id_token":%q,"account_id":"acct-1","email":"owner@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDTokenWithIssuer("owner@example.com", "acct-1", "subject-1", "https://other.example")),
-		fmt.Sprintf(`{"access_token":"access","refresh_token":"refresh","id_token":%q,"account_id":"acct-1","email":"owner@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDTokenWithExpiry("owner@example.com", "acct-1", "subject-1", time.Unix(1000, 0))),
+		fmt.Sprintf(`{"access_token":"access","refresh_token":"refresh","id_token":%q,"account_id":"acct-1","email":"owner@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDTokenWithExpiry("owner@example.com", "acct-1", "subject-1", time.Unix(0, 0))),
 	} {
 		_, err := service.ParseCodexOAuthImport(invalid)
 		assert.Error(t, err)
@@ -134,6 +152,50 @@ func TestGPTAccountOAuthImportValidation(t *testing.T) {
 	} {
 		_, err := service.ParseCodexOAuthImport(invalid)
 		assert.Error(t, err)
+	}
+}
+
+func TestGPTAccountOAuthImportUsesAccessTokenLifetimeAndIdentity(t *testing.T) {
+	expires := time.Now().Add(24 * time.Hour).Unix()
+	for _, tc := range []struct {
+		name      string
+		overrides jwt.MapClaims
+		valid     bool
+	}{
+		{name: "current access with historical ID metadata", valid: true},
+		{name: "expired access", overrides: jwt.MapClaims{"exp": time.Now().Add(-time.Minute).Unix()}},
+		{name: "missing access expiry", overrides: jwt.MapClaims{"exp": nil}},
+		{name: "invalid access expiry", overrides: jwt.MapClaims{"exp": "later"}},
+		{name: "fractional access expiry", overrides: jwt.MapClaims{"exp": float64(expires) + 0.5}},
+		{name: "wrong issuer", overrides: jwt.MapClaims{"iss": "https://other.example"}},
+		{name: "wrong audience", overrides: jwt.MapClaims{"aud": "other-api"}},
+		{name: "future not before", overrides: jwt.MapClaims{"nbf": expires}},
+		{name: "invalid not before", overrides: jwt.MapClaims{"nbf": "later"}},
+		{name: "different subject", overrides: jwt.MapClaims{"sub": "another-subject"}},
+		{name: "different account", overrides: jwt.MapClaims{"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "another-account"}}},
+		{name: "different email", overrides: jwt.MapClaims{"https://api.openai.com/profile": map[string]any{"email": "another@example.com", "email_verified": true}}},
+		{name: "missing email", overrides: jwt.MapClaims{"https://api.openai.com/profile": nil}},
+		{name: "conflicting root email", overrides: jwt.MapClaims{"email": "another@example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			access := testCodexOAuthAccessToken(t, "owner@example.com", "acct-1", "subject-1", expires, tc.overrides)
+			idExpiry := time.Now().Add(time.Hour)
+			if tc.valid {
+				idExpiry = time.Now().Add(-2 * time.Hour)
+			}
+			idToken := testCodexOAuthIDTokenWithExpiry("owner@example.com", "acct-1", "subject-1", idExpiry)
+			raw, err := common.Marshal(service.CodexOAuthKey{AccessToken: access, RefreshToken: "fixture-refresh", IDToken: idToken, AccountID: "acct-1", Email: "owner@example.com", Expired: "2099-01-02T03:04:05Z", Type: "codex"})
+			require.NoError(t, err)
+			key, err := service.ParseCodexOAuthImport(string(raw))
+			if !tc.valid {
+				require.Error(t, err)
+				assert.Equal(t, "oauth_import_invalid", err.Error())
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, time.Unix(expires, 0).Format(time.RFC3339), key.Expired, "bundle metadata cannot extend the access JWT expiry")
+			assert.Equal(t, idToken, key.IDToken, "historical metadata is retained without claiming authentication")
+		})
 	}
 }
 
@@ -168,7 +230,8 @@ func TestGPTAccountExpiredOAuthLeaseIsReclaimedPersistently(t *testing.T) {
 
 func TestGPTAccountOAuthImportCreatesAndUpdatesOneCodexChannel(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	raw := fmt.Sprintf(`{"access_token":"access-private","refresh_token":"refresh-private","id_token":%q,"account_id":"acct-import","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("import@example.com", "acct-import", "subject-import"))
+	access := testCodexOAuthAccessToken(t, "import@example.com", "acct-import", "subject-import", time.Now().Add(time.Hour).Unix(), nil)
+	raw := fmt.Sprintf(`{"access_token":%q,"refresh_token":"refresh-private","id_token":%q,"account_id":"acct-import","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, access, testCodexOAuthIDTokenWithExpiry("import@example.com", "acct-import", "subject-import", time.Now().Add(-time.Hour)))
 	input := service.GPTAccountOAuthImportInput{OAuthJSON: raw, Name: "Imported", Group: "default", Models: "gpt-5"}
 
 	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, input)
@@ -182,7 +245,7 @@ func TestGPTAccountOAuthImportCreatesAndUpdatesOneCodexChannel(t *testing.T) {
 	var channel model.Channel
 	require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
 	assert.Equal(t, 57, channel.Type)
-	assert.Contains(t, channel.Key, "access-private")
+	assert.Contains(t, channel.Key, access)
 
 	var before int64
 	require.NoError(t, model.DB.Model(&model.Channel{}).Count(&before).Error)
@@ -707,17 +770,106 @@ func TestGPTAccountAbandonedJobRequiresManualRetry(t *testing.T) {
 	require.NoError(t, err, "manual retry can replace the expired lease")
 }
 
-func TestGPTAccountLoginLeaseExpiresBeforeWorkerRequestTimeout(t *testing.T) {
+func TestGPTAccountAutomaticLeasePreservesRetryCooldown(t *testing.T) {
 	identity := setupGPTAccountTest(t)
-	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: "lease-duration", Generation: 1, Status: "pending"}
+	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: "lease-duration", Generation: 1, Status: "pending", AutoRelogin: true}
 	require.NoError(t, model.DB.Create(&account).Error)
-	started := time.Now().Unix()
-	job, err := service.AcquireGPTAccountJob(account.ID, false)
+	job, err := service.AcquireGPTAccountJob(account.ID, true)
 	require.NoError(t, err)
-	leaseSeconds := job.LeaseUntil - started
-	assert.GreaterOrEqual(t, leaseSeconds, int64(230))
-	assert.LessOrEqual(t, leaseSeconds, int64(250))
-	assert.Equal(t, int64(240), job.NextRetryAt-job.LastAttemptAt)
+	assert.Equal(t, int64(240), job.LeaseUntil-job.LastAttemptAt)
+	assert.Equal(t, int64(900), job.NextRetryAt-job.LastAttemptAt)
+}
+
+func TestGPTAccountBrowserAuthorizationUsesItsAdvertisedLifetime(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, SecretID: "browser-duration", Generation: 1, Status: "pending"}
+	require.NoError(t, model.DB.Create(&account).Error)
+	authorization, err := service.StartGPTAccountAuthorization(account.ID, identity)
+	require.NoError(t, err)
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Equal(t, int64(600), account.LeaseUntil-account.LastAttemptAt)
+	assert.Equal(t, authorization.ExpiresAt, account.LeaseUntil)
+	stale := account
+	stale.OwnerRole = common.RoleRootUser
+	var flow model.AuthFlow
+	require.NoError(t, model.DB.Where("purpose = ?", "gpt_account_oauth").First(&flow).Error)
+	assert.Equal(t, authorization.ExpiresAt, flow.ExpiresAt.Unix())
+	changed, err := service.ReclaimExpiredGPTAccountJobs(authorization.ExpiresAt - 1)
+	require.NoError(t, err)
+	assert.Zero(t, changed, "the advertised browser authorization window must remain usable")
+	changed, err = service.ReclaimExpiredGPTAccountJobs(authorization.ExpiresAt)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, changed)
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Equal(t, "needs_attention", account.Status)
+	assert.Equal(t, "login_timeout", account.LastErrorCode)
+	fresh, err := service.AcquireGPTAccountJob(account.ID, false)
+	require.NoError(t, err)
+	service.ReleaseGPTAccountJob(&stale, "authorization_failed")
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Equal(t, fresh.LeaseID, account.LeaseID, "late completion of an expired job must not release the new job")
+	assert.Equal(t, fresh.LeaseUntil, account.LeaseUntil)
+	assert.Equal(t, "logging_in", account.Status)
+}
+
+func TestGPTAccountWorkerDeadlinePrecedesItsLease(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, Email: "owner@example.com", SecretID: "worker-deadline", Generation: 1}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "fixture-password"}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	leases := make(chan int64, 1)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			State string `json:"state"`
+		}
+		if common.DecodeJson(r.Body, &input) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var active model.GPTAccount
+		if model.DB.First(&active, account.ID).Error != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		leases <- active.LeaseUntil
+		body, err := common.Marshal(map[string]string{"status": "success", "state": input.State, "code": "fixture-code"})
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer worker.Close()
+	tokenFile := filepath.Join(t.TempDir(), "worker-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte(strings.Repeat("t", 32)), 0600))
+	t.Setenv("GPT_ACCOUNT_WORKER_URL", worker.URL)
+	t.Setenv("GPT_ACCOUNT_WORKER_TOKEN_FILE", tokenFile)
+	client, err := service.GetHttpClientWithProxy("")
+	require.NoError(t, err)
+	previousTransport := client.Transport
+	t.Cleanup(func() { client.Transport = previousTransport })
+	deadlines := make(chan time.Time, 1)
+	client.Transport = gptOAuthTransport{roundTrip: func(request *http.Request) (*http.Response, error) {
+		deadline, _ := request.Context().Deadline()
+		deadlines <- deadline
+		return nil, errors.New("fixture exchange failure")
+	}}
+	require.NoError(t, service.StartGPTAccountLogin(account.ID, identity, false))
+	var deadline time.Time
+	select {
+	case deadline = <-deadlines:
+	case <-time.After(3 * time.Second):
+		t.Fatal("worker did not reach the OAuth exchange")
+	}
+	var flow model.AuthFlow
+	require.NoError(t, model.DB.Where("purpose = ?", "gpt_account_oauth").First(&flow).Error)
+	leaseUntil := <-leases
+	assert.Equal(t, leaseUntil, flow.ExpiresAt.Unix(), "automated authorization cannot outlive its worker lease")
+	assert.GreaterOrEqual(t, time.Unix(leaseUntil, 0).Sub(deadline), 15*time.Second, "the worker must stop before the lease can be reclaimed")
+	require.Eventually(t, func() bool {
+		return model.DB.First(&account, account.ID).Error == nil && account.LeaseUntil == 0
+	}, 3*time.Second, 10*time.Millisecond)
+	assert.Equal(t, "authorization_failed", account.LastErrorCode)
 }
 
 func TestGPTAccountRefreshRespectsAttentionAndOwnerRevocation(t *testing.T) {

@@ -28,6 +28,8 @@ import (
 const gptOAuthRedirect = "http://localhost:1455/auth/callback"
 const gptOAuthPurpose = "gpt_account_oauth"
 const gptAccountJobLeaseSeconds = 240
+const gptAccountBrowserLeaseSeconds = 600
+const gptAccountRetryCooldownSeconds = 900
 
 type GPTAccountAuthorization struct {
 	AuthorizationURL string `json:"authorization_url"`
@@ -68,10 +70,10 @@ func gptWorkerConfiguration() (string, string, error) {
 func GPTAccountAutomationAvailable() bool { _, _, err := gptWorkerConfiguration(); return err == nil }
 
 func AcquireGPTAccountJob(accountID int, automatic bool) (*model.GPTAccount, error) {
-	return acquireGPTAccountJob(accountID, automatic, automatic)
+	return acquireGPTAccountJob(accountID, automatic, automatic, gptAccountJobLeaseSeconds)
 }
 
-func acquireGPTAccountJob(accountID int, automatic, requireAutoRelogin bool) (*model.GPTAccount, error) {
+func acquireGPTAccountJob(accountID int, automatic, requireAutoRelogin bool, leaseSeconds int64) (*model.GPTAccount, error) {
 	now := time.Now().Unix()
 	lease := uuid.NewString()
 	query := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND lease_until <= ?", accountID, now)
@@ -81,7 +83,7 @@ func acquireGPTAccountJob(accountID int, automatic, requireAutoRelogin bool) (*m
 	if requireAutoRelogin {
 		query = query.Where("auto_relogin = ?", true)
 	}
-	result := query.Updates(map[string]any{"lease_id": lease, "lease_until": now + gptAccountJobLeaseSeconds, "last_attempt_at": now, "next_retry_at": now + gptAccountJobLeaseSeconds, "status": "logging_in", "last_error_code": "", "updated_at": now})
+	result := query.Updates(map[string]any{"lease_id": lease, "lease_until": now + leaseSeconds, "last_attempt_at": now, "next_retry_at": now + gptAccountRetryCooldownSeconds, "status": "logging_in", "last_error_code": "", "updated_at": now})
 	if result.Error != nil {
 		return nil, errors.New("database_error")
 	}
@@ -153,7 +155,7 @@ func newGPTAccountOAuth(account *model.GPTAccount, identity AuthIdentity) (*GPTA
 	if err != nil {
 		return nil, errors.New("authorization_failed")
 	}
-	expires := time.Now().Add(10 * time.Minute)
+	expires := time.Unix(account.LeaseUntil, 0)
 	state, _, err := model.CreateAuthFlow(model.AuthFlowCreate{Purpose: gptOAuthPurpose, UserId: identity.UserID, SessionId: identity.SessionID, Payload: string(payload), ExpiresAt: expires})
 	if err != nil {
 		return nil, errors.New("authorization_failed")
@@ -163,7 +165,7 @@ func newGPTAccountOAuth(account *model.GPTAccount, identity AuthIdentity) (*GPTA
 }
 
 func StartGPTAccountAuthorization(accountID int, identity AuthIdentity) (*GPTAccountAuthorization, error) {
-	account, err := AcquireGPTAccountJob(accountID, false)
+	account, err := acquireGPTAccountJob(accountID, false, false, gptAccountBrowserLeaseSeconds)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +328,9 @@ func StartGPTAccountLogin(accountID int, identity AuthIdentity, automatic bool) 
 }
 
 func runGPTAccountLogin(account *model.GPTAccount, identity AuthIdentity, refreshFirst bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	// Stop before lease reclamation so an active worker can persist its result
+	// without racing a new login attempt.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(account.LeaseUntil, 0).Add(-15*time.Second))
 	defer cancel()
 	if !gptAccountOwnerActive(account) {
 		ReleaseGPTAccountJob(account, "authorization_forbidden")
@@ -506,7 +510,7 @@ func RefreshManagedGPTAccount(ctx context.Context, accountID int) (*CodexOAuthKe
 }
 
 func refreshGPTAccountCredential(ctx context.Context, accountID int, automatic bool) (*CodexOAuthKey, *model.Channel, error) {
-	account, err := acquireGPTAccountJob(accountID, automatic, false)
+	account, err := acquireGPTAccountJob(accountID, automatic, false, gptAccountJobLeaseSeconds)
 	if err != nil {
 		return nil, nil, err
 	}

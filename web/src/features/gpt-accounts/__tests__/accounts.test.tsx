@@ -1863,7 +1863,7 @@ it('creates a gateway with masked keys only after name-scoped verification and k
 it('imports a direct CPA or Sub2API channel JSON only after scoped verification', async () => {
   const user = userEvent.setup()
   const configJSON =
-    '{"provider":"sub2api","base_url":"https://sub2api.example/v1","api_key":"relay-secret","models":["gpt-5"]}'
+    '{"provider":"sub2api","name":"测试渠道","base_url":"https://sub2api.example/v1","api_key":"relay-secret","models":["gpt-5"]}'
   renderPage()
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
   await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
@@ -1888,8 +1888,11 @@ it('imports a direct CPA or Sub2API channel JSON only after scoped verification'
   expect(api.post).toHaveBeenCalledWith(
     '/api/verify',
     expect.objectContaining({
-      scope: 'gpt_account_gateway.create',
-      context: { name: 'channel-json' },
+      scope: 'gpt_account_gateway.channel_import',
+      context: {
+        config_sha256:
+          '3477af6d92429ec7f8da7a6c5667abd9571305a70bdfed6227e62fa012a689a0',
+      },
     }),
     expect.anything()
   )
@@ -1917,6 +1920,60 @@ it('rejects non-object channel JSON before requesting security verification', as
     expect.anything(),
     expect.anything()
   )
+})
+
+it('abandons channel JSON verification when the page closes during hashing', async () => {
+  const user = userEvent.setup()
+  let finishDigest!: (digest: ArrayBuffer) => void
+  const digest = vi
+    .spyOn(globalThis.crypto.subtle, 'digest')
+    .mockImplementationOnce(
+      () => new Promise<ArrayBuffer>((resolve) => { finishDigest = resolve })
+    )
+  const page = renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import CPA/Sub2API channel JSON',
+  })
+  fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
+    target: {
+      value: '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
+    },
+  })
+  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  await waitFor(() => expect(digest).toHaveBeenCalledOnce())
+  page.unmount()
+  await act(async () => { finishDigest(new Uint8Array(32).buffer) })
+  expect(api.get).not.toHaveBeenCalledWith(
+    '/api/verify/methods',
+    expect.anything()
+  )
+  expect(api.post).not.toHaveBeenCalled()
+})
+
+it('does not import channel JSON when security verification is cancelled', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
+  await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import CPA/Sub2API channel JSON',
+  })
+  fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
+    target: {
+      value: '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}',
+    },
+  })
+  await user.click(within(dialog).getByRole('button', { name: 'Create channel' }))
+  const verification = await screen.findByRole('dialog', {
+    name: 'Security verification',
+  })
+  await user.click(within(verification).getByRole('button', { name: 'Cancel' }))
+  expect(await screen.findByRole('dialog', {
+    name: 'Import CPA/Sub2API channel JSON',
+  })).toBeVisible()
+  expect(api.post).not.toHaveBeenCalled()
 })
 
 it('edits gateway display settings without exposing saved keys or changing connection identity', async () => {

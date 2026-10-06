@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
+import { AuthOperationError } from '@/lib/secure-verification'
 
 import { importGptGatewayChannelJSON } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
@@ -32,11 +33,35 @@ export function GatewayChannelJSONDialog(props: {
       setValidation('Paste a valid CPA or Sub2API channel JSON object.')
       return
     }
-    const result = await operation.execute(
-      { scope: 'gpt_account_gateway.create', context: { name: 'channel-json' } },
-      (proof, signal) =>
-        importGptGatewayChannelJSON(configJSON, proof, signal)
-    )
+    const submittedJSON = configJSON
+    const result = await operation.execute(null, async (_proof, signal) => {
+      if (!globalThis.crypto?.subtle) {
+        throw new AuthOperationError(
+          'This verification method is currently unavailable.'
+        )
+      }
+      const digest = await globalThis.crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(submittedJSON)
+      )
+      signal.throwIfAborted()
+      const configSHA256 = [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('')
+      const proof = await operation.verification.requestVerification({
+        scope: 'gpt_account_gateway.channel_import',
+        context: { config_sha256: configSHA256 },
+      })
+      signal.throwIfAborted()
+      if (!proof) {
+        return undefined
+      }
+      return importGptGatewayChannelJSON(
+        submittedJSON,
+        proof.proof_token,
+        signal
+      )
+    })
     if (!result) return
     setConfigJSON('')
     props.onSaved()
