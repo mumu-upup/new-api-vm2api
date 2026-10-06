@@ -26,6 +26,11 @@ export const STATIC_I18N_KEYS = [
   // Managed GPT account form and callback validation.
   'Name is required',
   'Group is required',
+  'Enter a valid gateway address.',
+  'Use an HTTPS address, or enable local HTTP for a loopback address.',
+  'Choose a Sub2API group ID greater than zero.',
+  'Management key is required',
+  'Relay key is required',
   'Enter a Base32 TOTP secret',
   'Account password is too long',
   'Please enter a valid email address',
