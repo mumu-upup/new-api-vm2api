@@ -337,6 +337,20 @@ func (client *gptGatewayClient) checkpoint(secrets *GPTAccountSecrets, status, c
 	return model.StoreGPTAccountGatewayCheckpoint(client.account, client.gateway, client.account.SecretsCiphertext, status, code, complete)
 }
 
+func gptGatewayImportRejected(status int) bool {
+	// These responses reject the request before applying it. Timeouts, conflicts,
+	// malformed successes and server errors remain uncertain to prevent duplicate
+	// accounts or replaying credentials after a remote write may have succeeded.
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusRequestEntityTooLarge,
+		http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
+		return true
+	default:
+		return false
+	}
+}
+
 // StoreVerifiedGPTAccountGatewayCredential accepts only the result of the host's
 // verified OAuth flow. It persists retryable import intent before contacting the
 // configured gateway, never treating a remote acknowledgement as OAuth proof.
@@ -500,6 +514,7 @@ func (client *gptGatewayClient) syncCPA(ctx context.Context, secrets *GPTAccount
 	if expiryErr != nil || !expires.After(time.Now()) {
 		return errors.New("gateway_credentials_required")
 	}
+	previousRemoteID := secrets.GatewayRemoteID
 	secrets.GatewayRemoteID, secrets.GatewayImportAttempted = name, true
 	if err := client.checkpoint(secrets, "pending", "", false); err != nil {
 		return err
@@ -508,6 +523,10 @@ func (client *gptGatewayClient) syncCPA(ctx context.Context, secrets *GPTAccount
 		Status string `json:"status"`
 	}
 	status, err = client.request(ctx, http.MethodPost, path+"?name="+url.QueryEscape(name), gptCPACredential{CodexOAuthKey: *secrets.GatewayOAuth, Binding: client.account.SecretID, ImportID: secrets.GatewayImportID}, &response)
+	if gptGatewayImportRejected(status) {
+		secrets.GatewayRemoteID, secrets.GatewayImportAttempted = previousRemoteID, false
+		return errors.New("gateway_import_failed")
+	}
 	if err != nil || status == http.StatusNotFound || response.Status != "ok" {
 		return errors.New("gateway_import_uncertain")
 	}
@@ -617,6 +636,10 @@ func (client *gptGatewayClient) syncSub2API(ctx context.Context, secrets *GPTAcc
 	}
 	var response gptSubAccountResponse
 	status, err := client.request(ctx, http.MethodPost, path, body, &response)
+	if gptGatewayImportRejected(status) {
+		secrets.GatewayImportAttempted = false
+		return errors.New("gateway_import_failed")
+	}
 	if err != nil || status == http.StatusNotFound || response.Code == nil || *response.Code != 0 || !client.ownedSubAccount(response.Data) || response.Data.Extra["new_api_import"] != secrets.GatewayImportID || (existing.ID != 0 && response.Data.ID != existing.ID) {
 		return errors.New("gateway_import_uncertain")
 	}

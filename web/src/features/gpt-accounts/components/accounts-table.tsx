@@ -224,7 +224,11 @@ export function AccountsTable(props: AccountsTableProps) {
                 aria-label={t('Refresh credentials for {{name}}', {
                   name: item.name,
                 })}
-                disabled={!item.can_manage || busy || !item.channel_id}
+                disabled={
+                  !item.can_manage ||
+                  busy ||
+                  (!item.channel_id && !item.gateway_id)
+                }
                 onClick={() => props.onAction(item, 'refresh')}
               >
                 <RefreshCw />
