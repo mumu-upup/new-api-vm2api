@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { accountGroupSchema } from './group-form'
+
 export function gatewayFormSchema(editing: boolean) {
   return z
     .object({
@@ -13,7 +15,7 @@ export function gatewayFormSchema(editing: boolean) {
       relay_url: z.string().trim().min(1, 'Enter a valid gateway address.'),
       allow_local_http: z.boolean(),
       remote_group_id: z.number().int().min(0),
-      group: z.string().trim().min(1, 'Group is required').max(64),
+      group: accountGroupSchema,
       models: z.string().trim().max(8192),
       management_key: z.string().max(8192),
       relay_key: z.string().max(8192),

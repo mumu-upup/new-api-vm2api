@@ -218,9 +218,9 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 	if name == "" {
 		name = key.Email
 	}
-	group := strings.TrimSpace(input.Group)
-	if group == "" {
-		group = "default"
+	group, err := model.ResolveGPTAccountGroup(input.Group)
+	if err != nil {
+		return nil, err
 	}
 	models := strings.TrimSpace(input.Models)
 	if models == "" {

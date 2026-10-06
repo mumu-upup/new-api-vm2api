@@ -35,6 +35,7 @@ import {
 import type { GptAccount, GptAccountGateway } from '../types'
 
 interface AccountFormDialogProps {
+  defaultGroup?: string
   account?: GptAccount
   gateways: GptAccountGateway[]
   gatewaysLoading: boolean
@@ -64,7 +65,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
         ? props.account.totp_provider || 'local'
         : '2fa_cn',
       auto_relogin: props.account?.auto_relogin ?? true,
-      group: props.account?.group ?? 'default',
+      group: props.account?.group ?? '',
       models: props.account?.models ?? '',
       channel_id: props.account?.channel_id ?? 0,
       gateway_id: props.account?.gateway_id ?? 0,
@@ -471,6 +472,9 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                             {...field}
                             disabled={operation.pending}
                             readOnly={Boolean(props.account?.channel_id)}
+                            placeholder={t('Use global default: {{group}}', {
+                              group: props.defaultGroup ?? 'default',
+                            })}
                           />
                         </FormControl>
                         <FormMessage />

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { SecureVerificationDialog } from '@/features/auth/secure-verification'
@@ -11,29 +12,40 @@ import { AuthOperationError } from '@/lib/secure-verification'
 
 import { importGptGatewayChannelJSON } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
+import { accountGroupSchema } from '../lib/group-form'
 
 export function GatewayChannelJSONDialog(props: {
+  defaultGroup?: string
   onClose: () => void
   onSaved: () => void
 }) {
   const { t } = useTranslation()
   const operation = useAccountOperation()
   const [configJSON, setConfigJSON] = useState('')
+  const [group, setGroup] = useState('')
   const [validation, setValidation] = useState('')
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setValidation('')
+    const parsedGroup = accountGroupSchema.safeParse(group)
+    if (!parsedGroup.success) {
+      setValidation('Enter a valid group of up to 64 bytes.')
+      return
+    }
+    let submittedJSON = configJSON
     try {
       const value: unknown = JSON.parse(configJSON)
       if (!value || typeof value !== 'object' || Array.isArray(value)) {
         throw new Error('invalid')
       }
+      if (parsedGroup.data) {
+        submittedJSON = JSON.stringify({ ...value, group: parsedGroup.data })
+      }
     } catch {
       setValidation('Paste a valid CPA or Sub2API channel JSON object.')
       return
     }
-    const submittedJSON = configJSON
     const result = await operation.execute(null, async (_proof, signal) => {
       if (!globalThis.crypto?.subtle) {
         throw new AuthOperationError(
@@ -115,7 +127,26 @@ export function GatewayChannelJSONDialog(props: {
             )}
           </p>
           <div className='space-y-2'>
-            <Label htmlFor='gpt-gateway-channel-json'>{t('Channel JSON')}</Label>
+            <Label htmlFor='gpt-gateway-channel-group'>{t('Group')}</Label>
+            <Input
+              id='gpt-gateway-channel-group'
+              value={group}
+              disabled={operation.pending}
+              onChange={(event) => setGroup(event.target.value)}
+              placeholder={t('Use global default: {{group}}', {
+                group: props.defaultGroup ?? 'default',
+              })}
+            />
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Leave blank to use the JSON group, or the global default if none is set.'
+              )}
+            </p>
+          </div>
+          <div className='space-y-2'>
+            <Label htmlFor='gpt-gateway-channel-json'>
+              {t('Channel JSON')}
+            </Label>
             <Textarea
               id='gpt-gateway-channel-json'
               value={configJSON}

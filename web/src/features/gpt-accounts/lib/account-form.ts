@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { accountGroupSchema } from './group-form'
+
 export const accountFormSchema = z.object({
   name: z.string().trim().min(1, 'Name is required').max(128),
   email: z.email('Please enter a valid email address').trim().toLowerCase(),
@@ -25,7 +27,7 @@ export const accountFormSchema = z.object({
     }, 'Enter a Base32 TOTP secret'),
   totp_provider: z.enum(['local', '2fa_cn']),
   auto_relogin: z.boolean(),
-  group: z.string().trim().min(1, 'Group is required'),
+  group: accountGroupSchema,
   models: z.string().trim(),
   channel_id: z.number().int().min(0),
   gateway_id: z.number().int().min(0),
