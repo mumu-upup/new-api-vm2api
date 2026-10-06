@@ -102,6 +102,22 @@ export function getAccountErrorMessage(
       return t('Enter a Base32 TOTP secret')
     case 'invalid_channel':
       return t('Choose a Codex channel with a single credential.')
+    case 'gateway_channel_json_invalid':
+      return t('The channel JSON is invalid.')
+    case 'gateway_channel_provider_required':
+      return t('Choose CPA or Sub2API in the channel JSON.')
+    case 'gateway_channel_url_required':
+      return t('Provide a relay URL in the channel JSON.')
+    case 'gateway_channel_url_invalid':
+      return t('The relay URL is invalid or unsafe.')
+    case 'gateway_channel_key_required':
+      return t('Provide a relay API key in the channel JSON.')
+    case 'gateway_channel_key_invalid':
+      return t('The relay API key is invalid.')
+    case 'gateway_channel_models_invalid':
+      return t('The channel model list is invalid.')
+    case 'gateway_channel_create_failed':
+      return t('The relay channel could not be created.')
     case 'account_not_found':
       return t('This account no longer exists.')
     case 'invalid_account':

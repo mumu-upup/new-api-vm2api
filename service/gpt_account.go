@@ -27,6 +27,7 @@ import (
 
 const gptOAuthRedirect = "http://localhost:1455/auth/callback"
 const gptOAuthPurpose = "gpt_account_oauth"
+const gptAccountJobLeaseSeconds = 240
 
 type GPTAccountAuthorization struct {
 	AuthorizationURL string `json:"authorization_url"`
@@ -80,7 +81,7 @@ func acquireGPTAccountJob(accountID int, automatic, requireAutoRelogin bool) (*m
 	if requireAutoRelogin {
 		query = query.Where("auto_relogin = ?", true)
 	}
-	result := query.Updates(map[string]any{"lease_id": lease, "lease_until": now + 600, "last_attempt_at": now, "next_retry_at": now + 900, "status": "logging_in", "last_error_code": "", "updated_at": now})
+	result := query.Updates(map[string]any{"lease_id": lease, "lease_until": now + gptAccountJobLeaseSeconds, "last_attempt_at": now, "next_retry_at": now + gptAccountJobLeaseSeconds, "status": "logging_in", "last_error_code": "", "updated_at": now})
 	if result.Error != nil {
 		return nil, errors.New("database_error")
 	}
@@ -527,7 +528,7 @@ func GPTAccountErrorCode(err error) string {
 		return ""
 	}
 	switch err.Error() {
-	case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_immutable", "gateway_unavailable", "gateway_import_failed", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required":
+	case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_immutable", "gateway_unavailable", "gateway_import_failed", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required", "gateway_channel_json_invalid", "gateway_channel_provider_required", "gateway_channel_url_required", "gateway_channel_url_invalid", "gateway_channel_key_required", "gateway_channel_key_invalid", "gateway_channel_models_invalid", "gateway_channel_create_failed":
 		return err.Error()
 	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code":
 		return err.Error()

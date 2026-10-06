@@ -57,6 +57,41 @@ func ListGPTAccountGateways(c *gin.Context) {
 func CreateGPTAccountGateway(c *gin.Context) { saveGPTAccountGateway(c, false) }
 func UpdateGPTAccountGateway(c *gin.Context) { saveGPTAccountGateway(c, true) }
 
+func ImportGPTGatewayChannelJSON(c *gin.Context) {
+	if _, ok := gptAccountIdentity(c, true); !ok {
+		return
+	}
+	if c.GetInt("role") != common.RoleRootUser {
+		gptAccountError(c, http.StatusForbidden, "authorization_forbidden")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 128<<10)
+	var request struct {
+		ConfigJSON string `json:"config_json"`
+	}
+	if c.ShouldBindJSON(&request) != nil {
+		gptAccountError(c, http.StatusBadRequest, "gateway_channel_json_invalid")
+		return
+	}
+	input, err := service.ParseGPTGatewayChannelJSON(request.ConfigJSON)
+	if err != nil {
+		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
+		return
+	}
+	context, err := common.Marshal(map[string]string{"name": "channel-json"})
+	if err != nil || middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: "gpt_account_gateway.create", Context: context}) == nil {
+		return
+	}
+	channel, err := service.CreateGPTGatewayChannel(input)
+	if err != nil {
+		gptAccountError(c, http.StatusBadRequest, "gateway_channel_create_failed")
+		return
+	}
+	recordManageAudit(c, "gpt_account_gateway.channel.create", map[string]any{"channel_id": channel.Id, "provider": input.Provider})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"channel_id": channel.Id, "name": channel.Name, "provider": input.Provider}})
+}
+
 func saveGPTAccountGateway(c *gin.Context, update bool) {
 	if _, ok := gptAccountIdentity(c, true); !ok {
 		return

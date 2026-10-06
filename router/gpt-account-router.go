@@ -34,6 +34,7 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 	handlePermissionRoute(gateways, http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccountGateways)
 	for _, route := range []permissionRoute{
 		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccountGateway},
+		{http.MethodPost, "/import-channel-json", authz.GPTAccountManage, controller.ImportGPTGatewayChannelJSON},
 		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccountGateway},
 	} {
 		handlePermissionRoute(gateways, route.method, route.path, route.permission, middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("gpt-account"), route.handler)
