@@ -97,7 +97,7 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 			baseURL:  "https://cpa.example/relay",
 			key:      "cpa-key",
 			models:   "gpt-5,gpt-5-mini",
-			group:    "default",
+			group:    "",
 		},
 		{
 			name:     "Sub2API base URL",
@@ -106,7 +106,7 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 			baseURL:  "https://sub2api.example",
 			key:      "sub-key",
 			models:   "gpt-5",
-			group:    "default",
+			group:    "",
 		},
 	}
 	for _, test := range tests {

@@ -186,7 +186,41 @@ func GPTAccountsConfig(c *gin.Context) {
 	if _, ok := gptAccountIdentity(c, false); !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"encryption_available": service.GPTAccountEncryptionAvailable(), "automation_available": service.GPTAccountAutomationAvailable()}})
+	group, err := model.ResolveGPTAccountGroup("")
+	if err != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"encryption_available": service.GPTAccountEncryptionAvailable(), "automation_available": service.GPTAccountAutomationAvailable(), "default_group": group}})
+}
+
+func UpdateGPTAccountsConfig(c *gin.Context) {
+	if _, ok := gptAccountIdentity(c, true); !ok {
+		return
+	}
+	if c.GetInt("role") != common.RoleRootUser {
+		gptAccountError(c, http.StatusForbidden, "authorization_forbidden")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	var input struct {
+		DefaultGroup string `json:"default_group"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		gptAccountError(c, http.StatusBadRequest, "invalid_account")
+		return
+	}
+	input.DefaultGroup = strings.TrimSpace(input.DefaultGroup)
+	if model.ValidateGPTAccountGroup(input.DefaultGroup) != nil {
+		gptAccountError(c, http.StatusBadRequest, "invalid_account")
+		return
+	}
+	if err := model.UpdateOptionsBulk(map[string]string{model.GPTAccountDefaultGroupKey: input.DefaultGroup}); err != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
+	}
+	recordManageAudit(c, "gpt_account.config.update", map[string]any{"default_group": input.DefaultGroup})
+	GPTAccountsConfig(c)
 }
 
 func normalizeGPTAccountInput(c *gin.Context) (*gptAccountInput, bool) {
@@ -197,8 +231,11 @@ func normalizeGPTAccountInput(c *gin.Context) (*gptAccountInput, bool) {
 		return nil, false
 	}
 	input.Name, input.Email, input.Group, input.Models = strings.TrimSpace(input.Name), strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Group), strings.TrimSpace(input.Models)
-	if input.Group == "" {
-		input.Group = "default"
+	var err error
+	input.Group, err = model.ResolveGPTAccountGroup(input.Group)
+	if err != nil {
+		gptAccountError(c, http.StatusBadRequest, "invalid_account")
+		return nil, false
 	}
 	if input.Models == "" {
 		input.Models = "gpt-5"

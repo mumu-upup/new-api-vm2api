@@ -189,6 +189,20 @@ func UpdateOption(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
+	// Option identifiers are ASCII protocol names. Reject whitespace/control
+	// and Unicode aliases before MySQL's case/accent-insensitive key lookup.
+	for _, character := range option.Key {
+		if character <= ' ' || character > '~' {
+			gptAccountError(c, http.StatusBadRequest, "invalid_option_key")
+			return
+		}
+	}
+	// GPT onboarding defaults are managed by the session-only config endpoint.
+	// The generic option route also accepts PATs and must not bypass that policy.
+	if strings.EqualFold(option.Key, model.GPTAccountDefaultGroupKey) {
+		gptAccountError(c, http.StatusForbidden, "authorization_forbidden")
+		return
+	}
 	switch option.Value.(type) {
 	case bool:
 		option.Value = common.Interface2String(option.Value.(bool))

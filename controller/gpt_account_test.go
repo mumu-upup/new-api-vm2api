@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/codex"
@@ -127,6 +128,121 @@ func TestGPTAccountRecoveryPreservesConcurrentAndStaleCredentials(t *testing.T) 
 	require.NoError(t, model.DB.First(&channel, channel.Id).Error)
 	assert.Equal(t, common.ChannelStatusEnabled, channel.Status)
 	assert.Contains(t, channel.Key, "fresh")
+}
+
+func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = make(map[string]string)
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", identity.UserID).Update("role", common.RoleRootUser).Error)
+	pat, _ := createScopedAccessToken(t, identity.UserID, time.Now().Add(time.Hour).Unix(), "option:write")
+	engine := gin.New()
+	engine.PUT("/api/option/", middleware.RootAuth(), UpdateOption)
+	engine.PUT("/api/gpt-accounts/config", middleware.RootAuth(), UpdateGPTAccountsConfig)
+	for _, request := range []struct{ path, body string }{
+		{"/api/option/", `{"key":"GPTAccountDefaultGroup","value":"forbidden"}`},
+		{"/api/option/", `{"key":"gptaccountdefaultgroup","value":"forbidden"}`},
+		{"/api/option/", `{"key":"GPTAccountDefaultGroup ","value":"forbidden"}`},
+		{"/api/option/", `{"key":"GPTAccountDéfaultGroup","value":"forbidden"}`},
+		{"/api/gpt-accounts/config", `{"default_group":"forbidden"}`},
+	} {
+		response := accessTokenRequest(engine, http.MethodPut, request.path, pat, "", request.body)
+		assert.Contains(t, []int{http.StatusForbidden, http.StatusBadRequest}, response.Code, request.path+request.body)
+	}
+	response := accessTokenRequest(engine, http.MethodPut, "/api/option/", pat, "", `{"key":"Notice","value":"测试公告"}`)
+	assert.Equal(t, http.StatusOK, response.Code)
+	config := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", "", GPTAccountsConfig)
+	assert.Contains(t, config.Body.String(), `"default_group":"default"`)
+	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
+		denied := gptAccountRequest(t, identity, role, 0, http.MethodPut, `{"default_group":"forbidden"}`, "", UpdateGPTAccountsConfig)
+		assert.Equal(t, http.StatusForbidden, denied.Code)
+	}
+	for _, value := range []string{"", " ", "team\nother", strings.Repeat("x", 65), "team,,other", "team\x00"} {
+		body, err := common.Marshal(map[string]string{"default_group": value})
+		require.NoError(t, err)
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, string(body), "", UpdateGPTAccountsConfig)
+		assert.Equal(t, http.StatusBadRequest, response.Code)
+	}
+	saved := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_group":" team "}`, "", UpdateGPTAccountsConfig)
+	require.Equal(t, http.StatusOK, saved.Code, saved.Body.String())
+	var option model.Option
+	require.NoError(t, model.DB.Where(&model.Option{Key: "GPTAccountDefaultGroup"}).First(&option).Error)
+	assert.Equal(t, "team", option.Value)
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"existing","email":"existing@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("existing@example.com", "existing", "existing"))
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	require.NoError(t, err)
+	assert.Equal(t, "team", account.Group)
+	saved = gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_group":"next"}`, "", UpdateGPTAccountsConfig)
+	require.Equal(t, http.StatusOK, saved.Code)
+	config = gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", "", GPTAccountsConfig)
+	assert.Contains(t, config.Body.String(), `"default_group":"next"`)
+	account, err = service.ImportGPTAccountOAuth(context.Background(), identity.UserID, account.ID, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	require.NoError(t, err)
+	assert.Equal(t, "team", account.Group)
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
+	assert.Equal(t, "team", channel.Group)
+	// A direct database read sees another node's update without cache synchronization.
+	require.NoError(t, model.DB.Model(&model.Option{}).Where(&model.Option{Key: "GPTAccountDefaultGroup"}).Update("value", "another-node").Error)
+	group, err := model.ResolveGPTAccountGroup("")
+	require.NoError(t, err)
+	assert.Equal(t, "another-node", group)
+	for _, explicit := range []string{"", "custom"} {
+		input, err := service.ParseGPTGatewayChannelJSON(fmt.Sprintf(`{"provider":"cpa","base_url":"https://cpa.example","api_key":"fixture","group":%q}`, explicit))
+		require.NoError(t, err)
+		channel, err := service.CreateGPTGatewayChannel(input)
+		require.NoError(t, err)
+		want := explicit
+		if want == "" {
+			want = "another-node"
+		}
+		assert.Equal(t, want, channel.Group)
+	}
+	// Invalid option writes through the shared settings API also fail validation.
+	require.Error(t, model.UpdateOptionsBulk(map[string]string{model.GPTAccountDefaultGroupKey: ""}))
+}
+
+func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.Option{}))
+	require.NoError(t, model.DB.Create(&model.Option{Key: "GPTAccountDefaultGroup", Value: "team"}).Error)
+	config := gptAccountRequest(t, identity, common.RoleAdminUser, 0, http.MethodGet, "", "", GPTAccountsConfig)
+	assert.Contains(t, config.Body.String(), `"default_group":"team"`)
+	for _, tc := range []struct{ name, group, want string }{
+		{"inherit", "", "team"}, {"override", "premium", "premium"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			body, err := common.Marshal(map[string]string{"name": "Account", "email": "owner@example.com", "group": tc.group})
+			require.NoError(t, err)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/gpt-accounts", strings.NewReader(string(body)))
+			c.Request.Header.Set("Content-Type", "application/json")
+			input, ok := normalizeGPTAccountInput(c)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, input.Group)
+			email := tc.name + "@example.com"
+			raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":%q,"email":%q,"expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken(email, tc.name, tc.name), tc.name, email)
+			account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw, Group: tc.group})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, account.Group)
+			require.NotNil(t, account.ChannelID)
+			var channel model.Channel
+			require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
+			assert.Equal(t, tc.want, channel.Group)
+			var abilities []model.Ability
+			require.NoError(t, model.DB.Where("channel_id = ?", channel.Id).Find(&abilities).Error)
+			require.NotEmpty(t, abilities)
+			assert.Equal(t, tc.want, abilities[0].Group)
+		})
+	}
 }
 
 func TestGPTAccountOAuthImportValidation(t *testing.T) {
@@ -917,7 +1033,7 @@ func TestGPTAccountRefreshRespectsAttentionAndOwnerRevocation(t *testing.T) {
 func setupGPTAccountTest(t *testing.T) service.AuthIdentity {
 	t.Helper()
 	db := setupManageUserTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}, &model.Channel{}, &model.Ability{}))
+	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}, &model.Channel{}, &model.Ability{}, &model.Option{}))
 	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}))
 	previousMaster, previousMemory := common.IsMasterNode, common.MemoryCacheEnabled
 	common.IsMasterNode, common.MemoryCacheEnabled = true, false

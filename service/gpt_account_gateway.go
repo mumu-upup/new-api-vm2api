@@ -122,9 +122,6 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 	}
 	models = strings.Join(modelNames, ",")
 	group := readString("group", "group_name", "groupName")
-	if group == "" {
-		group = "default"
-	}
 	name := readString("name", "channel_name", "channelName")
 	if name == "" {
 		name = strings.ToUpper(provider) + " channel"
@@ -139,12 +136,16 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 // as its ability rows, so a malformed ability update cannot leave a half-made
 // channel behind.
 func CreateGPTGatewayChannel(input GPTGatewayChannelInput) (*model.Channel, error) {
+	group, err := model.ResolveGPTAccountGroup(input.Group)
+	if err != nil {
+		return nil, err
+	}
 	channelType := constant.ChannelTypeOpenAI
 	if input.Provider == "sub2api" {
 		channelType = constant.ChannelTypeSub2API
 	}
-	channel := &model.Channel{Type: channelType, Name: input.Name, Key: input.APIKey, BaseURL: &input.BaseURL, Group: input.Group, Models: input.Models, Status: common.ChannelStatusEnabled, CreatedTime: common.GetTimestamp()}
-	err := model.DB.Transaction(func(tx *gorm.DB) error {
+	channel := &model.Channel{Type: channelType, Name: input.Name, Key: input.APIKey, BaseURL: &input.BaseURL, Group: group, Models: input.Models, Status: common.ChannelStatusEnabled, CreatedTime: common.GetTimestamp()}
+	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(channel).Error; err != nil {
 			return err
 		}
@@ -222,8 +223,10 @@ func gptGatewayAddressAllowed(ip net.IP, allowLocal bool) bool {
 
 func SaveGPTAccountGateway(existing *model.GPTAccountGateway, input GPTAccountGatewayInput) (*model.GPTAccountGateway, error) {
 	input.Name, input.Group, input.Models = strings.TrimSpace(input.Name), strings.TrimSpace(input.Group), strings.TrimSpace(input.Models)
-	if input.Group == "" {
-		input.Group = "default"
+	var groupErr error
+	input.Group, groupErr = model.ResolveGPTAccountGroup(input.Group)
+	if groupErr != nil {
+		return nil, groupErr
 	}
 	if input.Models == "" {
 		input.Models = "gpt-5"
