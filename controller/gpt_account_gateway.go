@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"strings"
@@ -79,8 +80,11 @@ func ImportGPTGatewayChannelJSON(c *gin.Context) {
 		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
 		return
 	}
-	context, err := common.Marshal(map[string]string{"name": "channel-json"})
-	if err != nil || middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: "gpt_account_gateway.create", Context: context}) == nil {
+	// Recompute the digest from the submitted bytes; never trust a client-sent
+	// digest to authorize a different relay target or credential.
+	digest := hex.EncodeToString(common.Sha256Raw([]byte(request.ConfigJSON)))
+	context, err := common.Marshal(map[string]string{"config_sha256": digest})
+	if err != nil || middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeGPTGatewayChannelImport, Context: context}) == nil {
 		return
 	}
 	channel, err := service.CreateGPTGatewayChannel(input)

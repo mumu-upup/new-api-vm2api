@@ -38,6 +38,7 @@ export type SecurityProofScope =
   | 'gpt_account.gateway.sync'
   | 'gpt_account_gateway.create'
   | 'gpt_account_gateway.update'
+  | 'gpt_account_gateway.channel_import'
   | 'channel.key.read'
   | 'passkey.register'
   | 'passkey.delete'
@@ -70,6 +71,10 @@ export type VerificationOperation =
     }
   | { scope: 'gpt_account_gateway.create'; context: { name: string } }
   | { scope: 'gpt_account_gateway.update'; context: { gateway_id: number } }
+  | {
+      scope: 'gpt_account_gateway.channel_import'
+      context: { config_sha256: string }
+    }
   | {
       scope:
         | 'gpt_account.update'
