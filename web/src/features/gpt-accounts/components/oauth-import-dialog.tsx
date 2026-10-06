@@ -12,6 +12,7 @@ import { importGptAccountOAuth } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
 
 interface OAuthImportDialogProps {
+  accountId?: number
   onClose: () => void
   onSaved: () => void
 }
@@ -45,11 +46,28 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
       )
       return
     }
-    const result = await operation.execute(
-      { scope: 'gpt_account.oauth_import.create', context: { email } },
-      (proof, signal) =>
-        importGptAccountOAuth({ oauth_json: oauthJSON }, proof, signal)
-    )
+    const result = props.accountId
+      ? await operation.execute(
+          {
+            scope: 'gpt_account.oauth_import.update',
+            context: { account_id: props.accountId },
+          },
+          (proof, signal) =>
+            importGptAccountOAuth(
+              props.accountId,
+              { oauth_json: oauthJSON },
+              proof,
+              signal
+            )
+        )
+      : await operation.execute(
+          {
+            scope: 'gpt_account.oauth_import.create',
+            context: { email },
+          },
+          (proof, signal) =>
+            importGptAccountOAuth(undefined, { oauth_json: oauthJSON }, proof, signal)
+        )
     if (!result) return
     setOAuthJSON('')
     props.onSaved()
@@ -63,7 +81,9 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
         onOpenChange={(open) => {
           if (!open && !operation.pending) props.onClose()
         }}
-        title={t('Import Codex OAuth JSON')}
+        title={t(
+          props.accountId ? 'Update Codex OAuth JSON' : 'Import Codex OAuth JSON'
+        )}
         description={t(
           'Import a Codex OAuth JSON credential and create or update the matching GPT account channel.'
         )}

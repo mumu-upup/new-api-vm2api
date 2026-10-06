@@ -52,7 +52,8 @@ export function saveGptAccount(
 }
 
 export function importGptAccountOAuth(
-  input: {
+	accountId: number | undefined,
+	input: {
     oauth_json: string
     name?: string
     group?: string
@@ -62,8 +63,8 @@ export function importGptAccountOAuth(
   proof: string,
   signal: AbortSignal
 ) {
-  return authResult<GptAccount>(
-    api.post('/api/gpt-accounts/import-oauth', input, {
+	return authResult<GptAccount>(
+		api.post(accountId ? `/api/gpt-accounts/${accountId}/import-oauth` : '/api/gpt-accounts/import-oauth', input, {
       ...authRequestOptions,
       headers: { 'X-Security-Proof': proof },
       singleUseAuthorization: true,
