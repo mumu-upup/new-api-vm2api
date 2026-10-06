@@ -23,6 +23,17 @@ function permittedRequest(url, method, mainNavigation) {
     .some(host => url.hostname === host || (host === 'oaistatic.com' && url.hostname.endsWith('.oaistatic.com')))
 }
 
+function requestDiagnostic(url, method, navigation, event, status) {
+  // Never log arbitrary hosts, URL paths, query strings, headers, or bodies:
+  // each can contain credentials, including on a blocked request.
+  const destination = ['auth.openai.com', 'sentinel.openai.com', 'openai.com',
+    'oaistatic.com', 'cdn.auth0.com', 'challenges.cloudflare.com'].includes(url.hostname)
+    ? url.hostname : url.hostname.endsWith('.oaistatic.com') ? 'oaistatic.com' : 'other'
+  return { event, destination,
+    method: ['GET', 'POST', 'HEAD', 'OPTIONS', 'PUT', 'PATCH', 'DELETE'].includes(method) ? method : 'other',
+    navigation, ...(status === undefined ? {} : { status }) }
+}
+
 export async function handleLoginRequest(route, guard) {
   const request = route.request()
   let url = new URL(request.url())
@@ -42,11 +53,13 @@ export async function handleLoginRequest(route, guard) {
     try {
       response = await route.fetch({ url: url.href, maxRedirects: 0, timeout: Math.max(1, Math.min(20000, guard.deadline - Date.now())) })
     } catch {
+      guard.onDiagnostic?.(requestDiagnostic(url, method, mainNavigation, 'request_failed'))
       if (mainNavigation) guard.setBlocked('login_navigation_failed')
       await route.abort()
       return
     }
     const status = response.status()
+    if (status >= 400) guard.onDiagnostic?.(requestDiagnostic(url, method, mainNavigation, 'http_error', status))
     if (![301, 302, 303, 307, 308].includes(status)) {
       await route.fulfill({ response })
       return
@@ -76,6 +89,7 @@ export async function handleLoginRequest(route, guard) {
     if (!['GET', 'HEAD'].includes(method) || next.origin !== url.origin) break
     url = next
   }
+  guard.onDiagnostic?.(requestDiagnostic(url, method, mainNavigation, 'request_blocked'))
   if (mainNavigation) guard.setBlocked('login_navigation_blocked')
   await route.abort()
 }
@@ -86,6 +100,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
   const deadline = options.deadline || now() + 150000
   const submitted = new Set()
   let previousKind = ''
+  let lastScreen = ''
   for (let step = 0; step < 500 && now() < deadline; step++) {
     if (signal.aborted) break
     const callback = parseCallback(page.url(), input.state)
@@ -100,6 +115,13 @@ export async function completeLoginPage(page, input, signal, options = {}) {
       }
       // A form navigation may replace the document between locator reads.
       screen = { kind: 'loading' }
+    }
+    const diagnosticKind = ['loading', 'navigation_error', 'captcha', 'email_code', 'consent',
+      'additional', 'invalid_totp', 'disabled', 'invalid', 'email', 'password', 'totp'].includes(screen.kind)
+      ? screen.kind : 'unknown'
+    if (diagnosticKind !== lastScreen) {
+      options.onDiagnostic?.({ event: 'screen', kind: diagnosticKind })
+      lastScreen = diagnosticKind
     }
     if (screen.kind === 'navigation_error') {
       return { status: 'needs_attention', error_code: screen.error_code === 'login_navigation_failed' ? 'login_navigation_failed' : 'login_navigation_blocked' }
@@ -199,6 +221,7 @@ export async function createIsolatedLoginContext(browser) {
 // CAPTCHAs, email codes, consent and security challenges require a human.
 export async function browserLogin(input, signal, options = {}) {
   const deadline = Date.now() + 150000
+  const onDiagnostic = options.onDiagnostic || (event => console.info(JSON.stringify({ source: 'gpt_login', ...event })))
   if (signal.aborted) return { status: 'needs_attention', error_code: 'login_timeout' }
   const { chromium } = await import('playwright')
   if (signal.aborted) return { status: 'needs_attention', error_code: 'login_timeout' }
@@ -213,6 +236,7 @@ export async function browserLogin(input, signal, options = {}) {
     let callback, navigationError = '', pendingNavigations = 0
     const guard = {
       state: input.state, mainFrame: tab.mainFrame(), deadline, redirects: 0,
+      onDiagnostic,
       setCallback: result => { callback = result },
       setBlocked: code => { navigationError ||= code },
       navigate: async (url, from) => {
@@ -255,7 +279,7 @@ export async function browserLogin(input, signal, options = {}) {
         await field.waitFor({ state: 'hidden', timeout: 15000 }).catch(() => {})
       },
     }
-    const result = await completeLoginPage(page, input, signal, { ...options, deadline })
+    const result = await completeLoginPage(page, input, signal, { ...options, deadline, onDiagnostic })
     return callback || (navigationError ? { status: 'needs_attention', error_code: navigationError } : result)
   } finally {
     signal.removeEventListener('abort', stop)
