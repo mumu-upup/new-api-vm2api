@@ -19,6 +19,9 @@ export function parseCallback(raw, state) {
 function permittedRequest(url, method, mainNavigation) {
   if (url.username || url.password || url.protocol !== 'https:') return false
   if (mainNavigation || !['GET', 'HEAD', 'OPTIONS'].includes(method)) return url.origin === loginOrigin
+  // The official password page loads its login security SDK from this origin.
+  // Keep credential submissions and top-level navigation restricted to auth.
+  if (url.origin === 'https://sentinel.openai.com') return true
   return ['auth.openai.com', 'openai.com', 'oaistatic.com', 'cdn.auth0.com', 'challenges.cloudflare.com']
     .some(host => url.hostname === host || (host === 'oaistatic.com' && url.hostname.endsWith('.oaistatic.com')))
 }

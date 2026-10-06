@@ -29,7 +29,10 @@ test('production browser login completes email, password and TOTP despite blocke
       res.end('<h1>Sign in</h1><img src="https://telemetry.example/pixel"><form method="post" action="/email"><input type="email" name="email"><button>Continue</button></form>')
     } else if (path === '/password') {
       assert.match(req.headers.cookie || '', /fixture_session=present/)
-      res.end('<h1>Enter your password</h1><form method="post" action="/password"><input name="password" type="password"><button>Continue</button></form>')
+      res.end('<h1>Enter your password</h1><script src="https://sentinel.openai.com/backend-api/sentinel/sdk.js"></script><form method="post" action="/password" onsubmit="if (!window.fixtureSentinelReady) { event.preventDefault(); this.hidden = true; }"><input name="password" type="password"><button>Continue</button></form>')
+    } else if (path === '/backend-api/sentinel/sdk.js') {
+      res.setHeader('content-type', 'application/javascript')
+      res.end('window.fixtureSentinelReady = true')
     } else if (path === '/totp') {
       assert.match(req.headers.cookie || '', /fixture_session=present/)
       res.end('<h1>Enter your authenticator code</h1><form method="post" action="/verify"><input name="code" autocomplete="one-time-code"><button>Verify</button></form><a>Send a code to your email instead</a>')
@@ -40,7 +43,7 @@ test('production browser login completes email, password and TOTP despite blocke
   t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)) })
   const fixtureOrigin = `http://127.0.0.1:${server.address().port}`
   for (const provider of ['local', '2fa_cn']) {
-    let blockedAssets = 0, providerCalls = 0
+    let blockedAssets = 0, providerCalls = 0, sentinelAssets = 0
     const navigations = []
     const result = await browserLogin({ authorization_url: `https://auth.openai.com/oauth/authorize?state=${state}`,
       state, email: 'fixture@example.com', password: 'fixture-password', totp_secret: seed, totp_provider: provider },
@@ -71,7 +74,11 @@ test('production browser login completes email, password and TOTP despite blocke
               request: () => route.request(),
               fetch: async options => {
                 const url = new URL(options.url)
-                assert.equal(url.origin, 'https://auth.openai.com')
+                if (url.origin === 'https://sentinel.openai.com') {
+                  assert.equal(url.pathname, '/backend-api/sentinel/sdk.js')
+                  assert.equal(route.request().method(), 'GET')
+                  sentinelAssets++
+                } else assert.equal(url.origin, 'https://auth.openai.com')
                 const response = await route.fetch({ ...options, url: fixtureOrigin + url.pathname + url.search,
                   headers: await route.request().allHeaders() })
                 // APIRequestContext normally stores upstream cookies on the
@@ -93,6 +100,7 @@ test('production browser login completes email, password and TOTP despite blocke
     })
     assert.deepEqual(result, { status: 'success', code: 'fixture-authorization', state }, JSON.stringify({ submissions, navigations }))
     assert.equal(blockedAssets, 1)
+    assert.equal(sentinelAssets, 1)
     assert.equal(providerCalls, provider === '2fa_cn' ? 1 : 0)
     assert.deepEqual(submissions.splice(0), [
       ['/email', { email: 'fixture@example.com' }], ['/password', { password: 'fixture-password' }],
