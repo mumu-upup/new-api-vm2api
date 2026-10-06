@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -78,6 +79,89 @@ func TestGPTAccountRecoveryPreservesConcurrentAndStaleCredentials(t *testing.T) 
 	require.NoError(t, model.DB.First(&channel, channel.Id).Error)
 	assert.Equal(t, common.ChannelStatusEnabled, channel.Status)
 	assert.Contains(t, channel.Key, "fresh")
+}
+
+func TestGPTAccountOAuthImportValidation(t *testing.T) {
+	raw := `{"access_token":"access","refresh_token":"refresh","id_token":"e30.eyJzdWIiOiJzdWJqZWN0LTEifQ.sig","account_id":"acct-1","email":"Owner@Example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`
+	key, err := service.ParseCodexOAuthImport(raw)
+	require.NoError(t, err)
+	assert.Equal(t, "owner@example.com", key.Email)
+	assert.Equal(t, "codex", key.Type)
+
+	for _, invalid := range []string{
+		`{"access_token":"","refresh_token":"refresh","id_token":"e30.eyJzdWIiOiJzdWJqZWN0LTEifQ.sig","account_id":"acct-1","email":"owner@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`,
+		`{"access_token":"access","refresh_token":"refresh","id_token":"e30.eyJzdWIiOiJzdWJqZWN0LTEifQ.sig","account_id":"acct-1","email":"owner@example.com","expired":"2000-01-02T03:04:05Z","type":"codex"}`,
+		`{"access_token":"access","refresh_token":"refresh","id_token":"e30.eyJzdWIiOiJzdWJqZWN0LTEifQ.sig","account_id":"acct-1","email":"owner@example.com","expired":"2099-01-02T03:04:05Z","type":"other"}`,
+		`{"access_token":"access","refresh_token":"refresh","id_token":"not-a-jwt","account_id":"acct-1","email":"owner@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`,
+		strings.Repeat("x", 32<<10),
+	} {
+		_, err := service.ParseCodexOAuthImport(invalid)
+		assert.Error(t, err)
+	}
+}
+
+func TestGPTAccountExpiredOAuthLeaseIsReclaimedPersistently(t *testing.T) {
+	setupGPTAccountTest(t)
+	stale := model.GPTAccount{OwnerID: 1, SecretID: "expired-lease", Generation: 1, Status: "logging_in", LeaseID: "stale", LeaseUntil: time.Now().Unix() - 1, NextRetryAt: time.Now().Unix() + 300}
+	active := model.GPTAccount{OwnerID: 1, SecretID: "active-lease", Generation: 1, Status: "logging_in", LeaseID: "active", LeaseUntil: time.Now().Unix() + 300}
+	require.NoError(t, model.DB.Create(&stale).Error)
+	require.NoError(t, model.DB.Create(&active).Error)
+
+	changed, err := service.ReclaimExpiredGPTAccountJobs(time.Now().Unix())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, changed)
+	require.NoError(t, model.DB.First(&stale, stale.ID).Error)
+	assert.Equal(t, "needs_attention", stale.Status)
+	assert.Equal(t, "login_timeout", stale.LastErrorCode)
+	assert.Empty(t, stale.LeaseID)
+	assert.Zero(t, stale.LeaseUntil)
+	assert.Zero(t, stale.NextRetryAt)
+	require.NoError(t, model.DB.First(&active, active.ID).Error)
+	assert.Equal(t, "logging_in", active.Status)
+	assert.Equal(t, "active", active.LeaseID)
+}
+
+func TestGPTAccountOAuthImportCreatesAndUpdatesOneCodexChannel(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	raw := `{"access_token":"access-private","refresh_token":"refresh-private","id_token":"e30.eyJzdWIiOiJzdWJqZWN0LWltcG9ydCJ9.sig","account_id":"acct-import","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`
+	input := service.GPTAccountOAuthImportInput{OAuthJSON: raw, Name: "Imported", Group: "default", Models: "gpt-5"}
+
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, input)
+	require.NoError(t, err)
+	require.NotNil(t, account)
+	assert.Equal(t, "import@example.com", account.Email)
+	assert.Equal(t, "ready", account.Status)
+	assert.True(t, account.AutoRelogin)
+	require.NotNil(t, account.ChannelID)
+
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
+	assert.Equal(t, 57, channel.Type)
+	assert.Contains(t, channel.Key, "access-private")
+
+	var before int64
+	require.NoError(t, model.DB.Model(&model.Channel{}).Count(&before).Error)
+	updated, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, input)
+	require.NoError(t, err)
+	assert.Equal(t, account.ID, updated.ID)
+	var after int64
+	require.NoError(t, model.DB.Model(&model.Channel{}).Count(&after).Error)
+	assert.Equal(t, before, after)
+}
+
+func TestGPTAccountOAuthImportControllerRequiresScopedProof(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	raw := `{"access_token":"controller-access","refresh_token":"controller-refresh","id_token":"e30.eyJzdWIiOiJzdWJqZWN0LWNvbnRyb2xsZXIifQ.sig","account_id":"acct-controller","email":"controller@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`
+	body := fmt.Sprintf(`{"oauth_json":%s,"name":"Controller import","group":"default","models":"gpt-5"}`, strconv.Quote(raw))
+	denied := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "", ImportGPTAccountOAuth)
+	assert.Equal(t, http.StatusForbidden, denied.Code)
+	created := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, "gpt_account.oauth_import.create", ImportGPTAccountOAuth)
+	require.Equal(t, http.StatusOK, created.Code, created.Body.String())
+	assert.NotContains(t, created.Body.String(), "controller-access")
+	var account model.GPTAccount
+	require.NoError(t, model.DB.First(&account).Error)
+	updated := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, body, "gpt_account.oauth_import.update", ImportGPTAccountOAuthForAccount)
+	require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
 }
 
 func TestGPTAccountWorkerAttentionStopsAutomaticRetries(t *testing.T) {
@@ -782,8 +866,18 @@ func gptAccountRequest(t *testing.T, identity service.AuthIdentity, role int, id
 	proof := ""
 	if scope != "" {
 		ctx := []byte(fmt.Sprintf(`{"account_id":%d}`, id))
-		if scope == "gpt_account.create" {
+		if scope == "gpt_account.create" || scope == "gpt_account.oauth_import.create" {
 			ctx = []byte(`{"email":"owner@example.com"}`)
+			if scope == "gpt_account.oauth_import.create" {
+				var input struct {
+					OAuthJSON string `json:"oauth_json"`
+				}
+				if common.Unmarshal([]byte(body), &input) == nil {
+					if key, err := service.ParseCodexOAuthImport(input.OAuthJSON); err == nil {
+						ctx = []byte(fmt.Sprintf(`{"email":%q}`, key.Email))
+					}
+				}
+			}
 		}
 		proof = issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: scope, Context: ctx}, service.VerificationMethodPassword)
 	}

@@ -26,6 +26,8 @@ export type VerificationMethod =
   | 'session'
 export type SecurityProofScope =
   | 'gpt_account.create'
+  | 'gpt_account.oauth_import.create'
+  | 'gpt_account.oauth_import.update'
   | 'gpt_account.update'
   | 'gpt_account.delete'
   | 'gpt_account.login'
@@ -62,12 +64,16 @@ export type SecurityProofScope =
 export type AdminUserManageAction = 'disable' | 'enable' | 'promote' | 'demote'
 
 export type VerificationOperation =
-  | { scope: 'gpt_account.create'; context: { email: string } }
+  | {
+      scope: 'gpt_account.create' | 'gpt_account.oauth_import.create'
+      context: { email: string }
+    }
   | { scope: 'gpt_account_gateway.create'; context: { name: string } }
   | { scope: 'gpt_account_gateway.update'; context: { gateway_id: number } }
   | {
       scope:
         | 'gpt_account.update'
+        | 'gpt_account.oauth_import.update'
         | 'gpt_account.delete'
         | 'gpt_account.login'
         | 'gpt_account.oauth'
