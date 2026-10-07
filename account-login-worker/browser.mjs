@@ -412,7 +412,20 @@ export async function browserLogin(input, signal, options = {}) {
           const radios = [...document.querySelectorAll('input[type="radio"][name="workspace_id"]')]
             .filter(visible)
           const choices = radios.map(element => ({ element, label: [...element.labels || []]
-            .filter(visible).map(label => label.innerText.trim()).join(' ').trim() }))
+            .filter(visible).map(label => {
+              // Official labels contain aria-hidden avatars whose initials
+              // vary by account. Read the name without decorative text;
+              // never guess an avatar from its letters or its position.
+              const text = []
+              const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT)
+              while (walker.nextNode()) {
+                const parent = walker.currentNode.parentElement
+                if (visible(parent) && !parent.closest('[aria-hidden="true"], [hidden], script, style, svg')) {
+                  text.push(walker.currentNode.textContent)
+                }
+              }
+              return text.join(' ').replace(/\s+/g, ' ').trim()
+            }).join(' ').trim() }))
           const shape = {
             radios: radios.length,
             labelledRadios: choices.filter(choice => choice.label).length,
@@ -438,13 +451,7 @@ export async function browserLogin(input, signal, options = {}) {
             if (!choices.length || choices.some(choice => !choice.label)) return { shape, ok: false, error: 'workspace_selection_required', reason: 'missing_choice_label' }
             if (choices.some(choice => !choice.element.value)) return { shape, ok: false, error: 'workspace_selection_required', reason: 'missing_choice_value' }
             const personal = /^(?:personal(?: account| workspace)?|个人(?:账户|帐户|账号|空间|工作区)|個人(?:帳戶|賬戶|帳號|空間|工作區))$/i
-            const teams = choices.filter(choice => {
-              if (personal.test(choice.label)) return false
-              // The official English label may include its "Pa" avatar on a
-              // separate line. Other prefixes or extra text remain ambiguous.
-              const lines = choice.label.split(/\r?\n/).map(line => line.trim())
-              return !(lines.length === 2 && /^Pa$/i.test(lines[0]) && /^Personal account$/i.test(lines[1]))
-            })
+            const teams = choices.filter(choice => !personal.test(choice.label))
             matches = (teams.length ? teams : choices).map(choice => choice.element)
           }
           if (matches.length !== 1) return { shape, ok: false, error: 'workspace_selection_required', reason: expected ? 'saved_binding_mismatch' : 'ambiguous_choice' }
