@@ -660,6 +660,7 @@ test('probe is authenticated, opts into model authorization, and keeps callback 
     assert.equal(calls.at(-1).totp_provider, path === '/login' ? '2fa_cn' : 'local')
     assert.equal(calls.at(-1).options.checkOnly, path === '/check')
     assert.equal(Boolean(calls.at(-1).options.probe), path === '/probe')
+    assert.equal(Boolean(calls.at(-1).options.autoConsent), path === '/login')
     assert.equal(calls.at(-1).workspace_preference, path === '/probe' ? 'team_then_personal' : '')
   }
 })
@@ -747,14 +748,14 @@ test('probe never treats a consent screen as login-only success and requires bot
   }
 })
 
-test('only probe can approve Codex consent after password and MFA, and cancellation prevents approval', async () => {
-  for (const options of [{ probe: true }, { checkOnly: true }, {}, { probe: true, checkOnly: true }]) {
+test('login and probe can approve the exact Codex consent form after password and MFA, while checks cannot', async () => {
+  for (const options of [{ autoConsent: true }, { probe: true }, { checkOnly: true }, {}, { probe: true, checkOnly: true }]) {
     const page = loginPage([{ kind: 'password' }, { kind: 'totp' }, { kind: 'consent' },
       { kind: 'callback', url: `http://localhost:1455/auth/callback?code=probe-code&state=${state}` }])
     let approved = 0
     page.approveConsent = async () => { approved++; await page.next() }
     const result = await completeLoginPage(page, request(), new AbortController().signal, options)
-    const expectedApproval = options.probe && !options.checkOnly
+    const expectedApproval = (options.autoConsent || options.probe) && !options.checkOnly
     assert.deepEqual(result, expectedApproval ? { status: 'success', code: 'probe-code', state }
       : { status: 'needs_attention', error_code: 'consent_required' })
     assert.equal(approved, expectedApproval ? 1 : 0)
