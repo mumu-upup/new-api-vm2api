@@ -40,6 +40,7 @@ import { Route as AuthenticatedChatChatIdRouteImport } from './routes/_authentic
 import { Route as AuthenticatedDashboardIndexRouteImport } from './routes/_authenticated/dashboard/index'
 import { Route as AuthenticatedDashboardSectionRouteImport } from './routes/_authenticated/dashboard/$section'
 import { Route as AuthenticatedErrorsErrorRouteImport } from './routes/_authenticated/errors/$error'
+import { Route as AuthenticatedGptAccountStatusCheckIndexRouteImport } from './routes/_authenticated/gpt-account-status-check/index'
 import { Route as AuthenticatedGptAccountsIndexRouteImport } from './routes/_authenticated/gpt-accounts/index'
 import { Route as AuthenticatedKeysIndexRouteImport } from './routes/_authenticated/keys/index'
 import { Route as AuthenticatedModelsIndexRouteImport } from './routes/_authenticated/models/index'
@@ -231,6 +232,12 @@ const AuthenticatedErrorsErrorRoute =
   AuthenticatedErrorsErrorRouteImport.update({
     id: '/errors/$error',
     path: '/errors/$error',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedGptAccountStatusCheckIndexRoute =
+  AuthenticatedGptAccountStatusCheckIndexRouteImport.update({
+    id: '/gpt-account-status-check/',
+    path: '/gpt-account-status-check/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedGptAccountsIndexRoute =
@@ -468,6 +475,7 @@ export interface FileRoutesByFullPath {
   '/usage-logs/audit': typeof AuthenticatedUsageLogsAuditRoute
   '/channels/': typeof AuthenticatedChannelsIndexRoute
   '/dashboard/': typeof AuthenticatedDashboardIndexRoute
+  '/gpt-account-status-check/': typeof AuthenticatedGptAccountStatusCheckIndexRoute
   '/gpt-accounts/': typeof AuthenticatedGptAccountsIndexRoute
   '/keys/': typeof AuthenticatedKeysIndexRoute
   '/models/': typeof AuthenticatedModelsIndexRoute
@@ -532,6 +540,7 @@ export interface FileRoutesByTo {
   '/usage-logs/audit': typeof AuthenticatedUsageLogsAuditRoute
   '/channels': typeof AuthenticatedChannelsIndexRoute
   '/dashboard': typeof AuthenticatedDashboardIndexRoute
+  '/gpt-account-status-check': typeof AuthenticatedGptAccountStatusCheckIndexRoute
   '/gpt-accounts': typeof AuthenticatedGptAccountsIndexRoute
   '/keys': typeof AuthenticatedKeysIndexRoute
   '/models': typeof AuthenticatedModelsIndexRoute
@@ -600,6 +609,7 @@ export interface FileRoutesById {
   '/_authenticated/usage-logs/audit': typeof AuthenticatedUsageLogsAuditRoute
   '/_authenticated/channels/': typeof AuthenticatedChannelsIndexRoute
   '/_authenticated/dashboard/': typeof AuthenticatedDashboardIndexRoute
+  '/_authenticated/gpt-account-status-check/': typeof AuthenticatedGptAccountStatusCheckIndexRoute
   '/_authenticated/gpt-accounts/': typeof AuthenticatedGptAccountsIndexRoute
   '/_authenticated/keys/': typeof AuthenticatedKeysIndexRoute
   '/_authenticated/models/': typeof AuthenticatedModelsIndexRoute
@@ -667,6 +677,7 @@ export interface FileRouteTypes {
     | '/usage-logs/audit'
     | '/channels/'
     | '/dashboard/'
+    | '/gpt-account-status-check/'
     | '/gpt-accounts/'
     | '/keys/'
     | '/models/'
@@ -731,6 +742,7 @@ export interface FileRouteTypes {
     | '/usage-logs/audit'
     | '/channels'
     | '/dashboard'
+    | '/gpt-account-status-check'
     | '/gpt-accounts'
     | '/keys'
     | '/models'
@@ -798,6 +810,7 @@ export interface FileRouteTypes {
     | '/_authenticated/usage-logs/audit'
     | '/_authenticated/channels/'
     | '/_authenticated/dashboard/'
+    | '/_authenticated/gpt-account-status-check/'
     | '/_authenticated/gpt-accounts/'
     | '/_authenticated/keys/'
     | '/_authenticated/models/'
@@ -1068,6 +1081,13 @@ declare module '@tanstack/react-router' {
       path: '/errors/$error'
       fullPath: '/errors/$error'
       preLoaderRoute: typeof AuthenticatedErrorsErrorRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/gpt-account-status-check/': {
+      id: '/_authenticated/gpt-account-status-check/'
+      path: '/gpt-account-status-check'
+      fullPath: '/gpt-account-status-check/'
+      preLoaderRoute: typeof AuthenticatedGptAccountStatusCheckIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/gpt-accounts/': {
@@ -1411,6 +1431,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedUsageLogsAuditRoute: typeof AuthenticatedUsageLogsAuditRoute
   AuthenticatedChannelsIndexRoute: typeof AuthenticatedChannelsIndexRoute
   AuthenticatedDashboardIndexRoute: typeof AuthenticatedDashboardIndexRoute
+  AuthenticatedGptAccountStatusCheckIndexRoute: typeof AuthenticatedGptAccountStatusCheckIndexRoute
   AuthenticatedGptAccountsIndexRoute: typeof AuthenticatedGptAccountsIndexRoute
   AuthenticatedKeysIndexRoute: typeof AuthenticatedKeysIndexRoute
   AuthenticatedModelsIndexRoute: typeof AuthenticatedModelsIndexRoute
@@ -1438,6 +1459,8 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedUsageLogsAuditRoute: AuthenticatedUsageLogsAuditRoute,
   AuthenticatedChannelsIndexRoute: AuthenticatedChannelsIndexRoute,
   AuthenticatedDashboardIndexRoute: AuthenticatedDashboardIndexRoute,
+  AuthenticatedGptAccountStatusCheckIndexRoute:
+    AuthenticatedGptAccountStatusCheckIndexRoute,
   AuthenticatedGptAccountsIndexRoute: AuthenticatedGptAccountsIndexRoute,
   AuthenticatedKeysIndexRoute: AuthenticatedKeysIndexRoute,
   AuthenticatedModelsIndexRoute: AuthenticatedModelsIndexRoute,

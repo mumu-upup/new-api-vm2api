@@ -736,3 +736,15 @@ func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool_loss_policy")
 }
+
+func TestChannelOtherSettingsValidateForcedReasoningEffort(t *testing.T) {
+	for _, effort := range []string{"", "none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			require.NoError(t, (&ChannelOtherSettings{ForcedReasoningEffort: effort}).ValidateForcedReasoningEffort())
+		})
+	}
+
+	err := (&ChannelOtherSettings{ForcedReasoningEffort: "ultra"}).ValidateForcedReasoningEffort()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forced_reasoning_effort")
+}

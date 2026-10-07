@@ -35,6 +35,7 @@ import type { GptAccount, GptAccountGateway } from '../types'
 
 interface AccountFormDialogProps {
   defaultGroup?: string
+  defaultModels?: string
   account?: GptAccount
   gateways: GptAccountGateway[]
   gatewaysLoading: boolean
@@ -478,6 +479,10 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                           {...field}
                           disabled={operation.pending}
                           readOnly={Boolean(props.account?.channel_id)}
+                          placeholder={t(
+                            'Use global default models: {{models}}',
+                            { models: props.defaultModels ?? 'gpt-5.6' }
+                          )}
                         />
                       </FormControl>
                       <FormMessage />
@@ -489,7 +494,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                 {props.account?.channel_id
                   ? t('Manage routing settings in the associated channel.')
                   : t(
-                      'Separate model names with commas. Leave blank to use the default Codex models.'
+                      'Separate model names with commas. Leave blank to use the global default models.'
                     )}
               </p>
               {root && (

@@ -1,10 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
+import { Combobox } from '@/components/ui/combobox'
 import {
   Form,
   FormControl,
@@ -15,25 +16,42 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { SettingsControlGroup } from '@/features/system-settings/components/settings-form-layout'
+import { getGroups } from '@/features/users/api'
 import { AuthOperationError } from '@/lib/secure-verification'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { updateGptAccountConfig } from '../api'
 import { defaultGroupSchema } from '../lib/group-form'
 
 export function DefaultGroupForm(props: {
   defaultGroup: string
+  defaultModels: string
   canEdit: boolean
   onSaved: () => void
 }) {
   const { t } = useTranslation()
+  const groups = useQuery({
+    queryKey: ['groups'],
+    queryFn: async () => requireServerSuccess(await getGroups()),
+  })
+  const groupOptions = (groups.data?.data ?? []).map((group) => ({
+    value: group,
+    label: group,
+  }))
   const form = useForm({
     resolver: zodResolver(defaultGroupSchema),
-    defaultValues: { default_group: props.defaultGroup },
+    defaultValues: {
+      default_group: props.defaultGroup,
+      default_models: props.defaultModels,
+    },
   })
   const mutation = useMutation({
     mutationFn: updateGptAccountConfig,
     onSuccess: (data) => {
-      form.reset({ default_group: data.default_group })
+      form.reset({
+        default_group: data.default_group,
+        default_models: data.default_models ?? props.defaultModels,
+      })
       toast.success(t('Saved successfully'))
       props.onSaved()
     },
@@ -51,7 +69,14 @@ export function DefaultGroupForm(props: {
       <Form {...form}>
         <form
           onSubmit={form.handleSubmit((values) =>
-            mutation.mutate(values.default_group)
+            mutation.mutate({
+              ...(form.formState.dirtyFields.default_group
+                ? { default_group: values.default_group }
+                : {}),
+              ...(form.formState.dirtyFields.default_models
+                ? { default_models: values.default_models }
+                : {}),
+            })
           )}
           className='flex flex-wrap items-start gap-3'
         >
@@ -61,6 +86,37 @@ export function DefaultGroupForm(props: {
             render={({ field }) => (
               <FormItem className='w-full sm:w-64'>
                 <FormLabel>{t('Global default group')}</FormLabel>
+                <FormControl>
+                  <Combobox
+                    {...field}
+                    options={groupOptions}
+                    onValueChange={field.onChange}
+                    allowCustomValue={false}
+                    placeholder={t('Select a group')}
+                    disabled={
+                      !props.canEdit ||
+                      mutation.isPending ||
+                      groups.isPending ||
+                      groups.isError ||
+                      !groupOptions.length
+                    }
+                  />
+                </FormControl>
+                <FormMessage />
+                {groups.isError && (
+                  <p role='alert' className='text-destructive text-sm'>
+                    {t('Failed to load')}
+                  </p>
+                )}
+              </FormItem>
+            )}
+          />
+          <FormField
+            control={form.control}
+            name='default_models'
+            render={({ field }) => (
+              <FormItem className='w-full sm:min-w-64 sm:flex-1'>
+                <FormLabel>{t('Global default models')}</FormLabel>
                 <FormControl>
                   <Input
                     {...field}
@@ -78,12 +134,15 @@ export function DefaultGroupForm(props: {
               className='sm:mt-6'
               disabled={mutation.isPending || !form.formState.isDirty}
             >
-              {t('Save default group')}
+              {t('Save defaults')}
             </Button>
           )}
           <p className='text-muted-foreground w-full text-sm'>
             {t(
               'Applies to new accounts and imports when no group is specified.'
+            )}{' '}
+            {t(
+              'Models apply when none are specified. Use GPT 5.6 or later, separated by commas.'
             )}
           </p>
           {form.formState.errors.root && (

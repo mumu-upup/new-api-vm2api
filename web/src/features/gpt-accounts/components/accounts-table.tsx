@@ -196,7 +196,9 @@ export function AccountsTable(props: AccountsTableProps) {
                 aria-label={t('Import OAuth JSON for {{name}}', {
                   name: item.name,
                 })}
-                disabled={!item.can_manage || busy || !props.encryptionAvailable}
+                disabled={
+                  !item.can_manage || busy || !props.encryptionAvailable
+                }
                 onClick={() => props.onAction(item, 'oauth_import')}
               >
                 {t('Import OAuth JSON')}
@@ -205,7 +207,7 @@ export function AccountsTable(props: AccountsTableProps) {
                 variant='ghost'
                 size='icon-sm'
                 aria-label={t('Edit {{name}}', { name: item.name })}
-                disabled={!item.can_manage || props.pending}
+                disabled={!item.can_manage || busy}
                 onClick={() => props.onAction(item, 'edit')}
               >
                 <Pencil />

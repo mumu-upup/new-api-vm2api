@@ -32,6 +32,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
@@ -132,6 +133,9 @@ func TestGPTAccountRecoveryPreservesConcurrentAndStaleCredentials(t *testing.T) 
 
 func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testing.T) {
 	identity := setupGPTAccountTest(t)
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"team":1,"next":1}`))
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups)) })
 	common.OptionMapRWMutex.Lock()
 	previousOptions := common.OptionMap
 	common.OptionMap = make(map[string]string)
@@ -165,7 +169,7 @@ func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testi
 		denied := gptAccountRequest(t, identity, role, 0, http.MethodPut, `{"default_group":"forbidden"}`, UpdateGPTAccountsConfig)
 		assert.Equal(t, http.StatusForbidden, denied.Code)
 	}
-	for _, value := range []string{"", " ", "team\nother", strings.Repeat("x", 65), "team,,other", "team\x00"} {
+	for _, value := range []string{"", " ", "team\nother", strings.Repeat("x", 65), "team,,other", "team\x00", "nonexistent", "team,next"} {
 		body, err := common.Marshal(map[string]string{"default_group": value})
 		require.NoError(t, err)
 		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, string(body), UpdateGPTAccountsConfig)
@@ -225,7 +229,7 @@ func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
 			require.NoError(t, err)
 			c.Request = httptest.NewRequest(http.MethodPost, "/api/gpt-accounts", strings.NewReader(string(body)))
 			c.Request.Header.Set("Content-Type", "application/json")
-			input, ok := normalizeGPTAccountInput(c)
+			input, ok := normalizeGPTAccountInput(c, nil)
 			require.True(t, ok)
 			assert.Equal(t, tc.want, input.Group)
 			email := tc.name + "@example.com"
@@ -243,6 +247,76 @@ func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
 			assert.Equal(t, tc.want, abilities[0].Group)
 		})
 	}
+}
+
+func TestGPTAccountDefaultModelsApplyToNewAccountsAndImports(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = make(map[string]string)
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	config := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodGet, "", GPTAccountsConfig)
+	assert.Contains(t, config.Body.String(), `"default_models":"gpt-5.6"`)
+
+	updated := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_models":" GPT-5.6, gpt-6.1, GPT-5.6 "}`, UpdateGPTAccountsConfig)
+	require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
+	var option model.Option
+	require.NoError(t, model.DB.Where(&model.Option{Key: model.GPTAccountDefaultModelsKey}).First(&option).Error)
+	assert.Equal(t, "gpt-5.6,gpt-6.1", option.Value)
+
+	for _, value := range []string{"gpt-5.5", "gpt-5.5-sol", "gpt-4.1", "claude-3", "gpt-6.1,,gpt-6.2", "gpt-5.6 garbage", "gpt-5.6-任意字符"} {
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, fmt.Sprintf(`{"default_models":%q}`, value), UpdateGPTAccountsConfig)
+		assert.Equal(t, http.StatusBadRequest, response.Code, value)
+		assert.Error(t, model.UpdateOption(model.GPTAccountDefaultModelsKey, value), value)
+		assert.Error(t, model.UpdateOptionsBulk(map[string]string{model.GPTAccountDefaultModelsKey: value}), value)
+	}
+	for _, value := range []string{"gpt-6-astra", "gpt-6", "gpt-5.10", strings.Repeat("gpt-5.6,", 150) + "gpt-6"} {
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, fmt.Sprintf(`{"default_models":%q}`, value), UpdateGPTAccountsConfig)
+		assert.Equal(t, http.StatusOK, response.Code, value)
+	}
+	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
+		response := gptAccountRequest(t, identity, role, 0, http.MethodPut, `{"default_models":"gpt-6"}`, UpdateGPTAccountsConfig)
+		assert.Equal(t, http.StatusForbidden, response.Code)
+	}
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", identity.UserID).Update("role", common.RoleRootUser).Error)
+	pat, _ := createScopedAccessToken(t, identity.UserID, time.Now().Add(time.Hour).Unix(), "option:write")
+	engine := gin.New()
+	engine.PUT("/api/option/", middleware.RootAuth(), UpdateOption)
+	engine.PUT("/api/gpt-accounts/config", middleware.RootAuth(), UpdateGPTAccountsConfig)
+	for _, key := range []string{model.GPTAccountDefaultModelsKey, "gptaccountdefaultmodels", "GPTAccountDefaultModels ", "GPTAccountDéfaultModels"} {
+		response := accessTokenRequest(engine, http.MethodPut, "/api/option/", pat, "", fmt.Sprintf(`{"key":%q,"value":"gpt-6"}`, key))
+		assert.Contains(t, []int{http.StatusForbidden, http.StatusBadRequest}, response.Code, key)
+	}
+	response := accessTokenRequest(engine, http.MethodPut, "/api/gpt-accounts/config", pat, "", `{"default_models":"gpt-6"}`)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	updated = gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_models":"gpt-5.6,gpt-6.1"}`, UpdateGPTAccountsConfig)
+	require.Equal(t, http.StatusOK, updated.Code, updated.Body.String())
+	require.NoError(t, model.UpdateOption(model.GPTAccountDefaultModelsKey, " GPT-5.6, gpt-6.1, GPT-5.6 "))
+
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"models-account","email":"models@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("models@example.com", "models-account", "models-subject"))
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	require.NoError(t, err)
+	assert.Equal(t, "gpt-5.6,gpt-6.1", account.Models)
+	require.NotNil(t, account.ChannelID)
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
+	assert.Equal(t, "gpt-5.6,gpt-6.1", channel.Models)
+	var abilities []model.Ability
+	require.NoError(t, model.DB.Where("channel_id = ?", channel.Id).Order("model").Find(&abilities).Error)
+	require.Len(t, abilities, 2)
+	assert.Equal(t, "gpt-5.6", abilities[0].Model)
+	assert.Equal(t, "gpt-6.1", abilities[1].Model)
+
+	raw = fmt.Sprintf(`{"access_token":"fixture-access-2","refresh_token":"fixture-refresh-2","id_token":%q,"account_id":"models-account-2","email":"models2@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("models2@example.com", "models-account-2", "models-subject-2"))
+	account, err = service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw, Models: " GPT-4.1, gpt-5, GPT-4.1 "})
+	require.NoError(t, err)
+	assert.Equal(t, "GPT-4.1,gpt-5", account.Models)
 }
 
 func TestGPTAccountOAuthImportValidation(t *testing.T) {
@@ -554,7 +628,11 @@ func TestGPTAccountWorkerReceivesTOTPSourceAndReturnsSpecificError(t *testing.T)
 	t.Setenv("GPT_ACCOUNT_WORKER_URL", worker.URL)
 	t.Setenv("GPT_ACCOUNT_WORKER_TOKEN_FILE", tokenFile)
 	for _, provider := range []string{"", "2fa_cn"} {
-		account := model.GPTAccount{OwnerID: identity.UserID, Email: "owner@example.com", AccountID: "account-id-" + provider, SecretID: "worker-source-" + provider, Generation: 1}
+		accountID := ""
+		if provider == "2fa_cn" {
+			accountID = "account-id-" + provider
+		}
+		account := model.GPTAccount{OwnerID: identity.UserID, Email: "owner@example.com", AccountID: accountID, SecretID: "worker-source-" + provider, Generation: 1}
 		require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "fixture-password", TOTPSecret: "JBSWY3DPEHPK3PXP", TOTPProvider: provider}))
 		require.NoError(t, model.DB.Create(&account).Error)
 		require.NoError(t, service.StartGPTAccountLogin(account.ID, identity, false))
@@ -572,6 +650,11 @@ func TestGPTAccountWorkerReceivesTOTPSourceAndReturnsSpecificError(t *testing.T)
 		assert.Equal(t, "fixture-password", body["password"])
 		assert.Equal(t, "JBSWY3DPEHPK3PXP", body["totp_secret"])
 		assert.Equal(t, account.AccountID, body["expected_account_id"])
+		if account.AccountID == "" {
+			assert.Equal(t, "team_then_personal", body["workspace_preference"])
+		} else {
+			assert.Empty(t, body["workspace_preference"], "bound accounts must not fall back to another workspace")
+		}
 		require.Eventually(t, func() bool {
 			return model.DB.First(&account, account.ID).Error == nil && account.LeaseUntil == 0
 		}, 3*time.Second, 10*time.Millisecond)
@@ -1332,6 +1415,119 @@ func TestGPTAccountSecretsPermissionsAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "private-password")
 	assert.NotContains(t, string(encoded), "JBSWY3DPEHPK3PXP")
+}
+
+func TestGPTAccountCredentialUpdateStartsAutomaticLogin(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"imported-account","email":"imported@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("imported@example.com", "imported-account", "imported-subject"))
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw, Name: "Imported", Group: "imported-team", Models: "gpt-5"})
+	require.NoError(t, err)
+	require.NotNil(t, account.ChannelID)
+	var originalChannel model.Channel
+	require.NoError(t, model.DB.First(&originalChannel, *account.ChannelID).Error)
+
+	var workerCalls atomic.Int32
+	received := make(chan map[string]string, 1)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		workerCalls.Add(1)
+		var body map[string]string
+		if common.DecodeJson(r.Body, &body) != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"needs_attention","error_code":"workspace_selection_required"}`)
+	}))
+	defer worker.Close()
+	tokenFile := filepath.Join(t.TempDir(), "worker-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte(strings.Repeat("t", 32)), 0600))
+	t.Setenv("GPT_ACCOUNT_WORKER_URL", worker.URL)
+	t.Setenv("GPT_ACCOUNT_WORKER_TOKEN_FILE", tokenFile)
+
+	response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Imported","email":"imported@example.com","password":"password","totp_secret":"JBSWY3DPEHPK3PXP","totp_provider":"2fa_cn"}`, UpdateGPTAccount)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Eventually(t, func() bool {
+		var updated model.GPTAccount
+		return workerCalls.Load() == 1 && model.DB.First(&updated, account.ID).Error == nil && updated.Status == "needs_attention" && updated.LastErrorCode == "workspace_selection_required"
+	}, 3*time.Second, 10*time.Millisecond)
+	select {
+	case body := <-received:
+		assert.Equal(t, "imported-account", body["expected_account_id"])
+		assert.Equal(t, "2fa_cn", body["totp_provider"])
+		assert.Equal(t, "password", body["password"])
+		assert.Equal(t, "JBSWY3DPEHPK3PXP", body["totp_secret"])
+	default:
+		t.Fatal("worker did not receive the login request")
+	}
+	require.NoError(t, model.DB.First(account, account.ID).Error)
+	assert.Equal(t, "imported-team", account.Group)
+	assert.Equal(t, "gpt-5", account.Models)
+	assert.Equal(t, "imported-account", account.AccountID)
+	assert.Equal(t, "imported-subject", account.OAuthSubject)
+	var channel model.Channel
+	require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
+	assert.Equal(t, originalChannel.Key, channel.Key)
+	assert.Equal(t, originalChannel.Group, channel.Group)
+	assert.Equal(t, originalChannel.Models, channel.Models)
+
+	require.NoError(t, model.DB.Callback().Update().Before("gorm:update").Register("test:gpt-login-acquisition-failure", func(tx *gorm.DB) {
+		if values, ok := tx.Statement.Dest.(map[string]any); ok && values["status"] == "logging_in" {
+			tx.AddError(errors.New("fixture acquisition failure"))
+		}
+	}))
+	t.Cleanup(func() { _ = model.DB.Callback().Update().Remove("test:gpt-login-acquisition-failure") })
+	response = gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Imported","email":"imported@example.com","password":"replacement-password"}`, UpdateGPTAccount)
+	assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"code":"operation_failed"`)
+	assert.Equal(t, int32(1), workerCalls.Load())
+	require.NoError(t, model.DB.First(account, account.ID).Error)
+	secrets, err := service.DecryptGPTAccountSecrets(account)
+	require.NoError(t, err)
+	assert.Equal(t, "replacement-password", secrets.Password)
+}
+
+func TestGPTAccountCredentialUpdatePreservesActiveLogin(t *testing.T) {
+	for _, acquireAfterRead := range []bool{false, true} {
+		t.Run(fmt.Sprintf("acquire_after_read_%v", acquireAfterRead), func(t *testing.T) {
+			identity := setupGPTAccountTest(t)
+			account := model.GPTAccount{OwnerID: identity.UserID, Email: "active@example.com", Name: "Active", SecretID: "active-login", Generation: 1}
+			require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "original-password"}))
+			require.NoError(t, model.DB.Create(&account).Error)
+			var job *model.GPTAccount
+			if acquireAfterRead {
+				acquired := false
+				require.NoError(t, model.DB.Callback().Query().After("gorm:query").Register("test:concurrent-gpt-login", func(tx *gorm.DB) {
+					if snapshot, ok := tx.Statement.Dest.(*model.GPTAccount); !ok || snapshot.ID != account.ID || acquired {
+						return
+					}
+					acquired = true
+					var err error
+					job, err = service.AcquireGPTAccountJob(account.ID, false)
+					require.NoError(t, err)
+				}))
+				t.Cleanup(func() { _ = model.DB.Callback().Query().Remove("test:concurrent-gpt-login") })
+			} else {
+				var err error
+				job, err = service.AcquireGPTAccountJob(account.ID, false)
+				require.NoError(t, err)
+			}
+			response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Active","email":"active@example.com","password":"replacement-password"}`, UpdateGPTAccount)
+			assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+			require.NotNil(t, job)
+			require.NoError(t, model.DB.First(&account, account.ID).Error)
+			assert.Equal(t, job.Generation, account.Generation)
+			assert.Equal(t, job.LeaseID, account.LeaseID)
+			assert.Equal(t, job.LeaseUntil, account.LeaseUntil)
+			secrets, err := service.DecryptGPTAccountSecrets(&account)
+			require.NoError(t, err)
+			assert.Equal(t, "original-password", secrets.Password)
+			service.ReleaseGPTAccountJob(job, "workspace_selection_required")
+			require.NoError(t, model.DB.First(&account, account.ID).Error)
+			assert.Equal(t, "workspace_selection_required", account.LastErrorCode)
+			assert.Zero(t, account.LeaseUntil)
+		})
+	}
 }
 
 func TestGPTAccountOAuthStateAndEncryptionFailClosed(t *testing.T) {

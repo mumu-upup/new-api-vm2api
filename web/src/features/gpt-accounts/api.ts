@@ -32,13 +32,11 @@ export function getGptAccountConfig(signal?: AbortSignal) {
   )
 }
 
-export function updateGptAccountConfig(defaultGroup: string) {
+export function updateGptAccountConfig(
+  input: Partial<Pick<GptAccountConfig, 'default_group' | 'default_models'>>
+) {
   return authResult<GptAccountConfig>(
-    api.put(
-      '/api/gpt-accounts/config',
-      { default_group: defaultGroup },
-      authRequestOptions
-    )
+    api.put('/api/gpt-accounts/config', input, authRequestOptions)
   )
 }
 

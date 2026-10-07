@@ -61,6 +61,7 @@ const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
     enabled: true,
     channel: true,
     gpt_accounts: true,
+    gpt_account_status_check: true,
     models: true,
     redemption: true,
     user: true,
@@ -115,6 +116,10 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/security': { section: 'personal', module: 'security' },
   '/channels': { section: 'admin', module: 'channel' },
   '/gpt-accounts': { section: 'admin', module: 'gpt_accounts' },
+  '/gpt-account-status-check': {
+    section: 'admin',
+    module: 'gpt_account_status_check',
+  },
   '/models': { section: 'admin', module: 'models' },
   '/models/metadata': { section: 'admin', module: 'models' },
   '/models/deployments': { section: 'admin', module: 'models' },

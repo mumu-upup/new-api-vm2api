@@ -239,6 +239,98 @@ func TestApplyReasoningModelSuffixStillParsesOpenAIEffortTail(t *testing.T) {
 	assert.Equal(t, "high", info.ReasoningConversion.Effort)
 }
 
+func TestApplyReasoningModelSuffixForcesChannelReasoningEffort(t *testing.T) {
+	request := &dto.OpenAIResponsesRequest{
+		Model:     "gpt-6.1-sol",
+		Reasoning: &dto.Reasoning{Effort: "low"},
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-6.1-sol",
+		Request:         request,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "gpt-6.1-sol",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ForcedReasoningEffort: "max",
+			},
+		},
+	}
+
+	mustApplyReasoningModelSuffix(t, info, request)
+	require.NotNil(t, request.Reasoning)
+	assert.Equal(t, "max", request.Reasoning.Effort)
+	assert.Equal(t, "max", info.ReasoningEffort)
+}
+
+func TestApplyReasoningModelSuffixForcesChatReasoningEffort(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model:           "gpt-6.1-sol",
+		ReasoningEffort: "low",
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-6.1-sol",
+		Request:         request,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "gpt-6.1-sol",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ForcedReasoningEffort: "max",
+			},
+		},
+	}
+
+	mustApplyReasoningModelSuffix(t, info, request)
+	assert.Equal(t, "max", request.ReasoningEffort)
+	assert.Equal(t, "max", info.ReasoningEffort)
+}
+
+func TestApplyReasoningModelSuffixForcedNoneDisablesReasoning(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model:           "gpt-6.1-sol",
+		ReasoningEffort: "max",
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-6.1-sol",
+		Request:         request,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "gpt-6.1-sol",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ForcedReasoningEffort: "none",
+			},
+		},
+	}
+
+	mustApplyReasoningModelSuffix(t, info, request)
+	assert.Equal(t, "none", request.ReasoningEffort)
+	require.NotNil(t, info.ReasoningConversion)
+	assert.Equal(t, "disabled", info.ReasoningConversion.Mode)
+	assert.Equal(t, "none", info.ReasoningConversion.Effort)
+}
+
+func TestApplyReasoningModelSuffixForcedEffortRespectsChannelPassThrough(t *testing.T) {
+	request := &dto.GeneralOpenAIRequest{
+		Model:           "gpt-6.1-sol",
+		ReasoningEffort: "low",
+	}
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-6.1-sol",
+		Request:         request,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "gpt-6.1-sol",
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				ForcedReasoningEffort: "max",
+			},
+			ChannelSetting: dto.ChannelSettings{PassThroughBodyEnabled: true},
+		},
+	}
+
+	mustApplyReasoningModelSuffix(t, info, request)
+	assert.Equal(t, "low", request.ReasoningEffort)
+	assert.Nil(t, info.ReasoningConversion)
+}
+
 func TestApplyReasoningModelSuffixLeavesUnknownOpenRouterThinkingModel(t *testing.T) {
 	openRouter := &relaycommon.RelayInfo{
 		OriginModelName: "some-model-thinking",
