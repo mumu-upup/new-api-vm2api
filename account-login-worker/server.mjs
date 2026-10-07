@@ -2,7 +2,7 @@ import http from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
-import { validateLoginRequest, safeLoginResult } from './login.mjs'
+import { validateLoginRequest, safeLoginResult, safeCheckResult } from './login.mjs'
 
 export function createLoginServer({ token, login }) {
   if (typeof token !== 'string' || token.length < 32 || /\s/.test(token)) throw new Error('invalid_worker_token')
@@ -22,7 +22,7 @@ export function createLoginServer({ token, login }) {
       req.resume()
       return
     }
-    if (req.method !== 'POST' || req.url !== '/login') {
+    if (req.method !== 'POST' || !['/login', '/check', '/probe'].includes(req.url)) {
       res.writeHead(404).end('{"error_code":"not_found"}')
       req.resume()
       return
@@ -64,8 +64,13 @@ export function createLoginServer({ token, login }) {
     const deadline = setTimeout(() => abort.abort(), 165000)
     res.on('close', () => { if (!res.writableEnded) abort.abort() })
     try {
-      const result = await login(payload, abort.signal)
-      res.end(JSON.stringify(safeLoginResult(result, payload.state)))
+      const checkOnly = req.url === '/check'
+      const probe = req.url === '/probe'
+      if (checkOnly || probe) payload.totp_provider = 'local'
+      if (probe) payload.workspace_preference = 'team_then_personal'
+      const result = await login(payload, abort.signal, { checkOnly, probe })
+      const response = req.url === '/check' ? safeCheckResult(result, payload.state) : safeLoginResult(result, payload.state)
+      res.end(JSON.stringify(response))
     } catch {
       res.end('{"status":"failed","error_code":"automation_unavailable"}')
     } finally {

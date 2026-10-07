@@ -110,6 +110,11 @@ const (
 )
 
 type ChannelOtherSettings struct {
+	// ForcedReasoningEffort overrides client reasoning controls for compatible
+	// OpenAI chat-completions and Responses channels. It is intended for local
+	// Prism bridges whose upstream account must always receive the selected
+	// effort.
+	ForcedReasoningEffort                 string                `json:"forced_reasoning_effort,omitempty"`
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"`   // "json" or "api_key"
 	VertexProjectID                       string                `json:"vertex_project_id,omitempty"` // 仅当 vertex_key_type=api_key 时使用；JSON 模式下从 service account 解析
@@ -139,6 +144,22 @@ type ChannelOtherSettings struct {
 	// rejection. Empty follows the default allow policy. Accepted values:
 	// "", "allow", "safe", "strict".
 	ToolLossPolicy string `json:"tool_loss_policy,omitempty"`
+}
+
+// ValidateForcedReasoningEffort validates the portable reasoning effort values
+// accepted by the relay conversion layer. Provider-specific values such as
+// Prism's "ultra" are intentionally excluded until the host can preserve them
+// across every conversion path.
+func (s *ChannelOtherSettings) ValidateForcedReasoningEffort() error {
+	if s == nil {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(s.ForcedReasoningEffort)) {
+	case "", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return nil
+	default:
+		return fmt.Errorf("invalid forced_reasoning_effort: %s", s.ForcedReasoningEffort)
+	}
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

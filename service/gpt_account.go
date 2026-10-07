@@ -374,6 +374,8 @@ func runGPTAccountLogin(account *model.GPTAccount, identity AuthIdentity, refres
 	payload := map[string]string{"authorization_url": authorization.AuthorizationURL, "state": state, "email": account.Email, "password": secrets.Password, "totp_secret": secrets.TOTPSecret, "totp_provider": secrets.TOTPProvider}
 	if account.AccountID != "" {
 		payload["expected_account_id"] = account.AccountID
+	} else {
+		payload["workspace_preference"] = "team_then_personal"
 	}
 	body, err := common.Marshal(payload)
 	if err != nil {

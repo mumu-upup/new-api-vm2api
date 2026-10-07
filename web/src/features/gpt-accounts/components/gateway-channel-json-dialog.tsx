@@ -41,7 +41,7 @@ export function GatewayChannelJSONDialog(props: {
         submittedJSON = JSON.stringify({ ...value, group: parsedGroup.data })
       }
     } catch {
-      setValidation('Paste a valid CPA or Sub2API channel JSON object.')
+      setValidation('Paste a valid CPA, Sub2API, or Prism channel JSON object.')
       return
     }
     const result = await operation.execute((signal) =>
@@ -59,9 +59,9 @@ export function GatewayChannelJSONDialog(props: {
       onOpenChange={(open) => {
         if (!open && !operation.pending) props.onClose()
       }}
-      title={t('Import CPA/Sub2API channel JSON')}
+      title={t('Import CPA/Sub2API/Prism channel JSON')}
       description={t(
-        'Create a relay channel directly from a CPA or Sub2API JSON object.'
+        'Create a relay channel directly from a CPA, Sub2API, or Prism JSON object.'
       )}
       footer={
         <>
@@ -95,7 +95,7 @@ export function GatewayChannelJSONDialog(props: {
         )}
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Use a relay configuration with provider, base_url, and api_key (or relay_key). Account OAuth credentials are not relay channel keys.'
+            'Use a CPA, Sub2API, or Prism relay configuration with provider, base_url, and api_key (or relay_key). Account OAuth credentials are not relay channel keys.'
           )}
         </p>
         <div className='space-y-2'>

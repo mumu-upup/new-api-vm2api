@@ -79,6 +79,7 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 		key      string
 		models   string
 		group    string
+		effort   string
 	}{
 		{
 			name:     "CPA aliases",
@@ -107,6 +108,15 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 			models:   "gpt-5",
 			group:    "",
 		},
+		{
+			name:     "Prism bridge",
+			raw:      `{"provider":"prism-bridge","base_url":"http://127.0.0.1:18765/v1","allow_local_http":true,"api_key":"local-key","model":"gpt-6.1-sol"}`,
+			provider: "prism",
+			baseURL:  "http://127.0.0.1:18765",
+			key:      "local-key",
+			models:   "gpt-6.1-sol",
+			effort:   "max",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -117,6 +127,7 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 			assert.Equal(t, test.key, got.APIKey)
 			assert.Equal(t, test.models, got.Models)
 			assert.Equal(t, test.group, got.Group)
+			assert.Equal(t, test.effort, got.ForcedReasoningEffort)
 			for _, path := range []string{"/v1/chat/completions", "/v1/responses", "/v1/responses/compact"} {
 				info := &relaycommon.RelayInfo{
 					ChannelMeta:    &relaycommon.ChannelMeta{ChannelType: constant.ChannelTypeOpenAI, ChannelBaseUrl: got.BaseURL},
@@ -135,6 +146,46 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 			}
 		})
 	}
+}
+
+func TestCreateGPTGatewayChannelPersistsPrismReasoningPolicy(t *testing.T) {
+	setupGPTAccountGatewayTest(t)
+	input, err := service.ParseGPTGatewayChannelJSON(`{"provider":"prism","base_url":"http://127.0.0.1:18765/v1","allow_local_http":true,"api_key":"relay-key","models":["gpt-6.1-sol"]}`)
+	require.NoError(t, err)
+	for _, test := range []struct {
+		name   string
+		effort string
+		want   string
+	}{
+		{name: "default", want: "max"},
+		{name: "explicit", effort: " HIGH ", want: "high"},
+		{name: "disabled", effort: "none", want: "none"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input.ForcedReasoningEffort = test.effort
+			channel, err := service.CreateGPTGatewayChannel(input)
+			require.NoError(t, err)
+			require.NotZero(t, channel.Id)
+			var stored model.Channel
+			require.NoError(t, model.DB.First(&stored, channel.Id).Error)
+			assert.Equal(t, constant.ChannelTypeOpenAI, stored.Type)
+			assert.Equal(t, "http://127.0.0.1:18765", stored.GetBaseURL())
+			assert.Equal(t, test.want, stored.GetOtherSettings().ForcedReasoningEffort)
+		})
+	}
+}
+
+func TestCreateGPTGatewayChannelRejectsInvalidReasoningPolicy(t *testing.T) {
+	setupGPTAccountGatewayTest(t)
+	_, err := service.CreateGPTGatewayChannel(service.GPTGatewayChannelInput{
+		Name:                  "Prism bridge",
+		Provider:              "prism",
+		BaseURL:               "http://127.0.0.1:18765",
+		APIKey:                "relay-key",
+		Models:                "gpt-6.1-sol",
+		ForcedReasoningEffort: "ultra",
+	})
+	assert.Error(t, err)
 }
 
 func TestParseGPTGatewayChannelJSONRejectsUnroutableModels(t *testing.T) {

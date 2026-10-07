@@ -222,9 +222,9 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 	if err != nil {
 		return nil, err
 	}
-	models := strings.TrimSpace(input.Models)
-	if models == "" {
-		models = "gpt-5"
+	models, err := model.ResolveGPTAccountModels(input.Models)
+	if err != nil {
+		return nil, err
 	}
 	if len(name) > 128 || len(group) > 64 || strings.ContainsAny(group, "\r\n") || len(models) > 8192 || strings.ContainsAny(models, "\r\n") {
 		return nil, errors.New("invalid_account")

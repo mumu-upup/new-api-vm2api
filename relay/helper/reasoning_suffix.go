@@ -3,8 +3,11 @@ package helper
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
@@ -56,6 +59,25 @@ func ApplyReasoningModelSuffix(c *gin.Context, info *relaycommon.RelayInfo, outb
 	selected := originParsed
 	if upstream != origin {
 		selected, diagnostics = overlayMappedModelModifiers(selected, upstreamParsed, diagnostics)
+	}
+	if info.ChannelMeta != nil && info.ChannelMeta.ChannelType == constant.ChannelTypeOpenAI && info.RelayMode != relayconstant.RelayModeResponsesCompact {
+		forcedEffort := strings.TrimSpace(info.ChannelMeta.ChannelOtherSettings.ForcedReasoningEffort)
+		if forcedEffort != "" {
+			effort, err := reasoning.ParseEffort(forcedEffort)
+			if err != nil {
+				return reasoning.AsClientError(err)
+			}
+			mode := reasoning.ModeEnabled
+			if effort == reasoning.EffortNone {
+				mode = reasoning.ModeDisabled
+			}
+			selected.intent = reasoning.Intent{
+				Mode:   mode,
+				Effort: effort,
+				Source: reasoning.SourceExplicit,
+			}
+			selected.hasThinking = true
+		}
 	}
 
 	if selected.hasThinking {
