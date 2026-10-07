@@ -432,7 +432,12 @@ export async function browserLogin(input, signal, options = {}) {
           }
           if (matches.length !== 1) return { ok: false, error: 'workspace_selection_required' }
           const radio = matches[0]
-          if (radio.disabled || radios.filter(element => element.value === radio.value).length !== 1) return { ok: false, error: 'workspace_selection_required' }
+          // With only one workspace, the official consent form may render it
+          // checked and disabled. Confirm that fixed choice without enabling
+          // or changing it; a saved binding must still match above.
+          const fixedWorkspace = probe && radios.length === 1 && radio.disabled && radio.checked
+          if ((radio.matches(':disabled') && !fixedWorkspace) || radio.closest('[aria-disabled="true"]') ||
+              radios.filter(element => element.value === radio.value).length !== 1) return { ok: false, error: 'workspace_selection_required' }
           const form = radio.form
           if (!form || form.method.toLowerCase() !== 'post') return { ok: false, error: 'workspace_selection_required' }
           if (probe && ([...document.forms].filter(visible).length !== 1 ||
@@ -451,9 +456,16 @@ export async function browserLogin(input, signal, options = {}) {
           if (submitters.length !== 1) return { ok: false, error: 'workspace_selection_required' }
           const submitter = submitters[0]
           if (['formaction', 'formmethod', 'formtarget'].some(attribute => submitter.hasAttribute(attribute))) return { ok: false, error: 'untrusted_form_action' }
-          radio.checked = true
-          radio.dispatchEvent(new Event('input', { bubbles: true }))
-          radio.dispatchEvent(new Event('change', { bubbles: true }))
+          if (fixedWorkspace) {
+            // Disabled radios are omitted from native form submissions. Keep
+            // the server's default, or its matching hidden workspace field.
+            const values = new FormData(form, submitter).getAll('workspace_id')
+            if (values.length > 1 || values.some(value => value !== radio.value)) return { ok: false, error: 'workspace_selection_required' }
+          } else {
+            radio.checked = true
+            radio.dispatchEvent(new Event('input', { bubbles: true }))
+            radio.dispatchEvent(new Event('change', { bubbles: true }))
+          }
           if (!radio.checked || radio.form !== form) return { ok: false, error: 'workspace_selection_required' }
           form.requestSubmit(submitter)
           return { ok: true }
