@@ -151,6 +151,12 @@ export function useSidebarData(): SidebarData {
             requiredRole: ROLE.ADMIN,
           },
           {
+            title: t('GPT Account Status Check'),
+            url: '/gpt-account-status-check',
+            icon: ShieldCheck,
+            requiredRole: ROLE.ADMIN,
+          },
+          {
             title: t('Models'),
             url: '/models/metadata',
             icon: Box,

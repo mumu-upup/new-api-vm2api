@@ -4,12 +4,12 @@ const oauthClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
 const callbackURL = 'http://localhost:1455/auth/callback'
 const errorCodes = new Set([
   'captcha_required', 'email_verification_required', 'consent_required',
-  'additional_verification_required', 'invalid_credentials', 'account_unavailable',
+  'additional_verification_required', 'invalid_credentials', 'account_disabled', 'account_unavailable',
   'login_timeout', 'automation_unavailable', 'invalid_callback',
   'login_navigation_blocked', 'login_navigation_failed', 'login_screen_unrecognized',
   'email_submission_failed', 'password_submission_failed', 'totp_submission_failed',
   'email_step_timeout', 'password_step_timeout', 'totp_step_timeout',
-  'workspace_selection_required',
+  'workspace_selection_required', 'password_not_challenged', 'totp_not_challenged',
   'totp_secret_required', 'totp_provider_invalid_response',
   'totp_provider_unavailable', 'totp_provider_timeout', 'invalid_totp_code',
 ])
@@ -42,6 +42,30 @@ export function generateTOTP(seed, timestamp = Date.now()) {
     return String((digest.readUInt32BE(offset) & 0x7fffffff) % 1000000).padStart(6, '0')
   } finally {
     key.fill(0)
+  }
+}
+
+export class LoginClock {
+  constructor(localNow = Date.now) {
+    this.localNow = localNow
+    this.offsetMs = 0
+    this.bestRoundTripMs = Infinity
+  }
+
+  observe(date, age, startedAt, receivedAt) {
+    // Use only fresh, low-latency samples. Callers restrict the source to
+    // successful HTTPS navigations on the official authentication origin.
+    if (typeof date !== 'string' || age !== undefined && age !== '0') return
+    const serverTime = Date.parse(date)
+    const roundTripMs = receivedAt - startedAt
+    if (!Number.isFinite(serverTime) || !Number.isFinite(roundTripMs) || roundTripMs < 0 ||
+        roundTripMs > 5000 || roundTripMs > this.bestRoundTripMs) return
+    this.offsetMs = serverTime - (startedAt + receivedAt) / 2
+    this.bestRoundTripMs = roundTripMs
+  }
+
+  now() {
+    return this.localNow() + this.offsetMs
   }
 }
 
@@ -107,12 +131,13 @@ export async function getLoginTOTP(input, signal, options = {}) {
 
 export function validateLoginRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('invalid_request')
-  const { authorization_url, state, email, password, totp_secret = '', totp_provider = 'local', expected_account_id = '' } = input
+  const { authorization_url, state, email, password, totp_secret = '', totp_provider = 'local', expected_account_id = '', workspace_preference = '' } = input
   if (typeof authorization_url !== 'string' || authorization_url.length > 4096 ||
       typeof state !== 'string' || !/^[A-Za-z0-9_-]{24,128}$/.test(state) ||
       typeof email !== 'string' || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email) ||
       typeof password !== 'string' || !password || password.length > 1024 ||
       typeof totp_secret !== 'string' || !['', 'local', '2fa_cn'].includes(totp_provider) ||
+      !['', 'team_then_personal'].includes(workspace_preference) ||
       typeof expected_account_id !== 'string' || expected_account_id.length > 128 || /[\x00-\x20\x7f]/.test(expected_account_id)) throw new Error('invalid_request')
   const url = new URL(authorization_url)
   if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/oauth/authorize' ||
@@ -127,7 +152,7 @@ export function validateLoginRequest(input) {
     if (url.searchParams.getAll(key).length !== 1) throw new Error('invalid_request')
   }
   if (totp_secret) decodeSeed(totp_secret).fill(0)
-  return { authorization_url, state, email, password, totp_secret, totp_provider: totp_provider || 'local', expected_account_id }
+  return { authorization_url, state, email, password, totp_secret, totp_provider: totp_provider || 'local', expected_account_id, workspace_preference }
 }
 
 export function safeLoginResult(result, state) {
@@ -141,4 +166,12 @@ export function safeLoginResult(result, state) {
     status: result?.status === 'needs_attention' ? 'needs_attention' : 'failed',
     error_code: errorCodes.has(result?.error_code) ? result.error_code : 'automation_unavailable',
   }
+}
+
+export function safeCheckResult(result, state) {
+  if (result?.status === 'credentials_verified') {
+    return result.state === state ? { status: 'success' } : { status: 'failed', error_code: 'invalid_callback' }
+  }
+  const sanitized = safeLoginResult(result, state)
+  return sanitized.status === 'success' ? { status: 'success' } : sanitized
 }

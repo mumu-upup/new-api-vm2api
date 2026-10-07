@@ -262,6 +262,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	// reasoning_effort stays untouched unless a modifier or conversion applies.
 	// OpenRouter retains its own dialect normalization below.
 	preserveSuffix := model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName) || model_setting.ShouldPreserveThinkingSuffix(info.UpstreamModelName)
+	forcedEffort := info.ChannelType == constant.ChannelTypeOpenAI && info.RelayMode != relayconstant.RelayModeResponsesCompact && strings.TrimSpace(info.ChannelOtherSettings.ForcedReasoningEffort) != ""
 	upstreamEffort, _ := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(info.UpstreamModelName)
 	originEffort, _ := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(info.OriginModelName)
 	renderReasoning := len(request.Reasoning) > 0 || len(info.RequestConversionChain) > 1 || request.ReasoningConversion != nil || info.ReasoningState() != nil ||
@@ -381,7 +382,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 		}
 		recordReasoningDiagnostics(c, info, diagnostics)
 		mergeSuffix := func(modelName, rawEffort string) error {
-			if rawEffort == "" {
+			if rawEffort == "" || forcedEffort {
 				return nil
 			}
 			suffixEffort, err := kitreasoning.ParseEffort(rawEffort)
@@ -681,6 +682,7 @@ func detectImageMimeType(filename string) string {
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
 	//  转换模型推理力度后缀
 	effort, originModel := reasoning.ParseOpenAIReasoningEffortFromModelSuffix(request.Model)
+	forcedEffort := info != nil && info.ChannelMeta != nil && info.ChannelType == constant.ChannelTypeOpenAI && info.RelayMode != relayconstant.RelayModeResponsesCompact && strings.TrimSpace(info.ChannelOtherSettings.ForcedReasoningEffort) != ""
 	preserveSuffix := model_setting.ShouldPreserveThinkingSuffix(request.Model) || (info != nil && model_setting.ShouldPreserveThinkingSuffix(info.OriginModelName))
 	if preserveSuffix {
 		effort = ""
@@ -706,7 +708,7 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	}
 	recordReasoningDiagnostics(c, info, diagnostics)
 	mergeSuffix := func(modelName, rawEffort string) error {
-		if rawEffort == "" {
+		if rawEffort == "" || forcedEffort {
 			return nil
 		}
 		suffixEffort, err := kitreasoning.ParseEffort(rawEffort)

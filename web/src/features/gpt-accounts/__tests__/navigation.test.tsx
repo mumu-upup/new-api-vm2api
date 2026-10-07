@@ -10,6 +10,7 @@ import { afterEach, expect, it } from 'vitest'
 
 import { useSidebarData } from '@/hooks/use-sidebar-data'
 import { useSidebarView } from '@/hooks/use-sidebar-view'
+import { Route as StatusCheckRoute } from '@/routes/_authenticated/gpt-account-status-check'
 import { Route } from '@/routes/_authenticated/gpt-accounts'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -63,9 +64,17 @@ it.each([1, 10, 100])(
     await screen.findByRole('navigation', { name: 'Main' })
     if (role < 10) {
       expect(screen.queryByText('GPT Accounts')).not.toBeInTheDocument()
+      expect(
+        screen.queryByText('GPT Account Status Check')
+      ).not.toBeInTheDocument()
+      expect(() => StatusCheckRoute.options.beforeLoad?.({} as never)).toThrow()
       expect(() => Route.options.beforeLoad?.({} as never)).toThrow()
     } else {
       expect(screen.getByText('GPT Accounts')).toBeVisible()
+      expect(screen.getByText('GPT Account Status Check')).toBeVisible()
+      expect(() =>
+        StatusCheckRoute.options.beforeLoad?.({} as never)
+      ).not.toThrow()
       expect(() => Route.options.beforeLoad?.({} as never)).not.toThrow()
     }
     client.clear()

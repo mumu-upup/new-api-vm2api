@@ -9,6 +9,15 @@ import (
 )
 
 func registerGPTAccountRoutes(api *gin.RouterGroup) {
+	statusChecks := api.Group("/gpt-account-status-checks", middleware.AdminAuth(), middleware.DisableCache())
+	for _, route := range []permissionRoute{
+		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccountStatusCheck},
+		{http.MethodPost, "/:id/cancel", authz.GPTAccountManage, controller.CancelGPTAccountStatusCheck},
+	} {
+		handlePermissionRoute(statusChecks, route.method, route.path, route.permission, middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("gpt-account-status-check"), route.handler)
+	}
+	// Polling is read-only and must not consume the mutation budget.
+	handlePermissionRoute(statusChecks, http.MethodGet, "/:id", authz.GPTAccountManage, controller.GetGPTAccountStatusCheck)
 	group := api.Group("/gpt-accounts", middleware.AdminAuth(), middleware.DisableCache())
 	// Dashboard polling must not consume the budget shared by login and
 	// credential changes. These reads retain the parent API rate limiter.

@@ -9,7 +9,7 @@ it.each([
   ['gateway_channel_json_invalid', 'The channel JSON is invalid.'],
   [
     'gateway_channel_provider_required',
-    'Choose CPA or Sub2API in the channel JSON.',
+    'Choose CPA, Sub2API, or Prism in the channel JSON.',
   ],
   ['gateway_channel_url_required', 'Provide a relay URL in the channel JSON.'],
   ['gateway_channel_url_invalid', 'The relay URL is invalid or unsafe.'],

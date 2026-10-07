@@ -10,14 +10,235 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func setupForcedReasoningTest(t *testing.T) {
+	t.Helper()
+	originalGinMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(originalGinMode) })
+	settings := model_setting.GetGlobalSettings()
+	original := *settings
+	settings.PassThroughRequestEnabled = false
+	settings.ThinkingModelBlacklist = nil
+	settings.EffortTailModelIDs = nil
+	t.Cleanup(func() { *settings = original })
+}
+
+func TestOpenAIForcedReasoningEffortFinalBody(t *testing.T) {
+	setupForcedReasoningTest(t)
+	for _, format := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses} {
+		for _, tc := range []struct {
+			name        string
+			model       string
+			forced      string
+			override    string
+			channelType int
+			want        string
+		}{
+			{name: "origin suffix", model: "gpt-6.1-sol-low", forced: "max", want: "max"},
+			{name: "forced none beats suffix", model: "gpt-6.1-sol-high", forced: "none", want: "none"},
+			{name: "set effort", forced: "max", override: "set", want: "max"},
+			{name: "delete effort", forced: "max", override: "delete", want: "max"},
+			{name: "delete reasoning", forced: "max", override: "delete_parent", want: "max"},
+			{name: "legacy reasoning", forced: "max", override: "legacy", want: "max"},
+			{name: "replace reasoning with array", forced: "max", override: "array", want: "max"},
+			{name: "normalized policy", forced: " MAX \t", want: "max"},
+			{name: "blank policy", forced: " \t", want: "low"},
+			{name: "blank policy allows override", forced: " \t", override: "set", want: "medium"},
+			{name: "unconfigured suffix", model: "gpt-6.1-sol-high", want: "high"},
+			{name: "other channel", forced: "max", channelType: constant.ChannelTypeAzure, override: "set", want: "medium"},
+		} {
+			if tc.override == "delete_parent" && format == types.RelayFormatOpenAI {
+				continue
+			}
+			t.Run(string(format)+"/"+tc.name, func(t *testing.T) {
+				modelName := tc.model
+				if modelName == "" {
+					modelName = "gpt-6.1-sol"
+				}
+				channelType := tc.channelType
+				if channelType == 0 {
+					channelType = constant.ChannelTypeOpenAI
+				}
+				var request dto.Request
+				effortPath := "reasoning_effort"
+				if format == types.RelayFormatOpenAI {
+					request = &dto.GeneralOpenAIRequest{Model: modelName, ReasoningEffort: "low"}
+				} else {
+					request = &dto.OpenAIResponsesRequest{Model: modelName, Reasoning: &dto.Reasoning{Effort: "low", Summary: "auto"}}
+					effortPath = "reasoning.effort"
+				}
+				info := &relaycommon.RelayInfo{
+					OriginModelName: modelName,
+					Request:         request,
+					RelayFormat:     format,
+					ChannelMeta: &relaycommon.ChannelMeta{
+						ChannelType:          channelType,
+						UpstreamModelName:    modelName,
+						ChannelOtherSettings: dto.ChannelOtherSettings{ForcedReasoningEffort: tc.forced},
+					},
+				}
+				switch tc.override {
+				case "set", "delete", "delete_parent":
+					mode, path := tc.override, effortPath
+					if mode == "delete_parent" {
+						mode = "delete"
+						if format == types.RelayFormatOpenAIResponses {
+							path = "reasoning"
+						}
+					}
+					info.ParamOverride = map[string]any{"operations": []any{map[string]any{"mode": mode, "path": path, "value": "medium"}}}
+				case "legacy":
+					info.ParamOverride = map[string]any{
+						"reasoning_effort": "low",
+						"reasoning":        map[string]any{"enabled": false, "effort": "low", "max_tokens": 1, "summary": "auto"},
+					}
+				case "array":
+					info.ParamOverride = map[string]any{"reasoning": []any{}}
+				}
+				c, _ := gin.CreateTestContext(httptest.NewRecorder())
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+				require.NoError(t, helper.ApplyReasoningModelSuffix(c, info, request))
+				var converted any
+				var err error
+				switch req := request.(type) {
+				case *dto.GeneralOpenAIRequest:
+					converted, err = (&Adaptor{}).ConvertOpenAIRequest(c, info, req)
+				case *dto.OpenAIResponsesRequest:
+					converted, err = (&Adaptor{}).ConvertOpenAIResponsesRequest(c, info, *req)
+				}
+				require.NoError(t, err)
+				body, err := common.Marshal(converted)
+				require.NoError(t, err)
+				if len(info.ParamOverride) > 0 {
+					body, err = relaycommon.ApplyParamOverrideWithRelayInfo(body, info)
+					require.NoError(t, err)
+				}
+				assert.Equal(t, tc.want, gjson.GetBytes(body, effortPath).String(), string(body))
+				assert.Equal(t, tc.want, info.ReasoningEffort)
+				assert.Equal(t, modelName, info.OriginModelName)
+				if tc.override == "legacy" {
+					if format == types.RelayFormatOpenAI {
+						assert.False(t, gjson.GetBytes(body, "reasoning").Exists(), string(body))
+					} else {
+						assert.False(t, gjson.GetBytes(body, "reasoning_effort").Exists(), string(body))
+						assert.False(t, gjson.GetBytes(body, "reasoning.enabled").Exists(), string(body))
+						assert.False(t, gjson.GetBytes(body, "reasoning.max_tokens").Exists(), string(body))
+						assert.Equal(t, "auto", gjson.GetBytes(body, "reasoning.summary").String())
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestOpenAIForcedReasoningEffortChatViaResponses(t *testing.T) {
+	setupForcedReasoningTest(t)
+	for _, beforeConversion := range []bool{true, false} {
+		name := "override after conversion"
+		if beforeConversion {
+			name = "override before conversion"
+		}
+		t.Run(name, func(t *testing.T) {
+			request := &dto.GeneralOpenAIRequest{
+				Model: "gpt-6.1-sol", ReasoningEffort: "low",
+				Messages: []dto.Message{{Role: "user", Content: "hello"}},
+			}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "gpt-6.1-sol", Request: request,
+				RelayFormat: types.RelayFormatOpenAI,
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType: constant.ChannelTypeOpenAI, UpstreamModelName: request.Model,
+					ChannelOtherSettings: dto.ChannelOtherSettings{ForcedReasoningEffort: "max"},
+					ParamOverride: map[string]any{
+						"model": "gpt-6.1-sol-low", "reasoning_effort": "low",
+						"reasoning": map[string]any{"effort": "low"},
+					},
+				},
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			require.NoError(t, helper.ApplyReasoningModelSuffix(c, info, request))
+			if beforeConversion {
+				body, err := common.Marshal(request)
+				require.NoError(t, err)
+				body, err = relaycommon.ApplyParamOverrideWithRelayInfo(body, info)
+				require.NoError(t, err)
+				request = &dto.GeneralOpenAIRequest{}
+				require.NoError(t, common.Unmarshal(body, request))
+			}
+			result, err := service.ConvertRequest(c, info, types.RelayFormatOpenAIResponses, request)
+			require.NoError(t, err)
+			responses, ok := result.Value.(*dto.OpenAIResponsesRequest)
+			require.True(t, ok)
+			converted, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(c, info, *responses)
+			require.NoError(t, err)
+			relaycommon.AppendRequestConversionFromRequest(info, converted)
+			require.Equal(t, types.RelayFormatOpenAI, info.RelayFormat)
+			require.Equal(t, types.RelayFormat(types.RelayFormatOpenAIResponses), info.GetFinalRequestRelayFormat())
+			body, err := common.Marshal(converted)
+			require.NoError(t, err)
+			if !beforeConversion {
+				body, err = relaycommon.ApplyParamOverrideWithRelayInfo(body, info)
+				require.NoError(t, err)
+			}
+			assert.Equal(t, "max", gjson.GetBytes(body, "reasoning.effort").String(), string(body))
+			assert.False(t, gjson.GetBytes(body, "reasoning_effort").Exists(), string(body))
+			assert.Equal(t, "max", info.ReasoningEffort)
+			if beforeConversion {
+				assert.Equal(t, "gpt-6.1-sol", gjson.GetBytes(body, "model").String())
+			}
+		})
+	}
+}
+
+func TestOpenAIForcedReasoningEffortBypass(t *testing.T) {
+	setupForcedReasoningTest(t)
+	settings := model_setting.GetGlobalSettings()
+	for _, bypass := range []string{"channel passthrough", "global passthrough", "compact"} {
+		t.Run(bypass, func(t *testing.T) {
+			settings.PassThroughRequestEnabled = bypass == "global passthrough"
+			request := &dto.OpenAIResponsesRequest{Model: "gpt-6.1-sol", Reasoning: &dto.Reasoning{Effort: "low"}}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: request.Model, Request: request, RelayFormat: types.RelayFormatOpenAIResponses,
+				ChannelMeta: &relaycommon.ChannelMeta{
+					ChannelType: constant.ChannelTypeOpenAI, UpstreamModelName: request.Model,
+					ChannelOtherSettings: dto.ChannelOtherSettings{ForcedReasoningEffort: "max"},
+					ChannelSetting:       dto.ChannelSettings{PassThroughBodyEnabled: bypass == "channel passthrough"},
+					ParamOverride:        map[string]any{"metadata": map[string]any{"unrelated": "kept"}},
+				},
+			}
+			if bypass == "compact" {
+				info.RelayMode = relayconstant.RelayModeResponsesCompact
+			}
+			require.NoError(t, helper.ApplyReasoningModelSuffix(nil, info, request))
+			assert.Equal(t, "low", request.Reasoning.Effort)
+			var converted any = request
+			var err error
+			if bypass == "compact" {
+				converted, err = (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, *request)
+				require.NoError(t, err)
+			}
+			body, err := common.Marshal(converted)
+			require.NoError(t, err)
+			body, err = relaycommon.ApplyParamOverrideWithRelayInfo(body, info)
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"model":"gpt-6.1-sol","reasoning":{"effort":"low"},"metadata":{"unrelated":"kept"}}`, string(body))
+		})
+	}
+}
 
 func newResponsesChatTestContext(t *testing.T, body string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()

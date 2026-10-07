@@ -84,6 +84,7 @@ export interface GptAccountGatewayInput {
 
 export interface GptAccountConfig {
   default_group: string
+  default_models: string
   encryption_available: boolean
   automation_available: boolean
 }

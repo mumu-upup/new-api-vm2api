@@ -196,7 +196,7 @@ func UpdateOption(c *gin.Context) {
 	}
 	// GPT onboarding defaults are managed by the session-only config endpoint.
 	// The generic option route also accepts PATs and must not bypass that policy.
-	if strings.EqualFold(option.Key, model.GPTAccountDefaultGroupKey) {
+	if strings.EqualFold(option.Key, model.GPTAccountDefaultGroupKey) || strings.EqualFold(option.Key, model.GPTAccountDefaultModelsKey) {
 		gptAccountError(c, http.StatusForbidden, "authorization_forbidden")
 		return
 	}

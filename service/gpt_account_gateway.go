@@ -15,26 +15,29 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	relaydto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
 // GPTGatewayChannelInput is the minimal public channel configuration accepted
-// by the direct CPA/Sub2API JSON importer. It intentionally contains only the
+// by the direct gateway JSON importer. It intentionally contains only the
 // relay credentials needed by a channel; management credentials and account
 // OAuth documents are rejected instead of being sent as relay keys.
 type GPTGatewayChannelInput struct {
-	Name     string
-	Provider string
-	BaseURL  string
-	APIKey   string
-	Group    string
-	Models   string
+	Name                  string
+	Provider              string
+	BaseURL               string
+	APIKey                string
+	Group                 string
+	Models                string
+	ForcedReasoningEffort string
 }
 
-// ParseGPTGatewayChannelJSON normalizes the common CPA and Sub2API channel
-// JSON shapes into one channel input. This is a local parser only: it never
-// contacts a gateway and never returns the supplied credential in an error.
+// ParseGPTGatewayChannelJSON normalizes the supported CPA, Sub2API, and Prism
+// channel JSON shapes into one channel input. This is a local parser only: it
+// never contacts a gateway and never returns the supplied credential in an
+// error.
 func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 	if len(strings.TrimSpace(raw)) == 0 || len(raw) > 128<<10 {
 		return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
@@ -57,6 +60,8 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 		provider = "cpa"
 	case "sub2api", "sub2-api", "sub2_api":
 		provider = "sub2api"
+	case "prism", "prism-bridge", "prism_bridge":
+		provider = "prism"
 	default:
 		return GPTGatewayChannelInput{}, errors.New("gateway_channel_provider_required")
 	}
@@ -88,6 +93,9 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 		return GPTGatewayChannelInput{}, errors.New("gateway_channel_key_invalid")
 	}
 	models := "gpt-5"
+	if provider == "prism" {
+		models = "gpt-6.1-sol"
+	}
 	if value := readString("model"); value != "" {
 		models = value
 	}
@@ -121,6 +129,23 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 		modelNames = append(modelNames, modelName)
 	}
 	models = strings.Join(modelNames, ",")
+	forcedReasoningEffort := ""
+	if provider == "prism" {
+		forcedReasoningEffort = "max"
+		if value, exists := document["forced_reasoning_effort"]; exists {
+			value, ok := value.(string)
+			if !ok {
+				return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
+			}
+			forcedReasoningEffort = strings.ToLower(strings.TrimSpace(value))
+			if forcedReasoningEffort == "" {
+				forcedReasoningEffort = "max"
+			}
+		}
+	}
+	if err := (&relaydto.ChannelOtherSettings{ForcedReasoningEffort: forcedReasoningEffort}).ValidateForcedReasoningEffort(); err != nil {
+		return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
+	}
 	group := readString("group", "group_name", "groupName")
 	name := readString("name", "channel_name", "channelName")
 	if name == "" {
@@ -129,13 +154,21 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 	if len(name) > 128 || len(group) > 64 || len(models) > 8192 || strings.ContainsAny(name+group+models, "\r\n") {
 		return GPTGatewayChannelInput{}, errors.New("gateway_channel_json_invalid")
 	}
-	return GPTGatewayChannelInput{Name: name, Provider: provider, BaseURL: baseURL, APIKey: apiKey, Group: group, Models: models}, nil
+	return GPTGatewayChannelInput{Name: name, Provider: provider, BaseURL: baseURL, APIKey: apiKey, Group: group, Models: models, ForcedReasoningEffort: forcedReasoningEffort}, nil
 }
 
 // CreateGPTGatewayChannel creates the relay channel in the same transaction
 // as its ability rows, so a malformed ability update cannot leave a half-made
 // channel behind.
 func CreateGPTGatewayChannel(input GPTGatewayChannelInput) (*model.Channel, error) {
+	forcedReasoningEffort := strings.ToLower(strings.TrimSpace(input.ForcedReasoningEffort))
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	if forcedReasoningEffort == "" && (provider == "prism" || provider == "prism-bridge" || provider == "prism_bridge") {
+		forcedReasoningEffort = "max"
+	}
+	if err := (&relaydto.ChannelOtherSettings{ForcedReasoningEffort: forcedReasoningEffort}).ValidateForcedReasoningEffort(); err != nil {
+		return nil, err
+	}
 	group, err := model.ResolveGPTAccountGroup(input.Group)
 	if err != nil {
 		return nil, err
@@ -145,6 +178,9 @@ func CreateGPTGatewayChannel(input GPTGatewayChannelInput) (*model.Channel, erro
 		channelType = constant.ChannelTypeSub2API
 	}
 	channel := &model.Channel{Type: channelType, Name: input.Name, Key: input.APIKey, BaseURL: &input.BaseURL, Group: group, Models: input.Models, Status: common.ChannelStatusEnabled, CreatedTime: common.GetTimestamp()}
+	if forcedReasoningEffort != "" {
+		channel.SetOtherSettings(relaydto.ChannelOtherSettings{ForcedReasoningEffort: forcedReasoningEffort})
+	}
 	err = model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(channel).Error; err != nil {
 			return err

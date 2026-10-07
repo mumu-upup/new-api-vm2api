@@ -14,7 +14,9 @@ import { accountGroupSchema } from '../lib/group-form'
 
 interface OAuthImportDialogProps {
   defaultGroup?: string
+  defaultModels?: string
   accountGroup?: string
+  accountModels?: string
   accountId?: number
   onClose: () => void
   onSaved: () => void
@@ -38,6 +40,7 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
   const operation = useAccountOperation()
   const [oauthJSON, setOAuthJSON] = useState('')
   const [group, setGroup] = useState('')
+  const [models, setModels] = useState('')
   const [validation, setValidation] = useState('')
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -62,6 +65,9 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
           oauth_json: oauthJSON,
           ...(!props.accountId && parsedGroup.data
             ? { group: parsedGroup.data }
+            : {}),
+          ...(!props.accountId && models.trim()
+            ? { models: models.trim() }
             : {}),
         },
         signal
@@ -132,6 +138,26 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
             {props.accountId
               ? t('Manage routing settings in the associated channel.')
               : t('Existing matching accounts keep their current group.')}
+          </p>
+        </div>
+        <div className='space-y-2'>
+          <Label htmlFor='gpt-oauth-import-models'>{t('Models')}</Label>
+          <Input
+            id='gpt-oauth-import-models'
+            value={props.accountId ? (props.accountModels ?? '') : models}
+            readOnly={Boolean(props.accountId)}
+            disabled={operation.pending}
+            onChange={(event) => setModels(event.target.value)}
+            placeholder={t('Use global default models: {{models}}', {
+              models: props.defaultModels ?? 'gpt-5.6',
+            })}
+          />
+          <p className='text-muted-foreground text-sm'>
+            {props.accountId
+              ? t('Manage routing settings in the associated channel.')
+              : t(
+                  'Separate model names with commas. Leave blank to use the global default models.'
+                )}
           </p>
         </div>
         <div className='space-y-2'>

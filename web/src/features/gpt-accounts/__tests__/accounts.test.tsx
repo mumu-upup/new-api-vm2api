@@ -68,6 +68,9 @@ beforeEach(() => {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    if (url === '/api/group/') {
+      return { data: { success: true, data: ['default', 'team'] } }
+    }
     if (url === '/api/gpt-account-gateways') {
       return { data: { success: true, data: { items: gateways } } }
     }
@@ -82,6 +85,7 @@ beforeEach(() => {
             encryption_available: true,
             automation_available: true,
             default_group: 'default',
+            default_models: 'gpt-5.6,gpt-6-astra',
           },
         },
       }
@@ -156,11 +160,9 @@ it('saves the global default on the server and displays it after reloading', asy
   })
   const view = renderPage()
   const input = await screen.findByLabelText('Global default group')
-  await userEvent.clear(input)
-  await userEvent.type(input, 'team')
-  await userEvent.click(
-    screen.getByRole('button', { name: 'Save default group' })
-  )
+  await userEvent.click(input)
+  await userEvent.click(await screen.findByRole('option', { name: 'team' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
   await waitFor(() =>
     expect(put).toHaveBeenCalledWith(
       '/api/gpt-accounts/config',
@@ -198,28 +200,106 @@ it('keeps an unsaved group visible and reports a failed default update', async (
   })
   renderPage()
   const input = await screen.findByLabelText('Global default group')
-  await userEvent.clear(input)
-  await userEvent.type(input, 'team')
-  await userEvent.click(
-    screen.getByRole('button', { name: 'Save default group' })
-  )
+  await userEvent.click(input)
+  await userEvent.click(await screen.findByRole('option', { name: 'team' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
   expect(await screen.findByRole('alert')).toBeVisible()
   expect(input).toHaveValue('team')
-  expect(
-    screen.getByRole('button', { name: 'Save default group' })
-  ).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Save defaults' })).toBeEnabled()
 })
+
+it('only offers configured relay groups and never saves arbitrary typed text', async () => {
+  const put = vi.spyOn(api, 'put')
+  renderPage()
+  const input = await screen.findByRole('combobox', {
+    name: 'Global default group',
+  })
+  await userEvent.click(input)
+  expect(await screen.findByRole('option', { name: 'team' })).toBeVisible()
+  expect(api.get).toHaveBeenCalledWith('/api/group/')
+  await userEvent.type(input, 'not-a-real-group')
+  expect(
+    screen.queryByRole('option', { name: 'not-a-real-group' })
+  ).not.toBeInTheDocument()
+  await userEvent.keyboard('{Enter}{Escape}')
+  expect(screen.getByRole('button', { name: 'Save defaults' })).toBeDisabled()
+  expect(put).not.toHaveBeenCalled()
+})
+
+it.each(['empty', 'failed'])(
+  'disables group selection when the relay group list is %s',
+  async (state) => {
+    const originalGet = vi.mocked(api.get).getMockImplementation()
+    if (!originalGet) throw new Error('Missing GET fixture')
+    vi.mocked(api.get).mockImplementation(async (url, config) => {
+      if (url === '/api/group/') {
+        return { data: { success: state === 'empty', data: [] } }
+      }
+      return originalGet(url, config)
+    })
+    renderPage()
+    const input = await screen.findByRole('combobox', {
+      name: 'Global default group',
+    })
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/api/group/'))
+    expect(input).toBeDisabled()
+  }
+)
 
 it('allows administrators to read the global group but not change it', async () => {
   useAuthStore.getState().auth.setUser({ id: 2, username: 'admin', role: 10 })
   renderPage()
-  expect(await screen.findByLabelText('Global default group')).toHaveAttribute(
+  expect(
+    await screen.findByRole('combobox', { name: 'Global default group' })
+  ).toBeDisabled()
+  expect(
+    screen.queryByRole('button', { name: 'Save defaults' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByLabelText('Global default models')).toHaveAttribute(
     'readonly'
   )
-  expect(
-    screen.queryByRole('button', { name: 'Save default group' })
-  ).not.toBeInTheDocument()
 })
+
+it('saves global default models without changing the group', async () => {
+  const put = vi.spyOn(api, 'put').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        default_group: 'default',
+        default_models: 'gpt-5.10,gpt-6-astra',
+      },
+    },
+  })
+  renderPage()
+  const input = await screen.findByLabelText('Global default models')
+  expect(input).toHaveValue('gpt-5.6,gpt-6-astra')
+  await userEvent.clear(input)
+  await userEvent.type(input, 'gpt-5.10,gpt-6-astra')
+  await userEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      '/api/gpt-accounts/config',
+      { default_models: 'gpt-5.10,gpt-6-astra' },
+      expect.anything()
+    )
+  )
+})
+
+it.each(['', 'gpt-5.5', 'gpt-5.6 garbage'])(
+  'rejects invalid global default models %s',
+  async (models) => {
+    const put = vi.spyOn(api, 'put')
+    renderPage()
+    fireEvent.change(await screen.findByLabelText('Global default models'), {
+      target: { value: models },
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Save defaults' }))
+    expect(
+      await screen.findByText('Enter GPT model names at version 5.6 or later.')
+    ).toBeVisible()
+    expect(put).not.toHaveBeenCalled()
+  }
+)
 
 it('sends an explicit OAuth import group directly', async () => {
   renderPage()
@@ -233,6 +313,7 @@ it('sends an explicit OAuth import group directly', async () => {
     target: { value: '{"email":"import@example.com"}' },
   })
   await userEvent.type(within(dialog).getByLabelText('Group'), 'premium')
+  await userEvent.type(within(dialog).getByLabelText('Models'), 'gpt-6-astra')
   await userEvent.click(
     within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
   )
@@ -240,7 +321,11 @@ it('sends an explicit OAuth import group directly', async () => {
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/import-oauth',
-      { oauth_json: '{"email":"import@example.com"}', group: 'premium' },
+      {
+        oauth_json: '{"email":"import@example.com"}',
+        group: 'premium',
+        models: 'gpt-6-astra',
+      },
       expect.anything()
     )
   )
@@ -253,7 +338,7 @@ it('merges a channel JSON group override into the submitted JSON', async () => {
     screen.getByRole('button', { name: 'Import channel JSON' })
   )
   const dialog = await screen.findByRole('dialog', {
-    name: 'Import CPA/Sub2API channel JSON',
+    name: 'Import CPA/Sub2API/Prism channel JSON',
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: { value: '{"provider":"cpa","group":"old"}' },
@@ -331,6 +416,11 @@ it('imports Codex OAuth JSON directly', async () => {
   const dialog = await screen.findByRole('dialog', {
     name: 'Import Codex OAuth JSON',
   })
+  expect(within(dialog).getByLabelText('Models')).toHaveValue('')
+  expect(within(dialog).getByLabelText('Models')).toHaveAttribute(
+    'placeholder',
+    'Use global default models: gpt-5.6,gpt-6-astra'
+  )
   const oauth =
     '{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id","account_id":"test-account","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}'
   fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
@@ -368,6 +458,8 @@ it('updates account OAuth JSON directly while preserving its existing group', as
   const group = within(dialog).getByLabelText('Group')
   expect(group).toHaveValue('team')
   expect(group).toHaveAttribute('readonly')
+  expect(within(dialog).getByLabelText('Models')).toHaveValue(account.models)
+  expect(within(dialog).getByLabelText('Models')).toHaveAttribute('readonly')
   const oauthJSON = '{"email":"owner@example.com","access_token":"test-access"}'
   fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
     target: { value: oauthJSON },
@@ -551,11 +643,17 @@ it('updates processing status to ready after the server returns successful authe
   items = [{ ...account, status: 'logging_in' }]
   renderPage()
   expect(await screen.findByText('Signing in')).toBeVisible()
+  expect(
+    screen.getByRole('button', { name: 'Edit Work account' })
+  ).toBeDisabled()
   items = [{ ...account, status: 'ready' }]
   await act(async () => {
     await client.invalidateQueries({ queryKey: ['gpt-accounts'] })
   })
   expect(await screen.findByText('Ready')).toBeVisible()
+  expect(
+    screen.getByRole('button', { name: 'Edit Work account' })
+  ).toBeEnabled()
 })
 
 it('clears submitted replacement credentials after a failed save', async () => {
@@ -1950,15 +2048,15 @@ it('creates a gateway with masked keys directly and keeps keys out of caches', a
   expect(cache).not.toContain('gateway-relay-secret')
 })
 
-it('imports a direct CPA or Sub2API channel JSON only directly', async () => {
+it('imports a direct Prism channel JSON only directly', async () => {
   const user = userEvent.setup()
   const configJSON =
-    '{"provider":"sub2api","name":"测试渠道","base_url":"https://sub2api.example/v1","api_key":"relay-secret","models":["gpt-5"]}'
+    '{"provider":"prism","name":"Prism relay","base_url":"https://prism.example/v1","api_key":"relay-secret","models":["gpt-6.1-sol"]}'
   renderPage()
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
   await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
   const dialog = await screen.findByRole('dialog', {
-    name: 'Import CPA/Sub2API channel JSON',
+    name: 'Import CPA/Sub2API/Prism channel JSON',
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: { value: configJSON },
@@ -1984,7 +2082,7 @@ it('rejects non-object channel JSON before importing', async () => {
   await user.click(await screen.findByRole('tab', { name: 'Gateways' }))
   await user.click(screen.getByRole('button', { name: 'Import channel JSON' }))
   const dialog = await screen.findByRole('dialog', {
-    name: 'Import CPA/Sub2API channel JSON',
+    name: 'Import CPA/Sub2API/Prism channel JSON',
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: { value: '[]' },
@@ -1994,7 +2092,7 @@ it('rejects non-object channel JSON before importing', async () => {
   )
   expect(
     await within(dialog).findByText(
-      'Paste a valid CPA or Sub2API channel JSON object.'
+      'Paste a valid CPA, Sub2API, or Prism channel JSON object.'
     )
   ).toBeVisible()
   expect(api.post).not.toHaveBeenCalled()
@@ -2014,7 +2112,7 @@ it('aborts a channel JSON import when the page closes and discards its late resp
     screen.getByRole('button', { name: 'Import channel JSON' })
   )
   const dialog = await screen.findByRole('dialog', {
-    name: 'Import CPA/Sub2API channel JSON',
+    name: 'Import CPA/Sub2API/Prism channel JSON',
   })
   fireEvent.change(within(dialog).getByLabelText('Channel JSON'), {
     target: { value: '{"provider":"cpa","api_key":"relay-secret"}' },
@@ -2047,7 +2145,7 @@ it('imports channel JSON without browser digest support', async () => {
     screen.getByRole('button', { name: 'Import channel JSON' })
   )
   const dialog = await screen.findByRole('dialog', {
-    name: 'Import CPA/Sub2API channel JSON',
+    name: 'Import CPA/Sub2API/Prism channel JSON',
   })
   const configJSON =
     '{"provider":"cpa","base_url":"https://cpa.example","api_key":"relay-secret"}'

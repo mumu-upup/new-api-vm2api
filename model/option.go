@@ -232,6 +232,9 @@ func validateOptionValue(key string, value string) error {
 	if key == GPTAccountDefaultGroupKey {
 		return ValidateGPTAccountGroup(value)
 	}
+	if key == GPTAccountDefaultModelsKey {
+		return ValidateGPTAccountDefaultModels(value)
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}

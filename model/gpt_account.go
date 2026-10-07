@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,7 +14,13 @@ import (
 	"gorm.io/gorm"
 )
 
-const GPTAccountDefaultGroupKey = "GPTAccountDefaultGroup"
+var gptAccountDefaultModelPattern = regexp.MustCompile(`(?i)^gpt-([0-9]+)(?:\.([0-9]+))?(?:-[a-z0-9][a-z0-9.-]*)?$`)
+
+const (
+	GPTAccountDefaultGroupKey  = "GPTAccountDefaultGroup"
+	GPTAccountDefaultModelsKey = "GPTAccountDefaultModels"
+	GPTAccountDefaultModels    = "gpt-5.6"
+)
 
 func ValidateGPTAccountGroup(group string) error {
 	if strings.TrimSpace(group) == "" || len(group) > 64 || strings.ContainsAny(group, "\r\n\x00") {
@@ -46,6 +54,75 @@ func ResolveGPTAccountGroup(group string) (string, error) {
 		return "", err
 	}
 	return group, nil
+}
+
+func ValidateGPTAccountDefaultModels(models string) error {
+	models = strings.TrimSpace(models)
+	if models == "" || len(models) > 8192 || strings.ContainsAny(models, "\r\n\x00") {
+		return errors.New("invalid_account")
+	}
+	for item := range strings.SplitSeq(models, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" || !isSupportedGPTAccountDefaultModel(item) {
+			return errors.New("invalid_account")
+		}
+	}
+	return nil
+}
+
+func NormalizeGPTAccountDefaultModels(models string) (string, error) {
+	if err := ValidateGPTAccountDefaultModels(models); err != nil {
+		return "", err
+	}
+	return normalizeGPTAccountModelList(strings.ToLower(models)), nil
+}
+
+func normalizeGPTAccountModelList(models string) string {
+	seen := make(map[string]struct{})
+	items := make([]string, 0)
+	for item := range strings.SplitSeq(models, ",") {
+		item = strings.TrimSpace(item)
+		if _, exists := seen[item]; !exists {
+			seen[item] = struct{}{}
+			items = append(items, item)
+		}
+	}
+	return strings.Join(items, ",")
+}
+
+func isSupportedGPTAccountDefaultModel(modelName string) bool {
+	parts := gptAccountDefaultModelPattern.FindStringSubmatch(modelName)
+	if parts == nil {
+		return false
+	}
+	major, err := strconv.Atoi(parts[1])
+	if err != nil || major < 5 {
+		return false
+	}
+	minor := 0
+	if parts[2] != "" {
+		minor, err = strconv.Atoi(parts[2])
+	}
+	if err != nil {
+		return false
+	}
+	return major > 5 || minor >= 6
+}
+
+func ResolveGPTAccountModels(models string) (string, error) {
+	models = strings.TrimSpace(models)
+	if models != "" {
+		return normalizeGPTAccountModelList(models), nil
+	}
+	var option Option
+	err := DB.Where(&Option{Key: GPTAccountDefaultModelsKey}).First(&option).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return GPTAccountDefaultModels, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return NormalizeGPTAccountDefaultModels(option.Value)
 }
 
 // GPTAccount contains management metadata. Recoverable login secrets never

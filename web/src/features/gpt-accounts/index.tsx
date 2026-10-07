@@ -194,8 +194,9 @@ function GptAccountsPage(props: {
           <div className='flex h-full min-h-0 flex-col gap-3'>
             {config.data && (
               <DefaultGroupForm
-                key={config.data.default_group ?? 'default'}
+                key={`${config.data.default_group}:${config.data.default_models}`}
                 defaultGroup={config.data.default_group ?? 'default'}
+                defaultModels={config.data.default_models ?? 'gpt-5.6'}
                 canEdit={props.role === ROLE.SUPER_ADMIN}
                 onSaved={refresh}
               />
@@ -333,6 +334,7 @@ function GptAccountsPage(props: {
       {editor && (
         <AccountFormDialog
           defaultGroup={config.data?.default_group}
+          defaultModels={config.data?.default_models}
           account={editor === 'create' ? undefined : editor}
           onClose={() => setEditor(null)}
           onSaved={refresh}
@@ -354,7 +356,9 @@ function GptAccountsPage(props: {
       {oauthImportOpen && (
         <OAuthImportDialog
           defaultGroup={config.data?.default_group}
+          defaultModels={config.data?.default_models}
           accountGroup={oauthImportAccount?.group}
+          accountModels={oauthImportAccount?.models}
           accountId={oauthImportAccount?.id}
           onClose={() => {
             setOAuthImportOpen(false)

@@ -6,6 +6,20 @@ export function getAccountErrorMessage(
   fallback?: string
 ): string {
   switch (code) {
+    case 'job_active':
+      return t(
+        'An account check is already running. Cancel it or wait for it to finish.'
+      )
+    case 'job_limit':
+      return t('The account check queue is full. Try again later.')
+    case 'totp_not_challenged':
+      return t(
+        'Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.'
+      )
+    case 'password_not_challenged':
+      return t(
+        'The sign-in page did not request a password. The credentials could not be verified.'
+      )
     case 'encryption_unavailable':
       return t(
         'Credential encryption is unavailable. Contact the administrator.'
@@ -111,7 +125,7 @@ export function getAccountErrorMessage(
     case 'gateway_channel_json_invalid':
       return t('The channel JSON is invalid.')
     case 'gateway_channel_provider_required':
-      return t('Choose CPA or Sub2API in the channel JSON.')
+      return t('Choose CPA, Sub2API, or Prism in the channel JSON.')
     case 'gateway_channel_url_required':
       return t('Provide a relay URL in the channel JSON.')
     case 'gateway_channel_url_invalid':

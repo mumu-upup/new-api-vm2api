@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -214,7 +215,12 @@ func GPTAccountsConfig(c *gin.Context) {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"encryption_available": service.GPTAccountEncryptionAvailable(), "automation_available": service.GPTAccountAutomationAvailable(), "default_group": group}})
+	models, err := model.ResolveGPTAccountModels("")
+	if err != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"encryption_available": service.GPTAccountEncryptionAvailable(), "automation_available": service.GPTAccountAutomationAvailable(), "default_group": group, "default_models": models}})
 }
 
 func UpdateGPTAccountsConfig(c *gin.Context) {
@@ -225,28 +231,45 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		gptAccountError(c, http.StatusForbidden, "authorization_forbidden")
 		return
 	}
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1024)
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	var input struct {
-		DefaultGroup string `json:"default_group"`
+		DefaultGroup  *string `json:"default_group"`
+		DefaultModels *string `json:"default_models"`
 	}
 	if c.ShouldBindJSON(&input) != nil {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return
 	}
-	input.DefaultGroup = strings.TrimSpace(input.DefaultGroup)
-	if model.ValidateGPTAccountGroup(input.DefaultGroup) != nil {
+	updates := make(map[string]string, 2)
+	if input.DefaultGroup != nil {
+		group := strings.TrimSpace(*input.DefaultGroup)
+		if model.ValidateGPTAccountGroup(group) != nil || !ratio_setting.ContainsGroupRatio(group) {
+			gptAccountError(c, http.StatusBadRequest, "invalid_account")
+			return
+		}
+		updates[model.GPTAccountDefaultGroupKey] = group
+	}
+	if input.DefaultModels != nil {
+		models, err := model.NormalizeGPTAccountDefaultModels(*input.DefaultModels)
+		if err != nil {
+			gptAccountError(c, http.StatusBadRequest, "invalid_account")
+			return
+		}
+		updates[model.GPTAccountDefaultModelsKey] = models
+	}
+	if len(updates) == 0 {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return
 	}
-	if err := model.UpdateOptionsBulk(map[string]string{model.GPTAccountDefaultGroupKey: input.DefaultGroup}); err != nil {
+	if err := model.UpdateOptionsBulk(updates); err != nil {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
 	}
-	recordManageAudit(c, "gpt_account.config.update", map[string]any{"default_group": input.DefaultGroup})
+	recordManageAudit(c, "gpt_account.config.update", map[string]any{"default_group": input.DefaultGroup, "default_models": input.DefaultModels})
 	GPTAccountsConfig(c)
 }
 
-func normalizeGPTAccountInput(c *gin.Context) (*gptAccountInput, bool) {
+func normalizeGPTAccountInput(c *gin.Context, existing *model.GPTAccount) (*gptAccountInput, bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	var input gptAccountInput
 	if c.ShouldBindJSON(&input) != nil {
@@ -254,14 +277,26 @@ func normalizeGPTAccountInput(c *gin.Context) (*gptAccountInput, bool) {
 		return nil, false
 	}
 	input.Name, input.Email, input.Group, input.Models = strings.TrimSpace(input.Name), strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Group), strings.TrimSpace(input.Models)
+	if existing != nil {
+		if input.Group == "" {
+			input.Group = existing.Group
+		}
+		if input.Models == "" {
+			input.Models = existing.Models
+		}
+	}
 	var err error
 	input.Group, err = model.ResolveGPTAccountGroup(input.Group)
 	if err != nil {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return nil, false
 	}
-	if input.Models == "" {
-		input.Models = "gpt-5"
+	if existing == nil || input.Models == "" {
+		input.Models, err = model.ResolveGPTAccountModels(input.Models)
+		if err != nil {
+			gptAccountError(c, http.StatusBadRequest, "invalid_account")
+			return nil, false
+		}
 	}
 	if input.Name == "" || len(input.Name) > 128 || len(input.Email) > 254 || common.Validate.Var(input.Email, "required,email") != nil || len(input.Password) > 1024 || len(input.Group) > 64 || strings.ContainsAny(input.Group, "\r\n") || len(input.Models) > 8192 || strings.ContainsAny(input.Models, "\r\n") {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
@@ -443,7 +478,7 @@ func CreateGPTAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	input, ok := normalizeGPTAccountInput(c)
+	input, ok := normalizeGPTAccountInput(c, nil)
 	if !ok {
 		return
 	}
@@ -461,26 +496,37 @@ func CreateGPTAccount(c *gin.Context) {
 }
 
 func UpdateGPTAccount(c *gin.Context) {
-	if _, ok := gptAccountIdentity(c, true); !ok {
+	identity, ok := gptAccountIdentity(c, true)
+	if !ok {
 		return
 	}
 	account, ok := getManagedGPTAccount(c)
 	if !ok {
 		return
 	}
-	input, ok := normalizeGPTAccountInput(c)
+	if account.LeaseUntil > time.Now().Unix() {
+		gptAccountError(c, http.StatusConflict, "account_busy")
+		return
+	}
+	input, ok := normalizeGPTAccountInput(c, account)
 	if !ok {
 		return
 	}
 	if !applyGPTAccountInput(c, account, input) {
 		return
 	}
-	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ?", account.ID, account.Generation).Updates(map[string]any{"name": account.Name, "email": account.Email, "account_group": account.Group, "models": account.Models, "auto_relogin": account.AutoRelogin, "channel_id": account.ChannelID, "channel_key_hash": account.ChannelKeyHash, "account_id": account.AccountID, "secrets_ciphertext": account.SecretsCiphertext, "has_password": account.HasPassword, "has_totp": account.HasTOTP, "totp_version": account.TOTPVersion, "totp_updated_at": account.TOTPUpdatedAt, "totp_status": account.TOTPStatus, "generation": account.Generation + 1, "lease_id": "", "lease_until": 0, "failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": time.Now().Unix()})
+	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ? AND lease_until <= ?", account.ID, account.Generation, time.Now().Unix()).Updates(map[string]any{"name": account.Name, "email": account.Email, "account_group": account.Group, "models": account.Models, "auto_relogin": account.AutoRelogin, "channel_id": account.ChannelID, "channel_key_hash": account.ChannelKeyHash, "account_id": account.AccountID, "secrets_ciphertext": account.SecretsCiphertext, "has_password": account.HasPassword, "has_totp": account.HasTOTP, "totp_version": account.TOTPVersion, "totp_updated_at": account.TOTPUpdatedAt, "totp_status": account.TOTPStatus, "generation": account.Generation + 1, "lease_id": "", "lease_until": 0, "failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": time.Now().Unix()})
 	if result.Error != nil || result.RowsAffected != 1 {
 		gptAccountError(c, http.StatusConflict, "account_changed")
 		return
 	}
 	recordManageAudit(c, "gpt_account.update", map[string]any{"account_id": account.ID})
+	if input.Password != "" || input.TOTPSecret != "" {
+		if err := service.StartGPTAccountLogin(account.ID, identity, false); err != nil && service.GPTAccountErrorCode(err) != "automation_unavailable" {
+			gptAccountError(c, http.StatusConflict, service.GPTAccountErrorCode(err))
+			return
+		}
+	}
 	gptAccountResponse(c, account.ID)
 }
 

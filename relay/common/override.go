@@ -12,8 +12,11 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -203,6 +206,14 @@ func ApplyParamOverrideWithRelayInfo(jsonData []byte, info *RelayInfo) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
+	forcedResult, err := enforceChannelReasoningEffort(result, info)
+	if err != nil {
+		return nil, err
+	}
+	if recorder != nil && !slices.Equal(result, forcedResult) {
+		recorder.lines = append(recorder.lines, "channel forced_reasoning_effort overrides reasoning parameter changes")
+	}
+	result = forcedResult
 	syncReasoningEffortAfterParamOverride(info, jsonData, result)
 	syncRuntimeHeaderOverrideFromContext(info, overrideCtx)
 	if info != nil {
@@ -213,6 +224,49 @@ func ApplyParamOverrideWithRelayInfo(jsonData []byte, info *RelayInfo) ([]byte, 
 		}
 	}
 	return result, nil
+}
+
+// enforceChannelReasoningEffort gives the channel policy final precedence over
+// both legacy overrides and operations, using the actual outbound protocol.
+func enforceChannelReasoningEffort(jsonData []byte, info *RelayInfo) ([]byte, error) {
+	if info == nil || info.ChannelMeta == nil || info.ChannelType != constant.ChannelTypeOpenAI ||
+		info.RelayMode == relayconstant.RelayModeResponsesCompact || info.ChannelSetting.PassThroughBodyEnabled ||
+		model_setting.GetGlobalSettings().PassThroughRequestEnabled {
+		return jsonData, nil
+	}
+	forcedEffort := strings.TrimSpace(info.ChannelOtherSettings.ForcedReasoningEffort)
+	if forcedEffort == "" {
+		return jsonData, nil
+	}
+	var effortPath string
+	var incompatiblePaths []string
+	switch info.GetFinalRequestRelayFormat() {
+	case types.RelayFormatOpenAI:
+		effortPath = "reasoning_effort"
+		incompatiblePaths = []string{"reasoning"}
+	case types.RelayFormatOpenAIResponses:
+		effortPath = "reasoning.effort"
+		incompatiblePaths = []string{"reasoning_effort", "reasoning.enabled", "reasoning.max_tokens"}
+	default:
+		return jsonData, nil
+	}
+	effort, err := kitreasoning.ParseEffort(forcedEffort)
+	if err != nil {
+		return nil, err
+	}
+	if effortPath == "reasoning.effort" && !gjson.GetBytes(jsonData, "reasoning").IsObject() {
+		jsonData, err = sjson.SetBytes(jsonData, "reasoning", map[string]any{})
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, path := range incompatiblePaths {
+		jsonData, err = sjson.DeleteBytes(jsonData, path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return sjson.SetBytes(jsonData, effortPath, string(effort))
 }
 
 func syncReasoningEffortAfterParamOverride(info *RelayInfo, before, after []byte) {
