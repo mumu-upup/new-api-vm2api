@@ -3,8 +3,16 @@ import { useTranslation } from 'react-i18next'
 
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 
+import { STATUS_CHECK_TEST_PRESETS } from '../constants'
 import type { StatusCheckFormValues } from '../lib/parser'
 
 type ModelTestFieldsProps = {
@@ -15,9 +23,48 @@ type ModelTestFieldsProps = {
 export function ModelTestFields(props: ModelTestFieldsProps) {
   const { t } = useTranslation()
   const errors = props.form.formState.errors
+  const selectedPreset = STATUS_CHECK_TEST_PRESETS.find(
+    (preset) =>
+      preset.prompt === props.form.watch('prompt') &&
+      preset.expectedAnswer === props.form.watch('expected_answer')
+  )
 
   return (
     <FieldGroup>
+      <Field data-disabled={props.disabled}>
+        <FieldLabel htmlFor='status-check-preset'>
+          {t('Test question preset')}
+        </FieldLabel>
+        <Select
+          value={selectedPreset?.id ?? ''}
+          onValueChange={(value) => {
+            const preset = STATUS_CHECK_TEST_PRESETS.find(
+              (candidate) => candidate.id === value
+            )
+            if (!preset) return
+            props.form.setValue('prompt', preset.prompt, {
+              shouldDirty: true,
+              shouldValidate: true,
+            })
+            props.form.setValue('expected_answer', preset.expectedAnswer, {
+              shouldDirty: true,
+              shouldValidate: true,
+            })
+          }}
+          disabled={props.disabled}
+        >
+          <SelectTrigger id='status-check-preset' className='w-full'>
+            <SelectValue placeholder={t('Choose a test question')} />
+          </SelectTrigger>
+          <SelectContent alignItemWithTrigger={false}>
+            {STATUS_CHECK_TEST_PRESETS.map((preset) => (
+              <SelectItem key={preset.id} value={preset.id}>
+                {t(preset.label)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
       <Field
         data-invalid={Boolean(errors.model)}
         data-disabled={props.disabled}
