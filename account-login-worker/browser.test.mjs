@@ -367,7 +367,7 @@ test('production workspace selection prefers a unique team, falls back to person
   }
 })
 
-test('probe authorizes only the official Codex consent form after both credential submissions', async t => {
+test('login and probe authorize only the official Codex consent form after both credential submissions', async t => {
   const consentPath = '/sign-in-with-chatgpt/codex/consent'
   const passwordForm = '<h1>Enter your password</h1><form method="post" action="/password"><input name="password" type="password"><button>Continue</button></form>'
   const totpForm = '<h1>Enter your authenticator code</h1><form method="post" action="/verify"><input name="code" autocomplete="one-time-code"><button>Verify</button></form>'
@@ -429,6 +429,7 @@ test('probe authorizes only the official Codex consent form after both credentia
     { name: 'missing password submission', skipPassword: true, error: 'password_not_challenged' },
     { name: 'missing MFA submission', skipMFA: true, error: 'totp_not_challenged' },
     { name: 'wrong callback state', wrongState: true, approved: true, error: 'invalid_callback' },
+    { name: 'normal login auto-approves the exact consent form', options: { autoConsent: true }, approved: true },
     { name: 'login cannot approve consent', options: {}, error: 'consent_required' },
     { name: 'check cannot approve consent', options: { checkOnly: true }, error: 'consent_required' },
     { name: 'check cannot submit combined consent', workspace: true, options: { checkOnly: true }, error: 'workspace_selection_required' },
