@@ -285,6 +285,14 @@ test('workspace selection is manual without a stored account and exact-match aut
   assert.deepEqual(await completeLoginPage(page, request({ expected_account_id: 'account-id' }), new AbortController().signal,
     { wait: page.next }), { status: 'success', code: 'workspace-code', state })
   assert.deepEqual(selected, ['account-id'])
+  const broken = loginPage([{ kind: 'workspace' }])
+  broken.selectWorkspace = () => { throw new Error('private-workspace-value private-password') }
+  const events = []
+  assert.deepEqual(await completeLoginPage(broken, request({ expected_account_id: 'account-id' }), new AbortController().signal,
+    { onDiagnostic: event => events.push(event) }), { status: 'needs_attention', error_code: 'workspace_selection_required' })
+  assert.deepEqual(events.filter(event => event.event === 'workspace_exception'),
+    [{ event: 'workspace_exception', reason: 'interaction_failed' }])
+  assert.doesNotMatch(JSON.stringify(events), /private-/)
 })
 test('login refuses offsite credential fields, repeated password prompts and mismatched callbacks', async () => {
   const offsite=loginPage([{kind:'password',url:'https://evil.example/'}])
