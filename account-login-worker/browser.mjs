@@ -213,7 +213,10 @@ export async function completeLoginPage(page, input, signal, options = {}) {
         continue
       }
     }
-    if (screen.kind === 'consent' && options.probe && !options.checkOnly) {
+    if (screen.kind === 'consent' && (options.autoConsent || options.probe) && !options.checkOnly) {
+      if (!submitted.has('password') || !submitted.has('totp')) {
+        return { status: 'needs_attention', error_code: !submitted.has('password') ? 'password_not_challenged' : 'totp_not_challenged' }
+      }
       if (submitted.has('consent')) {
         if (previousKind !== 'consent') return { status: 'needs_attention', error_code: 'consent_required' }
       } else {
@@ -333,8 +336,8 @@ export async function createIsolatedLoginContext(browser) {
 }
 
 // Only ordinary official login forms are automated. Unknown identity providers,
-// CAPTCHAs, email codes and security challenges require a human. Only explicit
-// model probes may submit the observed official Codex consent form.
+// CAPTCHAs, email codes and security challenges require a human. Login and
+// explicit model probes may submit the observed official Codex consent form.
 export async function browserLogin(input, signal, options = {}) {
   const deadline = Date.now() + 150000
   const clock = new LoginClock(options.now || Date.now)
@@ -459,7 +462,7 @@ export async function browserLogin(input, signal, options = {}) {
         if (!result.ok) throw new Error(result.error)
       },
       approveConsent: async () => {
-        if (!options.probe || options.checkOnly) throw new Error('consent_required')
+        if (!(options.autoConsent || options.probe) || options.checkOnly) throw new Error('consent_required')
         const url = new URL(tab.url())
         if (url.origin !== loginOrigin || url.pathname !== codexConsentPath || url.username || url.password || url.hash) throw new Error('untrusted_form_action')
         const result = await tab.evaluate(({ origin, path }) => {
