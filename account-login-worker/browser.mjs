@@ -205,6 +205,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
           await page.selectWorkspace(input.expected_account_id, input.workspace_preference)
         } catch (error) {
           if (signal.aborted) break
+          options.onDiagnostic?.({ event: 'workspace_exception', reason: 'interaction_failed' })
           return { status: 'needs_attention', error_code: /untrusted_(?:login_origin|form_action)/.test(error?.message || '')
             ? 'login_navigation_blocked' : 'workspace_selection_required' }
         }
@@ -410,6 +411,23 @@ export async function browserLogin(input, signal, options = {}) {
           }
           const radios = [...document.querySelectorAll('input[type="radio"][name="workspace_id"]')]
             .filter(visible)
+          const choices = radios.map(element => ({ element, label: [...element.labels || []]
+            .filter(visible).map(label => label.innerText.trim()).join(' ').trim() }))
+          const shape = {
+            radios: radios.length,
+            labelledRadios: choices.filter(choice => choice.label).length,
+            associatedLabels: radios.filter(element => element.labels?.length).length,
+            contentsLabels: radios.filter(element => [...element.labels || []]
+              .some(label => window.getComputedStyle(label).display === 'contents')).length,
+            ariaLabelledRadios: radios.filter(element => element.hasAttribute('aria-label') || element.hasAttribute('aria-labelledby')).length,
+            missingValues: radios.filter(element => !element.value).length,
+            checked: radios.filter(element => element.checked).length,
+            disabled: radios.filter(element => element.disabled).length,
+            effectivelyDisabled: radios.filter(element => element.matches(':disabled')).length,
+            ariaDisabled: radios.filter(element => element.closest('[aria-disabled="true"]')).length,
+            forms: [...document.forms].filter(visible).length,
+            bound: Boolean(expected)
+          }
           let matches = []
           if (expected) {
             matches = radios.filter(element => element.value === expected)
@@ -417,9 +435,8 @@ export async function browserLogin(input, signal, options = {}) {
             // Official workspace radios label the personal account explicitly;
             // organization workspaces have user-defined names (not necessarily
             // containing "Team"). Never infer a selection from checked order.
-            const choices = radios.map(element => ({ element, label: [...element.labels || []]
-              .filter(visible).map(label => label.innerText.trim()).join(' ').trim() }))
-            if (!choices.length || choices.some(choice => !choice.label || !choice.element.value)) return { ok: false, error: 'workspace_selection_required' }
+            if (!choices.length || choices.some(choice => !choice.label)) return { shape, ok: false, error: 'workspace_selection_required', reason: 'missing_choice_label' }
+            if (choices.some(choice => !choice.element.value)) return { shape, ok: false, error: 'workspace_selection_required', reason: 'missing_choice_value' }
             const personal = /^(?:personal(?: account| workspace)?|个人(?:账户|帐户|账号|空间|工作区)|個人(?:帳戶|賬戶|帳號|空間|工作區))$/i
             const teams = choices.filter(choice => {
               if (personal.test(choice.label)) return false
@@ -430,47 +447,51 @@ export async function browserLogin(input, signal, options = {}) {
             })
             matches = (teams.length ? teams : choices).map(choice => choice.element)
           }
-          if (matches.length !== 1) return { ok: false, error: 'workspace_selection_required' }
+          if (matches.length !== 1) return { shape, ok: false, error: 'workspace_selection_required', reason: expected ? 'saved_binding_mismatch' : 'ambiguous_choice' }
           const radio = matches[0]
           // With only one workspace, the official consent form may render it
           // checked and disabled. Confirm that fixed choice without enabling
           // or changing it; a saved binding must still match above.
           const fixedWorkspace = probe && radios.length === 1 && radio.disabled && radio.checked
-          if ((radio.matches(':disabled') && !fixedWorkspace) || radio.closest('[aria-disabled="true"]') ||
-              radios.filter(element => element.value === radio.value).length !== 1) return { ok: false, error: 'workspace_selection_required' }
+          if ((radio.matches(':disabled') && !fixedWorkspace) || radio.closest('[aria-disabled="true"]')) return { shape, ok: false, error: 'workspace_selection_required', reason: 'disabled_choice' }
+          if (radios.filter(element => element.value === radio.value).length !== 1) return { shape, ok: false, error: 'workspace_selection_required', reason: 'duplicate_choice_value' }
           const form = radio.form
-          if (!form || form.method.toLowerCase() !== 'post') return { ok: false, error: 'workspace_selection_required' }
-          if (probe && ([...document.forms].filter(visible).length !== 1 ||
-              [...form.querySelectorAll('input:not([type="hidden"]):not([type="radio"][name="workspace_id"]), select, textarea')].some(visible))) {
-            return { ok: false, error: 'workspace_selection_required' }
+          if (!form || form.method.toLowerCase() !== 'post') return { shape, ok: false, error: 'workspace_selection_required', reason: 'invalid_form' }
+          if (probe && [...document.forms].filter(visible).length !== 1) return { shape, ok: false, error: 'workspace_selection_required', reason: 'multiple_forms' }
+          if (probe && [...form.querySelectorAll('input:not([type="hidden"]):not([type="radio"][name="workspace_id"]), select, textarea')].some(visible)) {
+            return { shape, ok: false, error: 'workspace_selection_required', reason: 'unknown_visible_field' }
           }
           let action
-          try { action = new URL(form.getAttribute('action') || window.location.href, window.location.href) } catch { return { ok: false, error: 'workspace_selection_required' } }
-          if (action.origin !== origin || form.target && form.target !== '_self') return { ok: false, error: 'untrusted_form_action' }
-          if (probe && (action.pathname !== consentPath || action.username || action.password || action.search || action.hash)) return { ok: false, error: 'untrusted_form_action' }
+          try { action = new URL(form.getAttribute('action') || window.location.href, window.location.href) } catch { return { shape, ok: false, error: 'workspace_selection_required', reason: 'invalid_action' } }
+          if (action.origin !== origin || form.target && form.target !== '_self') return { shape, ok: false, error: 'untrusted_form_action', reason: 'untrusted_action' }
+          if (probe && (action.pathname !== consentPath || action.username || action.password || action.search || action.hash)) return { shape, ok: false, error: 'untrusted_form_action', reason: 'untrusted_action' }
           const submitters = [...form.querySelectorAll('button, input[type="submit"]')]
             .filter(element => visible(element) && !element.disabled &&
               (!probe || element.type === 'submit' && !element.matches(':disabled') && !element.closest('[aria-disabled="true"]')) &&
               (probe ? /^(?:Continue|继续|繼續)$/ : /^(?:continue|next|submit|继续|下一步)$/i)
                 .test((element.textContent || element.value || element.getAttribute('aria-label') || '').trim()))
-          if (submitters.length !== 1) return { ok: false, error: 'workspace_selection_required' }
+          if (submitters.length !== 1) return { shape, ok: false, error: 'workspace_selection_required', reason: 'ambiguous_submitter' }
           const submitter = submitters[0]
-          if (['formaction', 'formmethod', 'formtarget'].some(attribute => submitter.hasAttribute(attribute))) return { ok: false, error: 'untrusted_form_action' }
+          if (['formaction', 'formmethod', 'formtarget'].some(attribute => submitter.hasAttribute(attribute))) return { shape, ok: false, error: 'untrusted_form_action', reason: 'submitter_override' }
           if (fixedWorkspace) {
             // Disabled radios are omitted from native form submissions. Keep
             // the server's default, or its matching hidden workspace field.
             const values = new FormData(form, submitter).getAll('workspace_id')
-            if (values.length > 1 || values.some(value => value !== radio.value)) return { ok: false, error: 'workspace_selection_required' }
+            if (values.length > 1 || values.some(value => value !== radio.value)) return { shape, ok: false, error: 'workspace_selection_required', reason: 'conflicting_submitted_workspace' }
           } else {
             radio.checked = true
             radio.dispatchEvent(new Event('input', { bubbles: true }))
             radio.dispatchEvent(new Event('change', { bubbles: true }))
           }
-          if (!radio.checked || radio.form !== form) return { ok: false, error: 'workspace_selection_required' }
+          if (!radio.checked || radio.form !== form) return { shape, ok: false, error: 'workspace_selection_required', reason: 'selection_changed' }
           form.requestSubmit(submitter)
-          return { ok: true }
+          return { shape, ok: true }
         }, { expected: expectedAccountID, preference: workspacePreference, origin: loginOrigin,
           probe: Boolean(options.probe || options.autoConsent && new URL(tab.url()).pathname === codexConsentPath), consentPath: codexConsentPath })
+        // This event contains only decisions defined by this worker. Never
+        // include workspace names/IDs, field values, HTML, or exception text.
+        onDiagnostic({ event: 'workspace_shape', ...result.shape })
+        onDiagnostic({ event: 'workspace_decision', outcome: result.ok ? 'submitted' : 'rejected', reason: result.ok ? 'confirmed' : result.reason })
         if (!result.ok) throw new Error(result.error)
       },
       approveConsent: async () => {

@@ -435,6 +435,13 @@ test('login and probe authorize only the official Codex consent form after both 
     { name: 'preselected workspace cannot use a disabled Continue button', workspace: true,
       choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
       buttons: '<button type="submit" disabled>Continue</button>', error: 'workspace_selection_required' },
+    { name: 'workspace rejection diagnostics identify missing labels without exposing form values', workspace: true,
+      choices: '<input type="radio" name="workspace_id" value="private-workspace-value" disabled checked>',
+      fields: '<input type="hidden" name="csrf_token" value="private-csrf-value">',
+      error: 'workspace_selection_required', decision: 'missing_choice_label' },
+    { name: 'workspace rejection diagnostics identify ambiguous choices without exposing names', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="private-team-one">Private Team One</label><label><input type="radio" name="workspace_id" value="private-team-two">Private Team Two</label>',
+      error: 'workspace_selection_required', decision: 'ambiguous_choice' },
     { name: 'observed personal avatar label keeps team preference', workspace: true,
       choices: '<fieldset><label><input type="radio" name="workspace_id" value="team">My Team</label><label><input type="radio" name="workspace_id" value="personal"><span>Pa</span><div>Personal account</div></label></fieldset>', approved: true },
     { name: 'personal avatar lookalike remains ambiguous', workspace: true,
@@ -478,11 +485,12 @@ test('login and probe authorize only the official Codex consent form after both 
     await t.test(tc.name, async () => {
       scenario = tc
       submissions = []
+      const diagnostics = []
       let context
       const result = await browserLogin({ authorization_url: `https://auth.openai.com/oauth/authorize?state=${state}`,
         state, email: 'fixture@example.com', password: 'fixture-password',
         totp_secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', workspace_preference: 'team_then_personal', ...tc.input }, AbortSignal.timeout(15000), {
-        ...(tc.options ?? { probe: true }), onDiagnostic: () => {},
+        ...(tc.options ?? { probe: true }), onDiagnostic: event => diagnostics.push(event),
         launch: async () => ({
           close: async () => { await context?.close() },
           newContext: async options => {
@@ -505,6 +513,16 @@ test('login and probe authorize only the official Codex consent form after both 
         : { status: tc.error === 'invalid_callback' ? 'failed' : 'needs_attention', error_code: tc.error || 'consent_required' })
       assert.deepEqual(submissions.filter(([path]) => !['/password', '/verify'].includes(path)), tc.approved
         ? [[consentPath, tc.workspace ? tc.submittedWorkspace ?? { workspace_id: 'team' } : {}]] : [])
+      if (tc.decision) {
+        assert.deepEqual(diagnostics.filter(event => event.event === 'workspace_decision'),
+          [{ event: 'workspace_decision', outcome: 'rejected', reason: tc.decision }])
+        assert.doesNotMatch(JSON.stringify(diagnostics), /private-|Private Team|fixture-password|GEZDGNBV/)
+        const shapes = diagnostics.filter(event => event.event === 'workspace_shape')
+        assert.equal(shapes.length, 1)
+        assert.equal(shapes[0].radios, tc.decision === 'missing_choice_label' ? 1 : 2)
+        assert.equal(shapes[0].labelledRadios, tc.decision === 'missing_choice_label' ? 0 : 2)
+        assert.equal(shapes[0].bound, false)
+      }
     })
   }
 })
