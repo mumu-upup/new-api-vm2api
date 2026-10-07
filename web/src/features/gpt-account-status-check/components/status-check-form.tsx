@@ -15,6 +15,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Textarea } from '@/components/ui/textarea'
 
 import type { ModelTestOptions } from '../api'
+import { STATUS_CHECK_TEST_PRESETS } from '../constants'
 import {
   statusCheckFormSchema,
   type StatusCheckFormValues,
@@ -33,10 +34,8 @@ export function StatusCheckForm(props: StatusCheckFormProps) {
       credentials: '',
       mode: 'model',
       model: 'gpt-6.1-sol',
-      prompt: t(
-        'A box holds 12 red balls and 8 blue balls. You remove 5 red balls and add 3 blue balls. How many balls are now in the box? Reply with only the integer.'
-      ),
-      expected_answer: '18',
+      prompt: STATUS_CHECK_TEST_PRESETS[0].prompt,
+      expected_answer: STATUS_CHECK_TEST_PRESETS[0].expectedAnswer,
     },
     resolver: zodResolver(statusCheckFormSchema),
   })
