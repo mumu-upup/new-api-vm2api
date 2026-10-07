@@ -214,7 +214,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
       }
     }
     if (screen.kind === 'consent' && (options.autoConsent || options.probe) && !options.checkOnly) {
-      if (!submitted.has('password') || !submitted.has('totp')) {
+      if (options.probe && (!submitted.has('password') || !submitted.has('totp'))) {
         return { status: 'needs_attention', error_code: !submitted.has('password') ? 'password_not_challenged' : 'totp_not_challenged' }
       }
       if (submitted.has('consent')) {
@@ -446,7 +446,7 @@ export async function browserLogin(input, signal, options = {}) {
           const submitters = [...form.querySelectorAll('button, input[type="submit"]')]
             .filter(element => visible(element) && !element.disabled &&
               (!probe || element.type === 'submit' && !element.matches(':disabled') && !element.closest('[aria-disabled="true"]')) &&
-              (probe ? /^Continue$/ : /^(?:continue|next|submit|继续|下一步)$/i)
+              (probe ? /^(?:Continue|继续|繼續)$/ : /^(?:continue|next|submit|继续|下一步)$/i)
                 .test((element.textContent || element.value || element.getAttribute('aria-label') || '').trim()))
           if (submitters.length !== 1) return { ok: false, error: 'workspace_selection_required' }
           const submitter = submitters[0]
@@ -458,7 +458,7 @@ export async function browserLogin(input, signal, options = {}) {
           form.requestSubmit(submitter)
           return { ok: true }
         }, { expected: expectedAccountID, preference: workspacePreference, origin: loginOrigin,
-          probe: Boolean(options.probe), consentPath: codexConsentPath })
+          probe: Boolean(options.probe || options.autoConsent && new URL(tab.url()).pathname === codexConsentPath), consentPath: codexConsentPath })
         if (!result.ok) throw new Error(result.error)
       },
       approveConsent: async () => {
@@ -483,7 +483,7 @@ export async function browserLogin(input, signal, options = {}) {
           if ([...form.querySelectorAll('input:not([type="hidden"]), select, textarea')].some(visible)) return { ok: false, error: 'consent_required' }
           const submitters = [...form.querySelectorAll('button, input[type="submit"]')]
             .filter(element => visible(element) && !element.matches(':disabled') && !element.closest('[aria-disabled="true"]') && element.type === 'submit' &&
-              (element.textContent || element.value || element.getAttribute('aria-label') || '').trim() === 'Continue')
+              /^(?:Continue|继续|繼續)$/.test((element.textContent || element.value || element.getAttribute('aria-label') || '').trim()))
           if (submitters.length !== 1) return { ok: false, error: 'consent_required' }
           const submitter = submitters[0]
           if (['formaction', 'formmethod', 'formtarget'].some(attribute => submitter.hasAttribute(attribute))) return { ok: false, error: 'untrusted_form_action' }
