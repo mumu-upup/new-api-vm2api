@@ -398,6 +398,43 @@ test('login and probe authorize only the official Codex consent form after both 
   t.after(() => browser.close())
   for (const tc of [
     { name: 'observed combined workspace consent', workspace: true, approved: true },
+    { name: 'single preselected personal workspace is confirmed without enabling its radio', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="personal" disabled checked>Personal account</label>',
+      approved: true, submittedWorkspace: {} },
+    { name: 'single preselected team workspace is confirmed without enabling its radio', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      approved: true, submittedWorkspace: {} },
+    { name: 'preselected workspace preserves a matching saved binding', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      input: { expected_account_id: 'team' }, options: { autoConsent: true }, approved: true, submittedWorkspace: {} },
+    { name: 'preselected workspace never replaces a different saved binding', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      input: { expected_account_id: 'saved-other-team' }, options: { autoConsent: true }, error: 'workspace_selection_required' },
+    { name: 'unselected disabled workspace still requires a person', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled>Example Studio</label>', error: 'workspace_selection_required' },
+    { name: 'disabled selected team among multiple workspaces still requires a person', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label><label><input type="radio" name="workspace_id" value="personal">Personal account</label>', error: 'workspace_selection_required' },
+    { name: 'preselected workspace rejects a conflicting hidden workspace value', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      fields: '<input type="hidden" name="workspace_id" value="other-team">', error: 'workspace_selection_required' },
+    { name: 'preselected workspace preserves the matching hidden workspace value', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      fields: '<input type="hidden" name="workspace_id" value="team">', approved: true },
+    { name: 'preselected workspace rejects duplicate submitted workspace values', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      fields: '<input type="hidden" name="workspace_id" value="team"><input type="hidden" name="workspace_id" value="team">', error: 'workspace_selection_required' },
+    { name: 'preselected workspace rejects a conflicting submitter workspace value', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      buttons: '<button type="submit" name="workspace_id" value="other-team">Continue</button>', error: 'workspace_selection_required' },
+    { name: 'preselected workspace cannot confirm a different official action', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      action: '/other', error: 'login_navigation_blocked' },
+    { name: 'preselected workspace cannot submit an unknown challenge', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      fields: '<input name="security_answer">', error: 'workspace_selection_required' },
+    { name: 'preselected workspace cannot use a disabled Continue button', workspace: true,
+      choices: '<label><input type="radio" name="workspace_id" value="team" disabled checked>Example Studio</label>',
+      buttons: '<button type="submit" disabled>Continue</button>', error: 'workspace_selection_required' },
     { name: 'observed personal avatar label keeps team preference', workspace: true,
       choices: '<fieldset><label><input type="radio" name="workspace_id" value="team">My Team</label><label><input type="radio" name="workspace_id" value="personal"><span>Pa</span><div>Personal account</div></label></fieldset>', approved: true },
     { name: 'personal avatar lookalike remains ambiguous', workspace: true,
@@ -444,7 +481,7 @@ test('login and probe authorize only the official Codex consent form after both 
       let context
       const result = await browserLogin({ authorization_url: `https://auth.openai.com/oauth/authorize?state=${state}`,
         state, email: 'fixture@example.com', password: 'fixture-password',
-        totp_secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', workspace_preference: 'team_then_personal' }, AbortSignal.timeout(15000), {
+        totp_secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ', workspace_preference: 'team_then_personal', ...tc.input }, AbortSignal.timeout(15000), {
         ...(tc.options ?? { probe: true }), onDiagnostic: () => {},
         launch: async () => ({
           close: async () => { await context?.close() },
@@ -467,7 +504,7 @@ test('login and probe authorize only the official Codex consent form after both 
       assert.deepEqual(result, tc.approved && !tc.error ? { status: 'success', code: 'probe-code', state }
         : { status: tc.error === 'invalid_callback' ? 'failed' : 'needs_attention', error_code: tc.error || 'consent_required' })
       assert.deepEqual(submissions.filter(([path]) => !['/password', '/verify'].includes(path)), tc.approved
-        ? [[consentPath, tc.workspace ? { workspace_id: 'team' } : {}]] : [])
+        ? [[consentPath, tc.workspace ? tc.submittedWorkspace ?? { workspace_id: 'team' } : {}]] : [])
     })
   }
 })
