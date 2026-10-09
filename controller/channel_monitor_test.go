@@ -3,10 +3,24 @@ package controller
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMonitorPromptBuildsAStreamingRequest(t *testing.T) {
+	request := buildTestRequestWithPrompt("gpt-5.6-sol", "", &model.Channel{}, false, "return a monitor artifact")
+	chatRequest, ok := request.(*dto.GeneralOpenAIRequest)
+	require.True(t, ok)
+	require.NotNil(t, chatRequest.Stream)
+	require.True(t, *chatRequest.Stream)
+}
+
+func TestChannelMonitorRunsEveryThirtyMinutes(t *testing.T) {
+	require.Equal(t, 30*time.Minute, (channelMonitorHandler{}).Interval())
+}
 
 func TestExtractChannelMonitorContent(t *testing.T) {
 	for _, test := range []struct {
@@ -30,6 +44,12 @@ func TestExtractChannelMonitorContent(t *testing.T) {
 		{
 			name:         "streamed delta content",
 			body:         "data: {\"choices\":[{\"delta\":{\"content\":\"<html>\"}}]}\ndata: {\"choices\":[{\"delta\":{\"content\":\"<svg>pelican bicycle</svg></html>\"}}]}\ndata: [DONE]",
+			artifactType: model.ChannelMonitorArtifactHTML,
+			want:         `<html><svg>pelican bicycle</svg></html>`,
+		},
+		{
+			name:         "responses streamed delta content",
+			body:         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"<html><svg>\"}\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pelican bicycle</svg></html>\"}\ndata: [DONE]",
 			artifactType: model.ChannelMonitorArtifactHTML,
 			want:         `<html><svg>pelican bicycle</svg></html>`,
 		},
