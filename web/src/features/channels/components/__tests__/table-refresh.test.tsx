@@ -85,10 +85,22 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-async function renderChannelsPage(searchGate: () => Promise<void>) {
+async function renderChannelsPage(
+  searchGate: () => Promise<void>,
+  initialEntry =
+    '/channels/?filter=prod&group=%5B%22vip%22%5D&status=%5B%22enabled%22%5D&model=gpt-4o'
+) {
   const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url === '/api/channel/search') {
       await searchGate()
+      return {
+        data: {
+          success: true,
+          data: { items: [channel('prod')], total: 1, type_counts: {} },
+        },
+      }
+    }
+    if (url === '/api/channel' || url === '/api/channel/') {
       return {
         data: {
           success: true,
@@ -113,8 +125,6 @@ async function renderChannelsPage(searchGate: () => Promise<void>) {
       </ChannelsProvider>
     ),
   })
-  const initialEntry =
-    '/channels/?filter=prod&group=%5B%22vip%22%5D&status=%5B%22enabled%22%5D&model=gpt-4o'
   const router = createRouter({
     routeTree: root.addChildren([auth.addChildren([channelsRoute])]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
@@ -152,4 +162,11 @@ it('refetches the channel list with the current filters and marks Refresh busy w
   expect(refresh).toHaveAttribute('aria-busy', 'true')
   release()
   await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'))
+})
+
+it('uses the trailing slash route for an unfiltered channel list', async () => {
+  const get = await renderChannelsPage(() => Promise.resolve(), '/channels/')
+
+  expect(get.mock.calls.map(([url]) => url)).toContain('/api/channel/')
+  expect(get.mock.calls.map(([url]) => url)).not.toContain('/api/channel')
 })
