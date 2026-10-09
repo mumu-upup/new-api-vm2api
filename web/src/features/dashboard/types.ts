@@ -180,6 +180,54 @@ export interface UptimeGroupResult {
   monitors: UptimeMonitor[]
 }
 
+export interface ChannelMonitorArtifact {
+  id: number
+  run_id: string
+  day_key: string
+  channel_id: number
+  channel_name: string
+  group: string
+  model: string
+  preset_id: string
+  artifact_type: 'html' | 'text'
+  content: string
+  actual_model: string
+  status: string
+  evaluation: string
+  error?: string
+  duration_ms: number
+  created_at: number
+  synced_at: number
+}
+
+export interface ChannelMonitorData {
+  updated_at: number
+  range: string
+  groups: Record<string, boolean>
+  models: Record<string, boolean>
+  cards: Record<string, {
+    group: string
+    channel_id: number
+    channel_name: string
+    model: string
+    latest: number
+    artifacts: ChannelMonitorArtifact[]
+  }>
+  detail: {
+    groups: Record<string, { name: string; artifacts: ChannelMonitorArtifact[] }>
+    artifacts: ChannelMonitorArtifact[]
+  }
+  model_details?: Array<{
+    model: string
+    total: number
+    passed: number
+    success_rate: number
+    avg_duration_ms: number
+  }>
+  trend?: Array<{ timestamp: number; total: number; passed: number; success_rate: number }>
+  metrics?: { total: number; passed: number; success_rate: number }
+}
+
 // ============================================================================
 // Dashboard Filter Types
 // ============================================================================
