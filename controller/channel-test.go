@@ -81,6 +81,7 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	requestStream := isStream || strings.TrimSpace(prompt) != ""
 	tik := time.Now()
 	var unsupportedTestChannelTypes = []int{
 		constant.ChannelTypeMidjourney,
@@ -154,7 +155,7 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 	}
 	// Gemini 原生流式通过 URL action（:streamGenerateContent）表达而非请求体字段，
 	// GeminiChatRequest.IsStream 依据请求 URL 判定，合成请求路径需与生产入口保持一致
-	if isStream && constant.EndpointType(endpointType) == constant.EndpointTypeGemini {
+	if requestStream && constant.EndpointType(endpointType) == constant.EndpointTypeGemini {
 		requestPath = strings.Replace(requestPath, ":generateContent", ":streamGenerateContent", 1)
 	}
 	c.Request = httptest.NewRequestWithContext(ctx, http.MethodPost, requestPath, nil)
@@ -235,7 +236,7 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 		}
 	}
 
-	request := buildTestRequestWithPrompt(testModel, endpointType, channel, isStream, prompt)
+	request := buildTestRequestWithPrompt(testModel, endpointType, channel, requestStream, prompt)
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 
@@ -479,7 +480,7 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 			newAPIError: respErr,
 		}
 	}
-	usage, usageErr := coerceTestUsage(usageA, isStream, info.GetEstimatePromptTokens())
+	usage, usageErr := coerceTestUsage(usageA, requestStream, info.GetEstimatePromptTokens())
 	if usageErr != nil {
 		return testResult{
 			context:     c,
@@ -488,7 +489,7 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 		}
 	}
 	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, isStream)
+	respBody, err := readTestResponseBody(result.Body, requestStream)
 	if err != nil {
 		return testResult{
 			context:     c,
@@ -496,7 +497,7 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 			newAPIError: types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError),
 		}
 	}
-	if bodyErr := validateTestResponseBody(respBody, isStream); bodyErr != nil {
+	if bodyErr := validateTestResponseBody(respBody, requestStream); bodyErr != nil {
 		return testResult{
 			context:     c,
 			localErr:    bodyErr,
@@ -732,6 +733,7 @@ func testMaxTokenLimit(monitor bool, normal uint) *uint {
 func buildTestRequestWithPrompt(model string, endpointType string, channel *model.Channel, isStream bool, prompt string) dto.Request {
 	prompt = strings.TrimSpace(prompt)
 	isMonitorPrompt := prompt != ""
+	requestStream := isStream || isMonitorPrompt
 	if prompt == "" {
 		prompt = "hi"
 	}
@@ -772,7 +774,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 			return &dto.OpenAIResponsesRequest{
 				Model:           model,
 				Input:           testResponsesInput,
-				Stream:          lo.ToPtr(isStream),
+				Stream:          lo.ToPtr(requestStream),
 				MaxOutputTokens: monitorOutputTokenLimit(isMonitorPrompt),
 			}
 		case constant.EndpointTypeOpenAIResponseCompact:
@@ -784,7 +786,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 		case constant.EndpointTypeAnthropic:
 			return &dto.ClaudeRequest{
 				Model:     model,
-				Stream:    lo.ToPtr(isStream),
+				Stream:    lo.ToPtr(requestStream),
 				MaxTokens: testMaxTokenLimit(isMonitorPrompt, 16),
 				Messages: []dto.ClaudeMessage{
 					{
@@ -808,7 +810,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 		case constant.EndpointTypeOpenAI:
 			req := &dto.GeneralOpenAIRequest{
 				Model:  model,
-				Stream: lo.ToPtr(isStream),
+				Stream: lo.ToPtr(requestStream),
 				Messages: []dto.Message{
 					{
 						Role:    "user",
@@ -817,7 +819,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 				},
 				MaxTokens: testMaxTokenLimit(isMonitorPrompt, 16),
 			}
-			if isStream {
+			if requestStream {
 				req.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
 			}
 			return req
@@ -850,7 +852,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 		return &dto.OpenAIResponsesRequest{
 			Model:           model,
 			Input:           testResponsesInput,
-			Stream:          lo.ToPtr(isStream),
+			Stream:          lo.ToPtr(requestStream),
 			MaxOutputTokens: monitorOutputTokenLimit(isMonitorPrompt),
 		}
 	}
@@ -858,7 +860,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 	// Chat/Completion 请求 - 返回 GeneralOpenAIRequest
 	testRequest := &dto.GeneralOpenAIRequest{
 		Model:  model,
-		Stream: lo.ToPtr(isStream),
+		Stream: lo.ToPtr(requestStream),
 		Messages: []dto.Message{
 			{
 				Role:    "user",
@@ -866,7 +868,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 			},
 		},
 	}
-	if isStream {
+	if requestStream {
 		testRequest.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
 	}
 

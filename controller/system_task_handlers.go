@@ -32,7 +32,7 @@ func (channelMonitorHandler) Enabled() bool {
 	return constant.Setup && common.GetEnvOrDefaultBool("CHANNEL_MONITOR_ENABLED", true)
 }
 
-func (channelMonitorHandler) Interval() time.Duration { return 10 * time.Minute }
+func (channelMonitorHandler) Interval() time.Duration { return 30 * time.Minute }
 
 func (channelMonitorHandler) NewPayload() any { return nil }
 

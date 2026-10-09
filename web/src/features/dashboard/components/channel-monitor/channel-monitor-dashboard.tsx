@@ -167,7 +167,7 @@ export function ChannelMonitorDashboard() {
         <Button variant='ghost' size='icon' aria-label={t('Reset')} onClick={reset}><RotateCcw /></Button>
         <Button variant='ghost' size='icon' aria-label={t('Refresh')} onClick={() => { requestedAt.current = Date.now(); void query.refetch() }} disabled={query.isFetching}><RefreshCw className={query.isFetching ? 'animate-spin' : ''} /></Button>
       </div>
-      <p className='text-muted-foreground text-xs'>{t('Updated every 10 minutes. Up to 10 works per group are retained for manual comparison and cleared at Beijing midnight.')}</p>
+      <p className='text-muted-foreground text-xs'>{t('Updated every 30 minutes. Up to 10 works per group are retained for manual comparison and cleared at Beijing midnight.')}</p>
       <PanelWrapper title={t('Channel monitor metrics')} description={t('Success rate and response timing for the selected window.')} loading={query.isLoading} empty={!query.isLoading && artifacts.length === 0}>
         <div className='grid grid-cols-2 gap-3 sm:grid-cols-4'>
           <Metric label={t('Success rate')} value={`${successRate}%`} />
@@ -179,7 +179,7 @@ export function ChannelMonitorDashboard() {
           {artifacts.slice(0, 90).map((item) => <span key={item.id} className={`min-w-1 flex-1 ${resultColor(item)}`} title={`${item.channel_name} ${item.model}`} />)}
         </div>
       </PanelWrapper>
-      <PanelWrapper title={t('降智检测 作品对比')} description={t('每 10 分钟更新检测结果 · 每组最多保留 10 份 · 仅供人工对比')} loading={query.isLoading} empty={!query.isLoading && cards.length === 0}>
+      <PanelWrapper title={t('降智检测 作品对比')} description={t('每 30 分钟更新检测结果 · 每组最多保留 10 份 · 仅供人工对比')} loading={query.isLoading} empty={!query.isLoading && cards.length === 0}>
         <div className='grid gap-3 md:grid-cols-2'>
           {cards.map((card) => {
             const latest = latestByPreset(card.artifacts)
