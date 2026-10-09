@@ -49,6 +49,12 @@ func SetApiRouter(router *gin.Engine) {
 			perfMetricsRoute.GET("/summary", controller.GetPerfMetricsSummary)
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
+		channelMonitorRoute := apiRouter.Group("/channel-monitor")
+		channelMonitorRoute.Use(middleware.AdminAuth())
+		{
+			channelMonitorRoute.GET("", middleware.DisableCache(), controller.GetChannelMonitor)
+			channelMonitorRoute.POST("/run", middleware.DisableCache(), controller.RunChannelMonitor)
+		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
 		apiRouter.GET("/verification", middleware.EmailVerificationRateLimit(), middleware.TurnstileCheck(), controller.SendEmailVerification)
 		apiRouter.GET("/reset_password", middleware.CriticalRateLimit(), middleware.TurnstileCheck(), controller.SendPasswordResetEmail)

@@ -21,6 +21,28 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(channelMonitorHandler{})
+}
+
+type channelMonitorHandler struct{}
+
+func (channelMonitorHandler) Type() string { return model.SystemTaskTypeChannelMonitor }
+
+func (channelMonitorHandler) Enabled() bool {
+	return constant.Setup && common.GetEnvOrDefaultBool("CHANNEL_MONITOR_ENABLED", true)
+}
+
+func (channelMonitorHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (channelMonitorHandler) NewPayload() any { return nil }
+
+func (channelMonitorHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	summary, err := runChannelMonitorTask(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
 // channelTestHandler runs the scheduled "test all channels" job. Enablement and

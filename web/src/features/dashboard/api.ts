@@ -24,6 +24,7 @@ import type {
   QuotaDataItem,
   ResponseModelMismatchStats,
   UptimeGroupResult,
+  ChannelMonitorData,
 } from './types'
 
 // ============================================================================
@@ -103,5 +104,22 @@ export async function getUptimeStatus() {
   const res = await api.get<{ success: boolean; data: UptimeGroupResult[] }>(
     '/api/uptime/status'
   )
+  return res.data
+}
+
+export async function getChannelMonitor(params: {
+  range: '90m' | 'today'
+  group?: string
+  model?: string
+}) {
+  const res = await api.get<{ success: boolean; data: ChannelMonitorData }>(
+    '/api/channel-monitor',
+    { params }
+  )
+  return res.data
+}
+
+export async function runChannelMonitor() {
+  const res = await api.post('/api/channel-monitor/run')
   return res.data
 }

@@ -54,7 +54,9 @@ export function ModelTestFields(props: ModelTestFieldsProps) {
           disabled={props.disabled}
         >
           <SelectTrigger id='status-check-preset' className='w-full'>
-            <SelectValue placeholder={t('Choose a test question')} />
+            <SelectValue placeholder={t('Choose a test question')}>
+              {selectedPreset ? t(selectedPreset.label) : undefined}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent alignItemWithTrigger={false}>
             {STATUS_CHECK_TEST_PRESETS.map((preset) => (

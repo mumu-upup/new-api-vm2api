@@ -37,9 +37,12 @@ import (
 )
 
 type testResult struct {
-	context     *gin.Context
-	localErr    error
-	newAPIError *types.NewAPIError
+	context      *gin.Context
+	localErr     error
+	newAPIError  *types.NewAPIError
+	responseBody []byte
+	actualModel  string
+	durationMs   int64
 }
 
 func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) string {
@@ -71,6 +74,10 @@ func resolveChannelTestUserID(c *gin.Context) (int, error) {
 }
 
 func testChannel(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool) testResult {
+	return testChannelWithPrompt(ctx, channel, testUserID, testModel, endpointType, isStream, "")
+}
+
+func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUserID int, testModel string, endpointType string, isStream bool, prompt string) testResult {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -228,7 +235,7 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		}
 	}
 
-	request := buildTestRequest(testModel, endpointType, channel, isStream)
+	request := buildTestRequestWithPrompt(testModel, endpointType, channel, isStream, prompt)
 
 	info, err := relaycommon.GenRelayInfo(c, relayFormat, request, nil)
 
@@ -516,11 +523,14 @@ func testChannel(ctx context.Context, channel *model.Channel, testUserID int, te
 		Group:            info.UsingGroup,
 		Other:            other,
 	})
-	common.SysLog(common.LogText("testing channel #%d, response: \n%s", channel.Id, string(respBody)))
+	common.SysLog(common.LogText("testing channel #%d completed in %dms", channel.Id, milliseconds))
 	return testResult{
-		context:     c,
-		localErr:    nil,
-		newAPIError: nil,
+		context:      c,
+		localErr:     nil,
+		newAPIError:  nil,
+		responseBody: respBody,
+		actualModel:  info.UpstreamModelName,
+		durationMs:   milliseconds,
 	}
 }
 
@@ -598,11 +608,11 @@ func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dt
 
 func readTestResponseBody(body io.ReadCloser, isStream bool) ([]byte, error) {
 	defer func() { _ = body.Close() }()
-	const maxStreamLogBytes = 8 << 10
+	const maxTestResponseBytes = 256 << 10
 	if isStream {
-		return io.ReadAll(io.LimitReader(body, maxStreamLogBytes))
+		return io.ReadAll(io.LimitReader(body, maxTestResponseBytes))
 	}
-	return io.ReadAll(body)
+	return io.ReadAll(io.LimitReader(body, maxTestResponseBytes))
 }
 
 func detectErrorFromTestResponseBody(respBody []byte) error {
@@ -700,7 +710,37 @@ func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
 }
 
 func buildTestRequest(model string, endpointType string, channel *model.Channel, isStream bool) dto.Request {
+	return buildTestRequestWithPrompt(model, endpointType, channel, isStream, "")
+}
+
+func monitorOutputTokenLimit(enabled bool) *uint {
+	if !enabled {
+		return nil
+	}
+	limit := uint(3000)
+	return &limit
+}
+
+func testMaxTokenLimit(monitor bool, normal uint) *uint {
+	limit := normal
+	if monitor {
+		limit = 3000
+	}
+	return &limit
+}
+
+func buildTestRequestWithPrompt(model string, endpointType string, channel *model.Channel, isStream bool, prompt string) dto.Request {
+	prompt = strings.TrimSpace(prompt)
+	isMonitorPrompt := prompt != ""
+	if prompt == "" {
+		prompt = "hi"
+	}
 	testResponsesInput := json.RawMessage(`[{"role":"user","content":"hi"}]`)
+	if prompt != "hi" {
+		if encoded, err := common.Marshal([]map[string]string{{"role": "user", "content": prompt}}); err == nil {
+			testResponsesInput = json.RawMessage(encoded)
+		}
+	}
 
 	// 根据端点类型构建不同的测试请求
 	if endpointType != "" {
@@ -730,9 +770,10 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		case constant.EndpointTypeOpenAIResponse:
 			// 返回 OpenAIResponsesRequest
 			return &dto.OpenAIResponsesRequest{
-				Model:  model,
-				Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
-				Stream: lo.ToPtr(isStream),
+				Model:           model,
+				Input:           testResponsesInput,
+				Stream:          lo.ToPtr(isStream),
+				MaxOutputTokens: monitorOutputTokenLimit(isMonitorPrompt),
 			}
 		case constant.EndpointTypeOpenAIResponseCompact:
 			// 返回 OpenAIResponsesCompactionRequest
@@ -744,11 +785,11 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 			return &dto.ClaudeRequest{
 				Model:     model,
 				Stream:    lo.ToPtr(isStream),
-				MaxTokens: lo.ToPtr(uint(16)),
+				MaxTokens: testMaxTokenLimit(isMonitorPrompt, 16),
 				Messages: []dto.ClaudeMessage{
 					{
 						Role:    "user",
-						Content: "hi",
+						Content: prompt,
 					},
 				},
 			}
@@ -757,7 +798,7 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 				Contents: []dto.GeminiChatContent{
 					{
 						Role:  "user",
-						Parts: []dto.GeminiPart{{Text: "hi"}},
+						Parts: []dto.GeminiPart{{Text: prompt}},
 					},
 				},
 				GenerationConfig: dto.GeminiChatGenerationConfig{
@@ -771,10 +812,10 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 				Messages: []dto.Message{
 					{
 						Role:    "user",
-						Content: "hi",
+						Content: prompt,
 					},
 				},
-				MaxTokens: lo.ToPtr(uint(16)),
+				MaxTokens: testMaxTokenLimit(isMonitorPrompt, 16),
 			}
 			if isStream {
 				req.StreamOptions = &dto.StreamOptions{IncludeUsage: true}
@@ -807,9 +848,10 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	// Responses-only models (e.g. codex series)
 	if strings.Contains(strings.ToLower(model), "codex") {
 		return &dto.OpenAIResponsesRequest{
-			Model:  model,
-			Input:  json.RawMessage(`[{"role":"user","content":"hi"}]`),
-			Stream: lo.ToPtr(isStream),
+			Model:           model,
+			Input:           testResponsesInput,
+			Stream:          lo.ToPtr(isStream),
+			MaxOutputTokens: monitorOutputTokenLimit(isMonitorPrompt),
 		}
 	}
 
@@ -820,7 +862,7 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 		Messages: []dto.Message{
 			{
 				Role:    "user",
-				Content: "hi",
+				Content: prompt,
 			},
 		},
 	}
@@ -829,15 +871,27 @@ func buildTestRequest(model string, endpointType string, channel *model.Channel,
 	}
 
 	if dto.IsOpenAIReasoningOModel(model) {
-		testRequest.MaxCompletionTokens = lo.ToPtr(uint(16))
+		maxTokens := uint(16)
+		if isMonitorPrompt {
+			maxTokens = 3000
+		}
+		testRequest.MaxCompletionTokens = lo.ToPtr(maxTokens)
 	} else if strings.Contains(model, "thinking") {
 		if !strings.Contains(model, "claude") {
-			testRequest.MaxTokens = lo.ToPtr(uint(50))
+			maxTokens := uint(50)
+			if isMonitorPrompt {
+				maxTokens = 3000
+			}
+			testRequest.MaxTokens = lo.ToPtr(maxTokens)
 		}
 	} else if strings.Contains(model, "gemini") {
 		testRequest.MaxTokens = lo.ToPtr(uint(3000))
 	} else {
-		testRequest.MaxTokens = lo.ToPtr(uint(16))
+		maxTokens := uint(16)
+		if isMonitorPrompt {
+			maxTokens = 3000
+		}
+		testRequest.MaxTokens = lo.ToPtr(maxTokens)
 	}
 
 	return testRequest

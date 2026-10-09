@@ -38,6 +38,7 @@ import { useAuthStore } from '@/stores/auth-store'
 import { ModelsChartPreferences } from './components/models/models-chart-preferences'
 import { ModelsFilter } from './components/models/models-filter-dialog'
 import { OverviewDashboard } from './components/overview/overview-dashboard'
+import { ChannelMonitorDashboard } from './components/channel-monitor/channel-monitor-dashboard'
 import { DEFAULT_TIME_GRANULARITY } from './constants'
 import {
   buildDefaultDashboardFilters,
@@ -203,11 +204,15 @@ const SECTION_META: Record<DashboardSectionId, { titleKey: string }> = {
   degradation: {
     titleKey: 'Model Degradation',
   },
+  'channel-monitor': {
+    titleKey: 'Channel monitor',
+  },
 }
 
 const ADMIN_ONLY_SECTIONS = new Set<DashboardSectionId>([
   'users',
   'degradation',
+  'channel-monitor',
 ])
 
 export function Dashboard() {
@@ -427,6 +432,11 @@ export function Dashboard() {
               <Suspense fallback={<ModelChartsFallback />}>
                 <LazyDegradationDashboard />
               </Suspense>
+            </FadeIn>
+          )}
+          {activeSection === 'channel-monitor' && isAdmin && (
+            <FadeIn>
+              <ChannelMonitorDashboard />
             </FadeIn>
           )}
           {activeSection === 'flow' && (
