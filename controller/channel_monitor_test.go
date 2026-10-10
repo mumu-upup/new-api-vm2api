@@ -77,6 +77,7 @@ func TestChannelMonitorJobsRespectGroupQuestionsAndFrequency(t *testing.T) {
 	channels := []*model.Channel{{Id: 1, Type: 1, Status: 1, Group: "vip,default", Models: "m1,m2"}}
 	config := model.DefaultChannelMonitorConfig(model.DiscoverChannelMonitorGroups(channels))
 	config.Groups[0].Enabled = false
+	config.Groups[1].Model = "m2"
 	config.Groups[1].QuestionIDs = []string{model.ChannelMonitorPresetCandy}
 	config.Groups[1].IntervalMinutes = 10
 	recent := []*model.ChannelMonitorArtifact{{Group: "OpenAI / vip", Model: "m1", PresetID: model.ChannelMonitorPresetCandy, CreatedAt: 900}}
@@ -84,13 +85,21 @@ func TestChannelMonitorJobsRespectGroupQuestionsAndFrequency(t *testing.T) {
 	require.Len(t, jobs, 1)
 	require.Equal(t, "m2", jobs[0].modelName)
 	require.Equal(t, "OpenAI / vip", jobs[0].group)
-	require.Len(t, channelMonitorJobs(channels, config, recent, 1500, false), 2)
+	require.Len(t, channelMonitorJobs(channels, config, recent, 1500, false), 1)
 	manualJobs := channelMonitorJobs(channels, config, recent, 1000, true)
-	require.Len(t, manualJobs, 2)
+	require.Len(t, manualJobs, 1)
 	for _, job := range manualJobs {
 		require.Equal(t, "OpenAI / vip", job.group)
 		require.Equal(t, model.ChannelMonitorPresetCandy, job.question.ID)
+		require.Equal(t, "m2", job.modelName)
 	}
+}
+
+func TestValidateChannelMonitorConfigRejectsMissingExecutionModel(t *testing.T) {
+	groups := []model.ChannelMonitorGroup{{Key: "OpenAI / vip", Models: []string{"m1"}}}
+	config := model.DefaultChannelMonitorConfig(groups)
+	config.Groups[0].Model = ""
+	require.Error(t, model.ValidateChannelMonitorConfig(config))
 }
 
 func TestChannelMonitorCardsSeparateHistoryFromMetrics(t *testing.T) {
@@ -102,14 +111,14 @@ func TestChannelMonitorCardsSeparateHistoryFromMetrics(t *testing.T) {
 	data := channelMonitorData(config, groups, records, "", "", "90m", 10000)
 	cards := data["cards"].(map[string]gin.H)
 	require.Len(t, cards, 1)
-	require.Equal(t, []string{"m1", "m2"}, cards["OpenAI / vip"]["models"])
+	require.Equal(t, []string{"m1"}, cards["OpenAI / vip"]["models"])
 	works := cards["OpenAI / vip"]["artifacts"].([]*model.ChannelMonitorArtifact)
 	require.Len(t, works, 1)
 	require.Equal(t, "OpenAI / vip", works[0].Group)
 	require.Empty(t, data["detail"].(gin.H)["artifacts"])
 	require.Empty(t, channelMonitorData(config, groups, records, "OpenAI / hidden", "", "today", 10000)["cards"])
 	filtered := channelMonitorData(config, groups, records, "", "m2", "today", 10000)["cards"].(map[string]gin.H)
-	require.Equal(t, []string{"m2"}, filtered["OpenAI / vip"]["models"])
+	require.Empty(t, filtered)
 }
 
 func TestChannelMonitorMetricsCountSuccessfulPreviews(t *testing.T) {

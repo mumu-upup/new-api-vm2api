@@ -416,6 +416,7 @@ export interface ChannelMonitorQuestion {
 export interface ChannelMonitorGroupConfig {
   key: string
   enabled: boolean
+  model: string
   question_ids: string[]
   interval_minutes: number
 }
@@ -438,6 +439,7 @@ export interface ChannelMonitorCard {
   key: string
   group: string
   platform: string
+  model: string
   models: string[]
   question_ids: string[]
   interval_minutes: number

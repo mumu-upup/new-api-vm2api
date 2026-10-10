@@ -26,6 +26,7 @@ type ChannelMonitorQuestion struct {
 type ChannelMonitorGroupConfig struct {
 	Key             string   `json:"key"`
 	Enabled         bool     `json:"enabled"`
+	Model           string   `json:"model"`
 	QuestionIDs     []string `json:"question_ids"`
 	IntervalMinutes int      `json:"interval_minutes"`
 }
@@ -98,9 +99,16 @@ func ChannelMonitorBuiltinQuestions() []ChannelMonitorQuestion {
 func DefaultChannelMonitorConfig(groups []ChannelMonitorGroup) ChannelMonitorConfig {
 	config := ChannelMonitorConfig{Groups: []ChannelMonitorGroupConfig{}, Questions: []ChannelMonitorQuestion{}}
 	for _, group := range groups {
-		config.Groups = append(config.Groups, ChannelMonitorGroupConfig{Key: group.Key, Enabled: true, QuestionIDs: []string{ChannelMonitorPresetPelican, ChannelMonitorPresetCandy}, IntervalMinutes: 30})
+		config.Groups = append(config.Groups, ChannelMonitorGroupConfig{Key: group.Key, Enabled: true, Model: firstChannelMonitorModel(group), QuestionIDs: []string{ChannelMonitorPresetPelican, ChannelMonitorPresetCandy}, IntervalMinutes: 30})
 	}
 	return config
+}
+
+func firstChannelMonitorModel(group ChannelMonitorGroup) string {
+	if len(group.Models) == 0 {
+		return ""
+	}
+	return group.Models[0]
 }
 
 // New groups remain opt-in once an administrator has saved a configuration.
@@ -115,9 +123,6 @@ func LoadChannelMonitorConfig(groups []ChannelMonitorGroup) (ChannelMonitorConfi
 	if err := common.UnmarshalJsonStr(raw, &config); err != nil {
 		return config, err
 	}
-	if err := ValidateChannelMonitorConfig(config); err != nil {
-		return config, err
-	}
 	if config.Groups == nil {
 		config.Groups = []ChannelMonitorGroupConfig{}
 	}
@@ -125,9 +130,17 @@ func LoadChannelMonitorConfig(groups []ChannelMonitorGroup) (ChannelMonitorConfi
 		config.Questions = []ChannelMonitorQuestion{}
 	}
 	for _, group := range groups {
-		if !slices.ContainsFunc(config.Groups, func(g ChannelMonitorGroupConfig) bool { return g.Key == group.Key }) {
-			config.Groups = append(config.Groups, ChannelMonitorGroupConfig{Key: group.Key, QuestionIDs: []string{ChannelMonitorPresetPelican, ChannelMonitorPresetCandy}, IntervalMinutes: 30})
+		index := slices.IndexFunc(config.Groups, func(g ChannelMonitorGroupConfig) bool { return g.Key == group.Key })
+		if index < 0 {
+			config.Groups = append(config.Groups, ChannelMonitorGroupConfig{Key: group.Key, Model: firstChannelMonitorModel(group), QuestionIDs: []string{ChannelMonitorPresetPelican, ChannelMonitorPresetCandy}, IntervalMinutes: 30})
+			continue
 		}
+		if config.Groups[index].Model == "" || !slices.Contains(group.Models, config.Groups[index].Model) {
+			config.Groups[index].Model = firstChannelMonitorModel(group)
+		}
+	}
+	if err := ValidateChannelMonitorConfig(config); err != nil {
+		return config, err
 	}
 	return config, nil
 }
@@ -176,8 +189,13 @@ func ValidateChannelMonitorConfig(config ChannelMonitorConfig) error {
 		if g.IntervalMinutes < 1 || g.IntervalMinutes > 1440 {
 			return fmt.Errorf("group interval must be 1–1440 minutes: %s", g.Key)
 		}
-		if g.Enabled && len(g.QuestionIDs) == 0 {
-			return fmt.Errorf("select at least one question: %s", g.Key)
+		if g.Enabled {
+			if strings.TrimSpace(g.Model) == "" || len(g.Model) > 256 {
+				return fmt.Errorf("select an execution model: %s", g.Key)
+			}
+			if len(g.QuestionIDs) == 0 {
+				return fmt.Errorf("select at least one question: %s", g.Key)
+			}
 		}
 		selected := map[string]bool{}
 		for _, id := range g.QuestionIDs {
