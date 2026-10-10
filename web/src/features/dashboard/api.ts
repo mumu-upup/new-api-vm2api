@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   DegradationTimeRange,
@@ -25,6 +26,8 @@ import type {
   ResponseModelMismatchStats,
   UptimeGroupResult,
   ChannelMonitorData,
+  ChannelMonitorConfig,
+  ChannelMonitorConfigData,
 } from './types'
 
 // ============================================================================
@@ -116,10 +119,27 @@ export async function getChannelMonitor(params: {
     '/api/channel-monitor',
     { params }
   )
-  return res.data
+  return requireServerSuccess(res.data)
 }
 
 export async function runChannelMonitor() {
   const res = await api.post('/api/channel-monitor/run')
-  return res.data
+  return requireServerSuccess(res.data)
+}
+
+export async function getChannelMonitorConfig() {
+  const res = await api.get<{
+    success: boolean
+    message?: string
+    data: ChannelMonitorConfigData
+  }>('/api/channel-monitor/config')
+  return requireServerSuccess(res.data).data
+}
+
+export async function updateChannelMonitorConfig(config: ChannelMonitorConfig) {
+  const res = await api.put<{ success: boolean; message?: string }>(
+    '/api/channel-monitor/config',
+    config
+  )
+  return requireServerSuccess(res.data)
 }

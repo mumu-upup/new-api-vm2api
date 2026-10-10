@@ -53,6 +53,8 @@ func SetApiRouter(router *gin.Engine) {
 		channelMonitorRoute.Use(middleware.AdminAuth())
 		{
 			channelMonitorRoute.GET("", middleware.DisableCache(), controller.GetChannelMonitor)
+			channelMonitorRoute.GET("/config", middleware.DisableCache(), controller.GetChannelMonitorConfig)
+			channelMonitorRoute.PUT("/config", middleware.DisableCache(), controller.UpdateChannelMonitorConfig)
 			channelMonitorRoute.POST("/run", middleware.DisableCache(), controller.RunChannelMonitor)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
