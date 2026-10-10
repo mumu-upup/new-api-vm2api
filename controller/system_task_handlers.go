@@ -26,18 +26,27 @@ func RegisterScheduledSystemTasks() {
 
 type channelMonitorHandler struct{}
 
+type channelMonitorTaskPayload struct {
+	Manual bool `json:"manual,omitempty"`
+}
+
 func (channelMonitorHandler) Type() string { return model.SystemTaskTypeChannelMonitor }
 
 func (channelMonitorHandler) Enabled() bool {
 	return constant.Setup && common.GetEnvOrDefaultBool("CHANNEL_MONITOR_ENABLED", true)
 }
 
-func (channelMonitorHandler) Interval() time.Duration { return 30 * time.Minute }
+func (channelMonitorHandler) Interval() time.Duration { return model.ChannelMonitorInterval() }
 
 func (channelMonitorHandler) NewPayload() any { return nil }
 
 func (channelMonitorHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
-	summary, err := runChannelMonitorTask(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
+	payload := channelMonitorTaskPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	summary, err := runChannelMonitorTask(ctx, payload.Manual, service.NewSystemTaskProgressReporter(task, runnerID))
 	if err != nil {
 		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
 		return

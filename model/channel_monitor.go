@@ -75,7 +75,7 @@ type ChannelMonitorFilter struct {
 }
 
 func ListChannelMonitorArtifacts(filter ChannelMonitorFilter, limit int) ([]*ChannelMonitorArtifact, error) {
-	if limit <= 0 || limit > 1000 {
+	if limit == 0 || limit > 1000 {
 		limit = 1000
 	}
 	query := DB.Model(&ChannelMonitorArtifact{}).Order("created_at desc, id desc").Limit(limit)
@@ -173,4 +173,11 @@ func ChannelMonitorDayStart(now time.Time) int64 {
 	}
 	local := now.In(location)
 	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location).Unix()
+}
+
+// LatestChannelMonitorRuns avoids loading generated HTML into the scheduler.
+func LatestChannelMonitorRuns(since int64) ([]*ChannelMonitorArtifact, error) {
+	var rows []*ChannelMonitorArtifact
+	err := DB.Model(&ChannelMonitorArtifact{}).Select(commonGroupCol+", model, preset_id, MAX(created_at) AS created_at").Where("created_at >= ?", since).Group(commonGroupCol + ", model, preset_id").Find(&rows).Error
+	return rows, err
 }
