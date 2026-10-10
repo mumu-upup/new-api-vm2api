@@ -51,7 +51,11 @@ func channelMonitorJobs(channels []*model.Channel, config model.ChannelMonitorCo
 		if !group.Enabled {
 			continue
 		}
-		for _, name := range descriptor.Models {
+		modelNames := descriptor.Models
+		if group.Model != "" {
+			modelNames = []string{group.Model}
+		}
+		for _, name := range modelNames {
 			for _, id := range group.QuestionIDs {
 				q, exists := questions[id]
 				if !exists {
@@ -188,8 +192,16 @@ func UpdateChannelMonitorConfig(c *gin.Context) {
 	}
 	groups := model.DiscoverChannelMonitorGroups(channels)
 	for _, g := range config.Groups {
-		if g.Enabled && !slices.ContainsFunc(groups, func(available model.ChannelMonitorGroup) bool { return available.Key == g.Key }) {
+		if !g.Enabled {
+			continue
+		}
+		availableIndex := slices.IndexFunc(groups, func(available model.ChannelMonitorGroup) bool { return available.Key == g.Key })
+		if availableIndex < 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "monitor group is no longer available: " + g.Key})
+			return
+		}
+		if !slices.Contains(groups[availableIndex].Models, g.Model) {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "monitor model is no longer available: " + g.Model})
 			return
 		}
 	}
@@ -308,20 +320,15 @@ func channelMonitorData(config model.ChannelMonitorConfig, available []model.Cha
 				continue
 			}
 			groups[g.Key] = true
-			for _, name := range descriptor.Models {
-				models[name] = true
-			}
 			if groupFilter != "" && groupFilter != g.Key {
 				continue
 			}
-			if modelFilter != "" && !slices.Contains(descriptor.Models, modelFilter) {
+			if modelFilter != "" && modelFilter != g.Model {
 				continue
 			}
-			cardModels := descriptor.Models
-			if modelFilter != "" {
-				cardModels = []string{modelFilter}
-			}
-			channels[g.Key] = gin.H{"key": g.Key, "group": g.Key, "platform": descriptor.Platform, "models": cardModels, "question_ids": g.QuestionIDs, "interval_minutes": g.IntervalMinutes, "latest": int64(0), "artifacts": []*model.ChannelMonitorArtifact{}}
+			models[g.Model] = true
+			cardModels := []string{g.Model}
+			channels[g.Key] = gin.H{"key": g.Key, "group": g.Key, "platform": descriptor.Platform, "model": g.Model, "models": cardModels, "question_ids": g.QuestionIDs, "interval_minutes": g.IntervalMinutes, "latest": int64(0), "artifacts": []*model.ChannelMonitorArtifact{}}
 		}
 	}
 	type modelMetric struct{ total, passed, duration int64 }
@@ -345,6 +352,9 @@ func channelMonitorData(config model.ChannelMonitorConfig, available []model.Cha
 				continue
 			}
 			if !ok || !slices.Contains(card["question_ids"].([]string), artifact.PresetID) {
+				continue
+			}
+			if configuredModel, ok := card["model"].(string); ok && configuredModel != "" && artifact.Model != configuredModel {
 				continue
 			}
 			historyKey := key + "\x00" + artifact.Model + "\x00" + artifact.PresetID
