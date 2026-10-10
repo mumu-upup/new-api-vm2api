@@ -293,3 +293,6 @@ func GetUserLanguage(userId int) string {
 	}
 	return userCache.GetSetting().Language
 }
+
+// InvalidateUserCache clears a user's cached authorization context.
+func InvalidateUserCache(userId int) error { return invalidateUserCache(userId) }
