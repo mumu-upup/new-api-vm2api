@@ -205,16 +205,13 @@ export interface ChannelMonitorData {
   range: string
   groups: Record<string, boolean>
   models: Record<string, boolean>
-  cards: Record<string, {
-    group: string
-    channel_id: number
-    channel_name: string
-    model: string
-    latest: number
-    artifacts: ChannelMonitorArtifact[]
-  }>
+  questions: ChannelMonitorQuestion[]
+  cards: Record<string, ChannelMonitorCard>
   detail: {
-    groups: Record<string, { name: string; artifacts: ChannelMonitorArtifact[] }>
+    groups: Record<
+      string,
+      { name: string; artifacts: ChannelMonitorArtifact[] }
+    >
     artifacts: ChannelMonitorArtifact[]
   }
   model_details?: Array<{
@@ -224,7 +221,12 @@ export interface ChannelMonitorData {
     success_rate: number
     avg_duration_ms: number
   }>
-  trend?: Array<{ timestamp: number; total: number; passed: number; success_rate: number }>
+  trend?: Array<{
+    timestamp: number
+    total: number
+    passed: number
+    success_rate: number
+  }>
   metrics?: { total: number; passed: number; success_rate: number }
 }
 
@@ -399,4 +401,44 @@ export interface DegradationTrendPoint {
   timestamp: number
   label: string
   requests: number
+}
+
+export interface ChannelMonitorQuestion {
+  id: string
+  name: string
+  prompt: string
+  artifact_type: 'html' | 'text'
+  matcher: 'builtin' | 'none' | 'exact' | 'contains' | 'regex'
+  expected: string
+}
+export interface ChannelMonitorGroupConfig {
+  key: string
+  enabled: boolean
+  question_ids: string[]
+  interval_minutes: number
+}
+export interface ChannelMonitorConfig {
+  groups: ChannelMonitorGroupConfig[]
+  questions: ChannelMonitorQuestion[]
+}
+export interface ChannelMonitorConfigData {
+  config: ChannelMonitorConfig
+  available_groups: Array<{
+    key: string
+    platform: string
+    group: string
+    models: string[]
+    channel_ids: number[]
+  }>
+  builtin_questions: ChannelMonitorQuestion[]
+}
+export interface ChannelMonitorCard {
+  key: string
+  group: string
+  platform: string
+  models: string[]
+  question_ids: string[]
+  interval_minutes: number
+  latest: number
+  artifacts: ChannelMonitorArtifact[]
 }
