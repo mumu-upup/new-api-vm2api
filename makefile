@@ -7,17 +7,36 @@ DEV_API_SERVICE = new-api
 DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
+IMAGE_REPOSITORY ?= calciumion/new-api
+IMAGE_TAG ?= local-$(shell git rev-parse --short HEAD)
+NEW_API_IMAGE ?= $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+TARGET_PLATFORM ?= linux/amd64
+DEPLOY_HOST ?=
+DEPLOY_PATH ?=
+DEPLOY_COMPOSE_FILE ?= docker-compose.yml
 
-.PHONY: all build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test
+.PHONY: all sync-remote build-web build-all-web build-image deploy start-api dev dev-api dev-api-rebuild dev-web reset-setup test
 
 all: build-all-web start-api
 
-build-web:
+sync-remote:
+	@./bin/sync-remote.sh
+
+build-web: sync-remote
 	@echo "Building web frontend..."
 	@cd $(WEB_DIR) && bun install --frozen-lockfile
 	@cd $(WEB_DIR) && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$$(cat ../VERSION) bun run build
 
 build-all-web: build-web
+
+build-image: sync-remote
+	@echo "Building external image $(NEW_API_IMAGE) for $(TARGET_PLATFORM)..."
+	@docker build --pull --platform "$(TARGET_PLATFORM)" --tag "$(NEW_API_IMAGE)" .
+	@docker image inspect "$(NEW_API_IMAGE)" >/dev/null
+	@echo "Built and verified $(NEW_API_IMAGE)."
+
+deploy: sync-remote build-image
+	@DEPLOY_HOST="$(DEPLOY_HOST)" DEPLOY_PATH="$(DEPLOY_PATH)" DEPLOY_COMPOSE_FILE="$(DEPLOY_COMPOSE_FILE)" NEW_API_IMAGE="$(NEW_API_IMAGE)" ./bin/deploy.sh
 
 start-api:
 	@echo "Starting api dev server..."
@@ -27,7 +46,7 @@ dev-api:
 	@echo "Starting api services (docker)..."
 	@docker compose -f $(DEV_COMPOSE_FILE) up -d
 
-dev-api-rebuild:
+dev-api-rebuild: sync-remote
 	@echo "Rebuilding and starting api service (docker)..."
 	@docker compose -f $(DEV_COMPOSE_FILE) up -d --build $(DEV_API_SERVICE)
 
