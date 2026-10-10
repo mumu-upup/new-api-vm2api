@@ -24,9 +24,11 @@ export const channelMonitorConfigSchema = z.object({
       .object({
         key: z.string().min(1).max(128),
         enabled: z.boolean(),
+        model: z.string().trim(),
         question_ids: z.array(z.string()),
         interval_minutes: z.number().int().min(1).max(1440),
       })
+      .refine((group) => !group.enabled || group.model.length > 0)
       .refine((group) => !group.enabled || group.question_ids.length > 0)
   ),
   questions: z

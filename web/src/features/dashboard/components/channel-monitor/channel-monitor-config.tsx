@@ -84,55 +84,89 @@ export function ChannelMonitorConfigForm(props: {
           )}
         </p>
         {values.groups.length === 0 && <p>{t('No data available')}</p>}
-        {values.groups.map((group, index) => (
-          <section key={group.key} className='space-y-3 rounded-lg border p-4'>
-            <label className='flex items-center gap-2 font-medium'>
-              <Checkbox
-                checked={group.enabled}
-                disabled={props.pending}
-                onCheckedChange={(checked) =>
-                  form.setValue(`groups.${index}.enabled`, checked)
-                }
-              />
-              {group.key}
-            </label>
-            <label className='flex items-center gap-3 text-sm'>
-              {t('Execution interval (minutes)')}
-              <Input
-                aria-label={`${group.key} ${t('Execution interval (minutes)')}`}
-                className='w-28'
-                type='number'
-                min={1}
-                max={1440}
-                step={1}
-                {...form.register(`groups.${index}.interval_minutes`, {
-                  valueAsNumber: true,
-                })}
-              />
-            </label>
-            <div className='flex flex-wrap gap-4'>
-              {allQuestions.map((q) => (
-                <label key={q.id} className='flex items-center gap-2 text-sm'>
-                  <Checkbox
-                    checked={group.question_ids.includes(q.id)}
-                    disabled={props.pending}
-                    onCheckedChange={(checked) =>
-                      form.setValue(
-                        `groups.${index}.question_ids`,
-                        checked
-                          ? [...group.question_ids, q.id]
-                          : group.question_ids.filter((id) => id !== q.id)
-                      )
-                    }
-                  />
-                  {q.matcher === 'builtin'
-                    ? t(q.name)
-                    : q.name || t('Custom question')}
-                </label>
-              ))}
-            </div>
-          </section>
-        ))}
+        {values.groups.map((group, index) => {
+          const availableGroup = props.data.available_groups.find(
+            (item) => item.key === group.key
+          )
+          const availableModels = availableGroup?.models ?? []
+          return (
+            <section
+              key={group.key}
+              className='space-y-3 rounded-lg border p-4'
+            >
+              <label className='flex items-center gap-3 text-sm'>
+                {t('Model')}
+                <Select
+                  disabled={props.pending || !availableGroup}
+                  items={availableModels.map((model) => ({
+                    value: model,
+                    label: model,
+                  }))}
+                  value={group.model}
+                  onValueChange={(value) => {
+                    if (value) form.setValue(`groups.${index}.model`, value)
+                  }}
+                >
+                  <SelectTrigger aria-label={t('Model')} className='w-64'>
+                    <SelectValue placeholder={t('Select model')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableModels.map((model) => (
+                      <SelectItem key={model} value={model}>
+                        {model}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
+              <label className='flex items-center gap-2 font-medium'>
+                <Checkbox
+                  checked={group.enabled}
+                  disabled={props.pending}
+                  onCheckedChange={(checked) =>
+                    form.setValue(`groups.${index}.enabled`, checked)
+                  }
+                />
+                {group.key}
+              </label>
+              <label className='flex items-center gap-3 text-sm'>
+                {t('Execution interval (minutes)')}
+                <Input
+                  aria-label={`${group.key} ${t('Execution interval (minutes)')}`}
+                  className='w-28'
+                  type='number'
+                  min={1}
+                  max={1440}
+                  step={1}
+                  {...form.register(`groups.${index}.interval_minutes`, {
+                    valueAsNumber: true,
+                  })}
+                />
+              </label>
+              <div className='flex flex-wrap gap-4'>
+                {allQuestions.map((q) => (
+                  <label key={q.id} className='flex items-center gap-2 text-sm'>
+                    <Checkbox
+                      checked={group.question_ids.includes(q.id)}
+                      disabled={props.pending}
+                      onCheckedChange={(checked) =>
+                        form.setValue(
+                          `groups.${index}.question_ids`,
+                          checked
+                            ? [...group.question_ids, q.id]
+                            : group.question_ids.filter((id) => id !== q.id)
+                        )
+                      }
+                    />
+                    {q.matcher === 'builtin'
+                      ? t(q.name)
+                      : q.name || t('Custom question')}
+                  </label>
+                ))}
+              </div>
+            </section>
+          )
+        })}
         <div className='flex items-center justify-between'>
           <h3 className='font-semibold'>{t('Custom questions')}</h3>
           <Button

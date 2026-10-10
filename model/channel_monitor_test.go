@@ -60,6 +60,7 @@ func TestChannelMonitorGroupConfiguration(t *testing.T) {
 	config := DefaultChannelMonitorConfig(groups)
 	require.Len(t, config.Groups, 2)
 	require.True(t, config.Groups[0].Enabled)
+	require.Equal(t, "m1", config.Groups[0].Model)
 	require.Equal(t, 30, config.Groups[0].IntervalMinutes)
 	require.NoError(t, ValidateChannelMonitorConfig(config))
 	config.Groups[0].IntervalMinutes = 0
@@ -141,7 +142,7 @@ func TestChannelMonitorDatabaseMatrix(t *testing.T) {
 			}
 			require.NoError(t, db.Raw(query).Scan(&version).Error)
 			t.Logf("database version: %s", version)
-			groups := []ChannelMonitorGroup{{Key: "OpenAI / vip"}}
+			groups := []ChannelMonitorGroup{{Key: "OpenAI / vip", Models: []string{"m"}}}
 			config := DefaultChannelMonitorConfig(groups)
 			config.Groups[0].IntervalMinutes = 15
 			require.NoError(t, SaveChannelMonitorConfig(config))

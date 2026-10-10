@@ -33,6 +33,7 @@ const data: ChannelMonitorConfigData = {
       {
         key: 'OpenAI / vip',
         enabled: true,
+        model: 'm',
         question_ids: ['q'],
         interval_minutes: 30,
       },
@@ -63,11 +64,14 @@ it('saves group visibility and an independent frequency', async () => {
   const save = vi.fn()
   render(<ChannelMonitorConfigForm data={data} onSave={save} pending={false} />)
   fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '15' } })
+  await userEvent.click(screen.getByRole('combobox', { name: 'Model' }))
+  await userEvent.click(screen.getByRole('option', { name: 'm' }))
   await userEvent.click(screen.getByRole('checkbox', { name: 'OpenAI / vip' }))
   await userEvent.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() => expect(save).toHaveBeenCalled())
   expect(save.mock.calls[0][0].groups[0]).toMatchObject({
     enabled: false,
+    model: 'm',
     interval_minutes: 15,
     question_ids: ['q'],
   })
@@ -116,10 +120,10 @@ it('prevents selection changes while a save is pending', async () => {
 })
 
 it.each([
-  { field: 'result type', index: 0, option: 'Text', value: 'HTML / SVG' },
+  { field: 'result type', index: 1, option: 'Text', value: 'HTML / SVG' },
   {
     field: 'validation rule',
-    index: 1,
+    index: 2,
     option: 'Contains',
     value: 'Preview only',
   },
