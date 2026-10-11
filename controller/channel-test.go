@@ -748,14 +748,14 @@ func monitorOutputTokenLimit(enabled bool) *uint {
 	if !enabled {
 		return nil
 	}
-	limit := uint(3000)
+	limit := uint(8192)
 	return &limit
 }
 
 func testMaxTokenLimit(monitor bool, normal uint) *uint {
 	limit := normal
 	if monitor {
-		limit = 3000
+		limit = 8192
 	}
 	return &limit
 }
@@ -834,7 +834,7 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 					},
 				},
 				GenerationConfig: dto.GeminiChatGenerationConfig{
-					MaxOutputTokens: lo.ToPtr(uint(3000)),
+					MaxOutputTokens: testMaxTokenLimit(isMonitorPrompt, 3000),
 				},
 			}
 		case constant.EndpointTypeOpenAI:
@@ -905,23 +905,23 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 	if dto.IsOpenAIReasoningOModel(model) {
 		maxTokens := uint(16)
 		if isMonitorPrompt {
-			maxTokens = 3000
+			maxTokens = 8192
 		}
 		testRequest.MaxCompletionTokens = lo.ToPtr(maxTokens)
 	} else if strings.Contains(model, "thinking") {
 		if !strings.Contains(model, "claude") {
 			maxTokens := uint(50)
 			if isMonitorPrompt {
-				maxTokens = 3000
+				maxTokens = 8192
 			}
 			testRequest.MaxTokens = lo.ToPtr(maxTokens)
 		}
 	} else if strings.Contains(model, "gemini") {
-		testRequest.MaxTokens = lo.ToPtr(uint(3000))
+		testRequest.MaxTokens = testMaxTokenLimit(isMonitorPrompt, 3000)
 	} else {
 		maxTokens := uint(16)
 		if isMonitorPrompt {
-			maxTokens = 3000
+			maxTokens = 8192
 		}
 		testRequest.MaxTokens = lo.ToPtr(maxTokens)
 	}
