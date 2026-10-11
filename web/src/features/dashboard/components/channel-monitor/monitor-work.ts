@@ -52,7 +52,25 @@ export function normalizeMonitorHTML(source: string): string {
   const viewport = document.createElement('meta')
   viewport.setAttribute('name', 'viewport')
   viewport.setAttribute('content', 'width=device-width,initial-scale=1')
-  document.head.prepend(policy, charset, viewport)
+  const previewStyle = document.createElement('style')
+  previewStyle.textContent = `
+    html, body {
+      box-sizing: border-box;
+      min-width: 100%;
+      min-height: 100%;
+      margin: 0;
+      overflow: auto;
+    }
+    *, *::before, *::after {
+      box-sizing: inherit;
+    }
+    svg, img, canvas, video {
+      display: block;
+      max-width: 100%;
+      height: auto;
+    }
+  `
+  document.head.prepend(policy, charset, viewport, previewStyle)
   return `<!doctype html>${document.documentElement.outerHTML}`
 }
 

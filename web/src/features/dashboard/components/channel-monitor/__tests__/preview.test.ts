@@ -47,6 +47,19 @@ describe('monitor work preview', () => {
       )
     ).toContain('@keyframes spin')
   })
+  it('adds responsive overflow styles so oversized SVG artwork remains visible', () => {
+    const source = normalizeMonitorHTML(
+      '<svg width="2400" height="1600" viewBox="0 0 2400 1600"><rect width="2400" height="1600"/></svg>'
+    )
+    const document = new DOMParser().parseFromString(source, 'text/html')
+    const previewStyle = [...document.head.querySelectorAll('style')]
+      .map((style) => style.textContent ?? '')
+      .join('\n')
+
+    expect(previewStyle).toContain('overflow: auto')
+    expect(previewStyle).toContain('max-width: 100%')
+    expect(previewStyle).toContain('height: auto')
+  })
   it('enforces the preview policy before scripts despite misleading head comments', () => {
     const source = normalizeMonitorHTML(
       '<!doctype html><html><!-- <head> --><script>animate()</script><head></head><body><svg/></body></html>'
