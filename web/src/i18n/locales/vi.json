@@ -6116,6 +6116,7 @@
     "Sign-in needs attention. Retry or complete browser sign-in.": "Đăng nhập cần được xử lý. Hãy thử lại hoặc đăng nhập qua trình duyệt.",
     "Sign-in only": "Chỉ đăng nhập",
     "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.": "Đăng nhập thành công nhưng không có yêu cầu 2FA. Không thể xác minh khóa TOTP.",
+    "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.": "Đăng nhập thành công nhưng không thể đăng xuất an toàn các phiên ChatGPT khác.",
     "Sign-in timed out. Try again.": "Đăng nhập quá thời gian chờ. Hãy thử lại.",
     "Sign-in: {{status}}": "Đăng nhập: {{status}}",
     "Signed in": "Đã đăng nhập",

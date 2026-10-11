@@ -6116,6 +6116,7 @@
     "Sign-in needs attention. Retry or complete browser sign-in.": "Sign-in needs attention. Retry or complete browser sign-in.",
     "Sign-in only": "Sign-in only",
     "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.": "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.",
+    "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.": "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.",
     "Sign-in timed out. Try again.": "Sign-in timed out. Try again.",
     "Sign-in: {{status}}": "Sign-in: {{status}}",
     "Signed in": "Signed in",

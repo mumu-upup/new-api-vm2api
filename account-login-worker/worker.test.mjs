@@ -227,6 +227,18 @@ test('worker returns only a matching authorization code or a sanitized handoff',
   assert.deepEqual(await response.json(),{status:'needs_attention',error_code:'captcha_required'})
 })
 
+test('login result exposes only a confirmed session cleanup outcome', () => {
+  assert.deepEqual(safeLoginResult({ status: 'success', code: 'authorization-code', state,
+    session_cleanup: { status: 'success', loggedOut: 2, currentId: 'private-current' } }, state), {
+    status: 'success', code: 'authorization-code', state,
+    session_cleanup: { status: 'success', loggedOut: 2 },
+  })
+  assert.deepEqual(safeLoginResult({ status: 'success', code: 'authorization-code', state,
+    session_cleanup: { status: 'unverified', reason: 'current_session_ambiguous' } }, state), {
+    status: 'needs_attention', error_code: 'session_cleanup_unverified',
+  })
+})
+
 const { completeLoginPage, parseCallback } = await import('./browser.mjs')
 function loginPage(steps) {
   let position = 0
@@ -669,6 +681,7 @@ test('probe is authenticated, opts into model authorization, and keeps callback 
     assert.equal(calls.at(-1).options.checkOnly, path === '/check')
     assert.equal(Boolean(calls.at(-1).options.probe), path === '/probe')
     assert.equal(Boolean(calls.at(-1).options.autoConsent), path === '/login')
+    assert.equal(Boolean(calls.at(-1).options.cleanupSessions), path === '/login')
     assert.equal(calls.at(-1).workspace_preference, path === '/probe' ? 'team_then_personal' : '')
   }
 })

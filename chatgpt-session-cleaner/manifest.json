@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "New API ChatGPT Session Cleaner",
+  "version": "1.0.0",
+  "description": "Keep the current ChatGPT browser session and sign out other sessions after local OAuth login.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://localhost:1455/*", "https://chatgpt.com/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "ChatGPT session cleanup",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://localhost:1455/auth/callback*",
+        "https://chatgpt.com/*"
+      ],
+      "js": ["cleanup-core.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

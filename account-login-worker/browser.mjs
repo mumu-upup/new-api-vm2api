@@ -1,9 +1,11 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import { getLoginTOTP, LoginClock } from './login.mjs'
+import { cleanupActiveSessions } from './session-cleanup.mjs'
 
 const callbackOrigin = 'http://localhost:1455'
 const callbackPath = '/auth/callback'
 const loginOrigin = 'https://auth.openai.com'
+const chatGPTOrigin = 'https://chatgpt.com'
 const codexConsentPath = '/sign-in-with-chatgpt/codex/consent'
 
 export function parseCallback(raw, state) {
@@ -17,16 +19,19 @@ export function parseCallback(raw, state) {
   return { status: 'success', code: url.searchParams.get('code'), state }
 }
 
-function permittedRequest(url, method, mainNavigation, resourceType) {
+function permittedRequest(url, method, mainNavigation, resourceType, allowChatGPT = false) {
   if (url.username || url.password || url.protocol !== 'https:') return false
   // The official SDK needs this exchange before a login form can submit.
   // Keep it limited to its exact endpoint and browser fetch/XHR requests;
   // credential forms, arbitrary writes and redirect replays remain blocked.
   if (!mainNavigation && ['fetch', 'xhr'].includes(resourceType) && method === 'POST' &&
       url.origin === 'https://sentinel.openai.com' && url.pathname === '/backend-api/sentinel/req' && !url.search) return true
-  if (mainNavigation || !['GET', 'HEAD', 'OPTIONS'].includes(method)) return url.origin === loginOrigin
+  if (mainNavigation || !['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    return url.origin === loginOrigin || allowChatGPT && url.origin === chatGPTOrigin
+  }
   // Keep credential submissions and top-level navigation restricted to auth.
   if (url.origin === 'https://sentinel.openai.com') return true
+  if (allowChatGPT && url.origin === chatGPTOrigin) return true
   return ['auth.openai.com', 'openai.com', 'oaistatic.com', 'cdn.auth0.com', 'challenges.cloudflare.com']
     .some(host => url.hostname === host || (host === 'oaistatic.com' && url.hostname.endsWith('.oaistatic.com')))
 }
@@ -34,7 +39,7 @@ function permittedRequest(url, method, mainNavigation, resourceType) {
 function requestDiagnostic(url, method, navigation, event, status) {
   // Never log arbitrary hosts, URL paths, query strings, headers, or bodies:
   // each can contain credentials, including on a blocked request.
-  const destination = ['auth.openai.com', 'sentinel.openai.com', 'openai.com',
+  const destination = ['auth.openai.com', 'sentinel.openai.com', 'openai.com', 'chatgpt.com',
     'oaistatic.com', 'cdn.auth0.com', 'challenges.cloudflare.com'].includes(url.hostname)
     ? url.hostname : url.hostname.endsWith('.oaistatic.com') ? 'oaistatic.com' : 'other'
   return { event, destination,
@@ -79,7 +84,7 @@ export async function handleLoginRequest(route, guard) {
       await route.fulfill({ status: 200, contentType: 'text/plain', body: 'Authorization received.' })
       return
     }
-    if (!permittedRequest(url, method, mainNavigation, resourceType)) break
+    if (!permittedRequest(url, method, mainNavigation, resourceType, guard.allowChatGPT)) break
     // Playwright does not route Chromium's redirect hops. Fetch exactly one hop
     // and inspect its destination before any follow-up can carry credentials.
     let response
@@ -118,7 +123,7 @@ export async function handleLoginRequest(route, guard) {
       await route.fulfill({ status: 200, contentType: 'text/plain', body: 'Authorization received.' })
       return
     }
-    if (!permittedRequest(next, nextMethod, mainNavigation, resourceType) || !['GET', 'HEAD'].includes(nextMethod)) break
+    if (!permittedRequest(next, nextMethod, mainNavigation, resourceType, guard.allowChatGPT) || !['GET', 'HEAD'].includes(nextMethod)) break
     if (mainNavigation) {
       // Register the navigation wait before Chromium can commit this response,
       // including when a form POST uses the already-visible page URL.
@@ -535,7 +540,16 @@ export async function browserLogin(input, signal, options = {}) {
     }
     const result = await completeLoginPage(page, input, signal, { ...options, deadline, onDiagnostic, totpNow: () => clock.now() })
     if (options.checkOnly || options.probe) return result
-    return callback || (navigationError ? { status: 'needs_attention', error_code: navigationError } : result)
+    const loginResult = callback || (navigationError ? { status: 'needs_attention', error_code: navigationError } : result)
+    if (loginResult.status !== 'success') return loginResult
+    if (!options.cleanupSessions) return loginResult
+    guard.allowChatGPT = true
+    try {
+      const sessionCleanup = await cleanupActiveSessions(tab, signal, { onDiagnostic, deadline })
+      return { ...loginResult, session_cleanup: sessionCleanup }
+    } finally {
+      guard.allowChatGPT = false
+    }
   } finally {
     signal.removeEventListener('abort', stop)
     await browser.close()

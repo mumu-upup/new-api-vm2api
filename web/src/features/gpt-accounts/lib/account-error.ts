@@ -48,6 +48,10 @@ export function getAccountErrorMessage(
       return t('The signed-in account does not match this email address.')
     case 'needs_attention':
       return t('Complete browser sign-in to continue.')
+    case 'session_cleanup_unverified':
+      return t(
+        'Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.'
+      )
     case 'workspace_selection_required':
       return t('Choose the account workspace through browser sign-in.')
     case 'captcha_required':

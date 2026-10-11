@@ -6116,6 +6116,7 @@
     "Sign-in needs attention. Retry or complete browser sign-in.": "ログインに対応が必要です。再試行するか、ブラウザーでログインしてください。",
     "Sign-in only": "ログインのみ",
     "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.": "2FA の要求なしでログインしました。TOTP シークレットの有効性は確認できませんでした。",
+    "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.": "サインインには成功しましたが、他の ChatGPT セッションを安全にログアウトできませんでした。",
     "Sign-in timed out. Try again.": "ログインがタイムアウトしました。再試行してください。",
     "Sign-in: {{status}}": "ログイン：{{status}}",
     "Signed in": "サインインしました",
