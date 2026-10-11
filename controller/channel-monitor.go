@@ -245,7 +245,7 @@ func extractChannelMonitorContent(body []byte, artifactType string) string {
 			if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 				continue
 			}
-			for _, path := range []string{"choices.0.delta.content", "choices.0.message.content", "content.0.text", "candidates.0.content.parts.0.text", "output_text", "delta"} {
+			for _, path := range []string{"choices.0.delta.content", "choices.0.message.content", "content.0.text", "candidates.0.content.parts.0.text", "output_text", "delta.text", "delta"} {
 				value := gjson.GetBytes(payload, path)
 				if value.Exists() && value.Type == gjson.String {
 					parts = append(parts, value.String())

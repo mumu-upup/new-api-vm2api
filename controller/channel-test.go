@@ -489,20 +489,11 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 		}
 	}
 	result := w.Result()
-	respBody, err := readTestResponseBody(result.Body, requestStream)
-	if err != nil {
-		return testResult{
-			context:     c,
-			localErr:    err,
-			newAPIError: types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError),
-		}
-	}
-	if bodyErr := validateTestResponseBody(respBody, requestStream); bodyErr != nil {
-		return testResult{
-			context:     c,
-			localErr:    bodyErr,
-			newAPIError: types.NewOpenAIError(bodyErr, types.ErrorCodeBadResponseBody, http.StatusInternalServerError),
-		}
+	respBody, bodyErr := readTestResponseBody(result.Body, requestStream)
+	bodyErrorCode := types.ErrorCodeReadResponseBodyFailed
+	if bodyErr == nil {
+		bodyErr = validateTestResponseBody(respBody, requestStream, strings.TrimSpace(prompt) != "")
+		bodyErrorCode = types.ErrorCodeBadResponseBody
 	}
 	info.SetEstimatePromptTokens(usage.PromptTokens)
 
@@ -525,6 +516,18 @@ func testChannelWithPrompt(ctx context.Context, channel *model.Channel, testUser
 		Other:            other,
 	})
 	common.SysLog(common.LogText("testing channel #%d completed in %dms", channel.Id, milliseconds))
+	// The upstream has already generated and charged for this response. Record its
+	// usage even if the monitor cannot keep or render the complete response body.
+	if bodyErr != nil {
+		return testResult{
+			context:      c,
+			localErr:     bodyErr,
+			newAPIError:  types.NewOpenAIError(bodyErr, bodyErrorCode, http.StatusInternalServerError),
+			responseBody: respBody,
+			actualModel:  info.UpstreamModelName,
+			durationMs:   milliseconds,
+		}
+	}
 	return testResult{
 		context:      c,
 		localErr:     nil,
@@ -609,11 +612,19 @@ func coerceTestUsage(usageAny any, isStream bool, estimatePromptTokens int) (*dt
 
 func readTestResponseBody(body io.ReadCloser, isStream bool) ([]byte, error) {
 	defer func() { _ = body.Close() }()
-	const maxTestResponseBytes = 256 << 10
+	maxResponseBytes := int64(256 << 10)
 	if isStream {
-		return io.ReadAll(io.LimitReader(body, maxTestResponseBytes))
+		// Per-token SSE envelopes are much larger than the rendered artifact.
+		maxResponseBytes = 16 << 20
 	}
-	return io.ReadAll(io.LimitReader(body, maxTestResponseBytes))
+	response, err := io.ReadAll(io.LimitReader(body, maxResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(response)) > maxResponseBytes {
+		return nil, errors.New("test response body exceeds the capture limit")
+	}
+	return response, nil
 }
 
 func detectErrorFromTestResponseBody(respBody []byte) error {
@@ -667,9 +678,28 @@ func validateStreamTestResponseBody(respBody []byte) error {
 	return errors.New("stream response body does not contain a valid stream event")
 }
 
-func validateTestResponseBody(respBody []byte, isStream bool) error {
+func validateTestResponseBody(respBody []byte, isStream, requireComplete bool) error {
 	if bodyErr := detectErrorFromTestResponseBody(respBody); bodyErr != nil {
 		return bodyErr
+	}
+	if requireComplete {
+		for line := range bytes.SplitSeq(bytes.TrimSpace(respBody), []byte{'\n'}) {
+			payload := bytes.TrimSpace(line)
+			if isStream {
+				if !bytes.HasPrefix(payload, []byte("data:")) {
+					continue
+				}
+				payload = bytes.TrimSpace(bytes.TrimPrefix(payload, []byte("data:")))
+			}
+			parsed := gjson.ParseBytes(payload)
+			eventType := parsed.Get("type").String()
+			if eventType == "response.incomplete" || eventType == "response.failed" || parsed.Get("status").String() == "incomplete" || parsed.Get("status").String() == "failed" {
+				return errors.New("monitor response is incomplete: upstream generation did not complete")
+			}
+			if parsed.Get("choices.0.finish_reason").String() == "length" || parsed.Get("delta.stop_reason").String() == "max_tokens" || parsed.Get("stop_reason").String() == "max_tokens" || parsed.Get("candidates.0.finishReason").String() == "MAX_TOKENS" {
+				return errors.New("monitor response is incomplete: upstream output token limit reached")
+			}
+		}
 	}
 	if isStream {
 		return validateStreamTestResponseBody(respBody)

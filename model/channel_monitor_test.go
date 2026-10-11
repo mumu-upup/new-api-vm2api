@@ -24,6 +24,7 @@ func TestEvaluateChannelMonitorArtifact(t *testing.T) {
 		ok      bool
 	}{
 		{name: "pelican html", preset: ChannelMonitorPresetPelican, content: "<html><svg aria-label='pelican bicycle'></svg></html>", want: "passed", ok: true},
+		{name: "truncated pelican html", preset: ChannelMonitorPresetPelican, content: "<html><svg aria-label='pelican bicycle'><defs><linearGradient x2=\"", want: "failed"},
 		{name: "pelican missing svg", preset: ChannelMonitorPresetPelican, content: "pelican bicycle", want: "failed"},
 		{name: "candy exact answer", preset: ChannelMonitorPresetCandy, content: "21", want: "passed", ok: true},
 		{name: "candy answer in sentence", preset: ChannelMonitorPresetCandy, content: "答案是 21。", want: "passed", ok: true},
