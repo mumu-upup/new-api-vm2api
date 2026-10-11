@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ChatGPT 会话清理</title>
+    <style>
+      body { width: 280px; margin: 0; padding: 16px; font: 14px system-ui, sans-serif; color: #1f2937; }
+      label { display: flex; gap: 8px; align-items: flex-start; line-height: 1.4; }
+      #status { margin: 12px 0 0; color: #4b5563; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <label><input id="enabled" type="checkbox"> 为下一次登录回调启用会话清理</label>
+    <p id="status">正在读取状态…</p>
+    <script src="popup.js"></script>
+  </body>
+</html>
