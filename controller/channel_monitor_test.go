@@ -81,6 +81,8 @@ func TestMonitorPromptBuildsAStreamingRequest(t *testing.T) {
 	require.True(t, ok)
 	require.NotNil(t, chatRequest.Stream)
 	require.True(t, *chatRequest.Stream)
+	require.NotNil(t, chatRequest.MaxTokens)
+	require.Equal(t, uint(8192), *chatRequest.MaxTokens)
 }
 
 func TestChannelMonitorPollsEveryMinute(t *testing.T) {
