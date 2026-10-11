@@ -1,15 +1,79 @@
 package controller
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMonitorPreservesArtworkAcrossLargeSSEEnvelopes(t *testing.T) {
+	content := `<html><svg aria-label="pelican bicycle">` + strings.Repeat(" ", 2048) + `</svg></html>`
+	var response strings.Builder
+	for _, character := range content {
+		event, err := common.Marshal(map[string]any{
+			"id":      "chatcmpl-monitor-pelican-animation",
+			"object":  "chat.completion.chunk",
+			"created": 1780000000,
+			"model":   "monitor-model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]string{"content": string(character)}}},
+		})
+		require.NoError(t, err)
+		response.WriteString("data: ")
+		response.Write(event)
+		response.WriteString("\n\n")
+	}
+	response.WriteString("data: [DONE]\n\n")
+	require.Greater(t, response.Len(), 256<<10)
+
+	body, err := readTestResponseBody(io.NopCloser(strings.NewReader(response.String())), true)
+	require.NoError(t, err)
+	require.NoError(t, validateTestResponseBody(body, true, true))
+	assert.Equal(t, content, extractChannelMonitorContent(body, model.ChannelMonitorArtifactHTML))
+}
+
+func TestMonitorRejectsIncompleteGeneration(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		payload string
+	}{
+		{name: "OpenAI output limit", payload: `{"choices":[{"finish_reason":"length","delta":{}}]}`},
+		{name: "Responses output limit", payload: `{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`},
+		{name: "Responses failure", payload: `{"type":"response.failed","response":{"status":"failed"}}`},
+		{name: "Claude output limit", payload: `{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}`},
+		{name: "Gemini output limit", payload: `{"candidates":[{"finishReason":"MAX_TOKENS"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"<html><svg>\"}}]}\n\ndata: " + test.payload + "\n\ndata: [DONE]\n\n")
+			require.ErrorContains(t, validateTestResponseBody(response, true, true), "incomplete")
+			assert.NoError(t, validateTestResponseBody(response, true, false), "connectivity tests may deliberately use a small output budget")
+		})
+	}
+}
+
+func TestChannelTestResponseRejectsOversizedBodies(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		stream bool
+		size   int
+	}{
+		{name: "JSON response", size: (256 << 10) + 1},
+		{name: "SSE response", stream: true, size: (16 << 20) + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body, err := readTestResponseBody(io.NopCloser(strings.NewReader(strings.Repeat("x", test.size))), test.stream)
+			require.ErrorContains(t, err, "response body exceeds")
+			assert.Empty(t, body, "oversized responses must not return a partial successful artifact")
+		})
+	}
+}
 
 func TestMonitorPromptBuildsAStreamingRequest(t *testing.T) {
 	request := buildTestRequestWithPrompt("gpt-5.6-sol", "", &model.Channel{}, false, "return a monitor artifact")
@@ -51,6 +115,12 @@ func TestExtractChannelMonitorContent(t *testing.T) {
 		{
 			name:         "responses streamed delta content",
 			body:         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"<html><svg>\"}\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"pelican bicycle</svg></html>\"}\ndata: [DONE]",
+			artifactType: model.ChannelMonitorArtifactHTML,
+			want:         `<html><svg>pelican bicycle</svg></html>`,
+		},
+		{
+			name:         "anthropic streamed delta text",
+			body:         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"<html><svg>\"}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"pelican bicycle</svg></html>\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
 			artifactType: model.ChannelMonitorArtifactHTML,
 			want:         `<html><svg>pelican bicycle</svg></html>`,
 		},

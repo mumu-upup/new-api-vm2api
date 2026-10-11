@@ -152,7 +152,7 @@ func EvaluateChannelMonitorArtifact(presetID, content string) (evaluation string
 	switch presetID {
 	case ChannelMonitorPresetPelican:
 		lower := strings.ToLower(content)
-		if strings.Contains(lower, "<svg") && strings.Contains(lower, "pelican") && (strings.Contains(lower, "bicycle") || strings.Contains(lower, "bike")) {
+		if strings.Contains(lower, "<svg") && strings.Contains(lower, "</svg>") && strings.Contains(lower, "pelican") && (strings.Contains(lower, "bicycle") || strings.Contains(lower, "bike")) {
 			return "passed", true
 		}
 		return "failed", false

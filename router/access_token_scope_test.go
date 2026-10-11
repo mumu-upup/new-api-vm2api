@@ -119,6 +119,106 @@ func TestModelPricingRoutesRequireRootSession(t *testing.T) {
 	}
 }
 
+func TestChannelMonitorRoutesRequireAdministratorSession(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedis, previousSecret := common.RedisEnabled, common.SessionSecret
+	previousRateLimit := common.GlobalApiRateLimitEnable
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = map[string]string{}
+	common.OptionMapRWMutex.Unlock()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Option{}, &model.AuditLog{}, &model.Channel{}, &model.ChannelMonitorArtifact{}))
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled, common.SessionSecret = false, "channel-monitor-route-test-secret"
+	common.GlobalApiRateLimitEnable = false
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		common.RedisEnabled, common.SessionSecret = previousRedis, previousSecret
+		common.GlobalApiRateLimitEnable = previousRateLimit
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+		require.NoError(t, sqlDB.Close())
+	})
+	engine := newAccessTokenScopeTestEngine(t)
+	for _, actor := range []struct {
+		name         string
+		role         int
+		deniedStatus int
+	}{
+		{name: "anonymous", deniedStatus: http.StatusUnauthorized},
+		{name: "user", role: common.RoleCommonUser, deniedStatus: http.StatusForbidden},
+		{name: "admin", role: common.RoleAdminUser},
+		{name: "root", role: common.RoleRootUser},
+	} {
+		t.Run(actor.name, func(t *testing.T) {
+			var token string
+			if actor.role != 0 {
+				user := &model.User{Username: "monitor-" + actor.name, AffCode: actor.name, Role: actor.role, Status: common.UserStatusEnabled, AuthVersion: 1}
+				require.NoError(t, db.Create(user).Error)
+				session := &model.UserSession{SID: "monitor-" + actor.name, UserID: user.Id, Version: 1, UserAuthVersion: 1,
+					Status: model.UserSessionStatusActive, RefreshHash: "unused-test-hash", LoginMethod: "password", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+				require.NoError(t, db.Create(session).Error)
+				token, _, err = service.IssueAccessToken(service.AuthIdentity{UserID: user.Id, SessionID: session.SID, UserAuthVersion: 1, SessionVersion: 1})
+				require.NoError(t, err)
+			}
+			endpoints := []struct {
+				method, path  string
+				allowedStatus int
+			}{
+				{http.MethodGet, "/api/channel-monitor", http.StatusOK},
+				{http.MethodGet, "/api/channel-monitor/config", http.StatusOK},
+				{http.MethodPut, "/api/channel-monitor/config", http.StatusBadRequest},
+			}
+			if actor.deniedStatus != 0 {
+				endpoints = append(endpoints, struct {
+					method, path  string
+					allowedStatus int
+				}{http.MethodPost, "/api/channel-monitor/run", 0})
+			}
+			for _, endpoint := range endpoints {
+				t.Run(endpoint.method+" "+endpoint.path, func(t *testing.T) {
+					// Invalid JSON reaches authorized configuration validation without changing settings.
+					request := httptest.NewRequest(endpoint.method, endpoint.path, strings.NewReader("{"))
+					if token != "" {
+						request.Header.Set("Authorization", "Bearer "+token)
+					}
+					recorder := httptest.NewRecorder()
+					engine.ServeHTTP(recorder, request)
+					wantStatus := actor.deniedStatus
+					if wantStatus == 0 {
+						wantStatus = endpoint.allowedStatus
+					}
+					require.Equal(t, wantStatus, recorder.Code, recorder.Body.String())
+					var response struct {
+						Success bool           `json:"success"`
+						Data    map[string]any `json:"data"`
+					}
+					require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+					if wantStatus == http.StatusOK {
+						assert.True(t, response.Success)
+						assert.NotNil(t, response.Data)
+						if endpoint.path == "/api/channel-monitor/config" {
+							assert.Contains(t, response.Data, "config")
+						}
+					} else {
+						assert.False(t, response.Success)
+						assert.Nil(t, response.Data)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestGPTAccountPollingPreservesSensitiveOperationRateLimit(t *testing.T) {
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()

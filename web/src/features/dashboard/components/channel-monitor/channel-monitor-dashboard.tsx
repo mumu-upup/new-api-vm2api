@@ -67,6 +67,10 @@ function MonitorPreview(props: { artifact: ChannelMonitorArtifact }) {
   const { t } = useTranslation()
   const [paused, setPaused] = useState(false)
   const isHTML = props.artifact.artifact_type === 'html'
+  const incompleteSVG =
+    props.artifact.preset_id === 'pelican-svg-animation' &&
+    /<svg\b/i.test(props.artifact.content) &&
+    !/<\/svg\s*>/i.test(props.artifact.content)
   if (isHTML && !props.artifact.content.trim()) {
     return <EmptyState title={t('No response content')} bordered />
   }
@@ -82,32 +86,44 @@ function MonitorPreview(props: { artifact: ChannelMonitorArtifact }) {
   }
   return (
     <div className='space-y-2'>
-      <div className='flex items-center justify-between gap-2'>
-        <span className='text-muted-foreground text-xs'>
-          {t('检测作品预览')}
-        </span>
-        <Button
-          variant='outline'
-          size='sm'
-          onClick={() => setPaused((value) => !value)}
-        >
-          {paused ? (
-            <Play className='mr-1 size-3.5' />
-          ) : (
-            <Pause className='mr-1 size-3.5' />
+      {incompleteSVG ? (
+        <EmptyState
+          title={t('Incomplete artwork')}
+          description={t(
+            'The saved response ended before the SVG was complete. Run monitoring again to generate a new work.'
           )}
-          {paused ? t('Resume preview') : t('Pause preview')}
-        </Button>
-      </div>
-      <iframe
-        className='h-[60vh] min-h-80 w-full rounded-lg border bg-white'
-        sandbox='allow-scripts'
-        title={t('检测作品预览')}
-        srcDoc={pausedPreview(
-          normalizeMonitorHTML(props.artifact.content),
-          paused
-        )}
-      />
+          bordered
+        />
+      ) : (
+        <>
+          <div className='flex items-center justify-between gap-2'>
+            <span className='text-muted-foreground text-xs'>
+              {t('检测作品预览')}
+            </span>
+            <Button
+              variant='outline'
+              size='sm'
+              onClick={() => setPaused((value) => !value)}
+            >
+              {paused ? (
+                <Play className='mr-1 size-3.5' />
+              ) : (
+                <Pause className='mr-1 size-3.5' />
+              )}
+              {paused ? t('Resume preview') : t('Pause preview')}
+            </Button>
+          </div>
+          <iframe
+            className='h-[60vh] min-h-80 w-full rounded-lg border bg-white'
+            sandbox='allow-scripts'
+            title={t('检测作品预览')}
+            srcDoc={pausedPreview(
+              normalizeMonitorHTML(props.artifact.content),
+              paused
+            )}
+          />
+        </>
+      )}
       <details className='rounded-lg border px-3 py-2'>
         <summary className='cursor-pointer text-sm font-medium'>
           {t('View work source')}

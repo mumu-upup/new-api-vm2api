@@ -118,6 +118,38 @@ it('shows an empty response message instead of a blank HTML preview', () => {
   ).not.toBeInTheDocument()
 })
 
+it('identifies truncated historical SVG works and keeps their source available', async () => {
+  const content =
+    '<html><body><svg><title>pelican bicycle</title><defs><linearGradient x2="'
+  const card: ChannelMonitorCard = {
+    key: 'OpenAI / vip',
+    group: 'OpenAI / vip',
+    platform: 'OpenAI',
+    model: 'm',
+    models: ['m'],
+    question_ids: ['pelican-svg-animation'],
+    interval_minutes: 30,
+    latest: 1,
+    artifacts: [
+      {
+        id: 1,
+        created_at: 1,
+        model: 'm',
+        preset_id: 'pelican-svg-animation',
+        artifact_type: 'html',
+        status: 'success',
+        evaluation: 'passed',
+        content,
+      } as ChannelMonitorArtifact,
+    ],
+  }
+  render(<WorkDialog card={card} questions={[]} open onOpenChange={vi.fn()} />)
+  expect(screen.getByText('Incomplete artwork')).toBeVisible()
+  expect(screen.queryByTitle('检测作品预览')).not.toBeInTheDocument()
+  await userEvent.click(screen.getByText('View work source'))
+  expect(screen.getByText(content)).toBeVisible()
+})
+
 it('shows no data instead of healthy for models without monitor results', () => {
   const client = new QueryClient({
     defaultOptions: { queries: { staleTime: Infinity, retry: false } },
