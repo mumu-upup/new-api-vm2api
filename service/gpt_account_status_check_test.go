@@ -53,6 +53,12 @@ func TestParseGPTAccountStatusCheckLines(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestGPTAccountErrorCodePreservesSessionCleanupFailures(t *testing.T) {
+	for _, code := range []string{"session_cleanup_unverified", "session_cleanup_failed", "session_cleanup_unsupported"} {
+		assert.Equal(t, code, GPTAccountErrorCode(errors.New(code)))
+	}
+}
+
 func statusCheckFixture(t *testing.T, handler http.HandlerFunc) AuthIdentity {
 	t.Helper()
 	user := setupAuthSessionTestDB(t)

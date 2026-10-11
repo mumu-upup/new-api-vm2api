@@ -6096,6 +6096,7 @@
     "Sign-in needs attention. Retry or complete browser sign-in.": "Для входа требуется действие. Повторите попытку или войдите через браузер.",
     "Sign-in only": "Только вход",
     "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.": "Вход выполнен без запроса 2FA. Проверить секрет TOTP не удалось.",
+    "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.": "Вход выполнен, но безопасно завершить другие сеансы ChatGPT не удалось.",
     "Sign-in timed out. Try again.": "Время ожидания входа истекло. Повторите попытку.",
     "Sign-in: {{status}}": "Вход: {{status}}",
     "Signed in": "Вход выполнен",

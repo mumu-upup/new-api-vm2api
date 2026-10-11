@@ -68,7 +68,9 @@ export function createLoginServer({ token, login }) {
       const probe = req.url === '/probe'
       if (checkOnly || probe) payload.totp_provider = 'local'
       if (probe) payload.workspace_preference = 'team_then_personal'
-      const result = await login(payload, abort.signal, { checkOnly, probe, autoConsent: req.url === '/login' })
+      const result = await login(payload, abort.signal, {
+        checkOnly, probe, autoConsent: req.url === '/login', cleanupSessions: req.url === '/login',
+      })
       const response = req.url === '/check' ? safeCheckResult(result, payload.state) : safeLoginResult(result, payload.state)
       res.end(JSON.stringify(response))
     } catch {

@@ -12,6 +12,7 @@ const errorCodes = new Set([
   'workspace_selection_required', 'password_not_challenged', 'totp_not_challenged',
   'totp_secret_required', 'totp_provider_invalid_response',
   'totp_provider_unavailable', 'totp_provider_timeout', 'invalid_totp_code',
+  'session_cleanup_unverified',
 ])
 
 function decodeSeed(value) {
@@ -158,6 +159,14 @@ export function validateLoginRequest(input) {
 export function safeLoginResult(result, state) {
   if (result?.status === 'success') {
     if (result.state === state && typeof result.code === 'string' && /^[\x21-\x7e]{1,4096}$/.test(result.code)) {
+      if (Object.hasOwn(result, 'session_cleanup')) {
+        const cleanup = result.session_cleanup
+        if (cleanup?.status !== 'success' || !Number.isInteger(cleanup.loggedOut) || cleanup.loggedOut < 0 || cleanup.loggedOut > 100) {
+          return { status: 'needs_attention', error_code: 'session_cleanup_unverified' }
+        }
+        return { status: 'success', code: result.code, state,
+          session_cleanup: { status: 'success', loggedOut: cleanup.loggedOut } }
+      }
       return { status: 'success', code: result.code, state }
     }
     return { status: 'failed', error_code: 'invalid_callback' }

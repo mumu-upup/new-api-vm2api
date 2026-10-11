@@ -6096,6 +6096,7 @@
     "Sign-in needs attention. Retry or complete browser sign-in.": "La connexion nécessite une intervention. Réessayez ou connectez-vous dans le navigateur.",
     "Sign-in only": "Connexion uniquement",
     "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.": "Connexion réussie sans demande de 2FA. Le secret TOTP n’a pas pu être vérifié.",
+    "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.": "La connexion a réussi, mais les autres sessions ChatGPT n’ont pas pu être fermées en toute sécurité.",
     "Sign-in timed out. Try again.": "Délai de connexion dépassé. Réessayez.",
     "Sign-in: {{status}}": "Connexion : {{status}}",
     "Signed in": "Connecté",

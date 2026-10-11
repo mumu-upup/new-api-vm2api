@@ -6096,6 +6096,7 @@
     "Sign-in needs attention. Retry or complete browser sign-in.": "登录需要处理，请重试或完成浏览器登录。",
     "Sign-in only": "仅检测登录",
     "Sign-in succeeded without a 2FA challenge. The TOTP secret could not be verified.": "登录成功，但网站未要求 2FA，无法确认 TOTP 密钥是否有效。",
+    "Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.": "登录成功，但无法安全退出其他 ChatGPT 会话。",
     "Sign-in timed out. Try again.": "登录超时，请重试。",
     "Sign-in: {{status}}": "登录：{{status}}",
     "Signed in": "已登录",

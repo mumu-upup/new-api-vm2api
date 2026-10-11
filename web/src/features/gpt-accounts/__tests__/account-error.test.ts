@@ -17,6 +17,10 @@ it.each([
   ['gateway_channel_key_invalid', 'The relay API key is invalid.'],
   ['gateway_channel_models_invalid', 'The channel model list is invalid.'],
   ['gateway_channel_create_failed', 'The relay channel could not be created.'],
+  [
+    'session_cleanup_unverified',
+    'Sign-in succeeded, but other ChatGPT sessions could not be safely signed out.',
+  ],
 ])('maps %s to a specific channel import message', (code, message) => {
   expect(getAccountErrorMessage(code, translate)).toBe(message)
 })
