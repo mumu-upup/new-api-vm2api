@@ -6,11 +6,13 @@ import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 
 import { importGptAccountOAuth } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
 import { accountGroupSchema } from '../lib/group-form'
+import type { GptAccountGateway } from '../types'
 
 interface OAuthImportDialogProps {
   defaultGroup?: string
@@ -18,6 +20,7 @@ interface OAuthImportDialogProps {
   accountGroup?: string
   accountModels?: string
   accountId?: number
+  gateways?: GptAccountGateway[]
   onClose: () => void
   onSaved: () => void
 }
@@ -41,6 +44,7 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
   const [oauthJSON, setOAuthJSON] = useState('')
   const [group, setGroup] = useState('')
   const [models, setModels] = useState('')
+  const [gatewayId, setGatewayId] = useState(0)
   const [validation, setValidation] = useState('')
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -69,6 +73,7 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
           ...(!props.accountId && models.trim()
             ? { models: models.trim() }
             : {}),
+          ...(!props.accountId && gatewayId ? { gateway_id: gatewayId } : {}),
         },
         signal
       )
@@ -122,6 +127,33 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
             'The credential is stored encrypted and never shown in the account list or audit log. Do not paste passwords or unrelated tokens.'
           )}
         </p>
+        {!props.accountId && (
+          <div className='space-y-2'>
+            <Label htmlFor='gpt-oauth-import-gateway'>
+              {t('Account destination')}
+            </Label>
+            <NativeSelect
+              id='gpt-oauth-import-gateway'
+              value={gatewayId}
+              disabled={operation.pending}
+              onChange={(event) => setGatewayId(Number(event.target.value))}
+            >
+              <NativeSelectOption value={0}>
+                {t('Direct Codex channel')}
+              </NativeSelectOption>
+              {(props.gateways ?? []).map((gateway) => {
+                let providerLabel = t('VM2API')
+                if (gateway.provider === 'cpa') providerLabel = 'CPA'
+                else if (gateway.provider === 'sub2api') providerLabel = 'Sub2API'
+                return (
+                  <NativeSelectOption key={gateway.id} value={gateway.id}>
+                    {gateway.name} · {providerLabel}
+                  </NativeSelectOption>
+                )
+              })}
+            </NativeSelect>
+          </div>
+        )}
         <div className='space-y-2'>
           <Label htmlFor='gpt-oauth-import-group'>{t('Group')}</Label>
           <Input

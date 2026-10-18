@@ -32,4 +32,5 @@ export const defaultGroupSchema = z.object({
         return major > 5 || (major === 5 && Number(version[2] ?? 0) >= 6)
       })
     }, 'Enter GPT model names at version 5.6 or later.'),
+  default_gateway_id: z.string().optional(),
 })

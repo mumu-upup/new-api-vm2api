@@ -17,9 +17,10 @@ import (
 var gptAccountDefaultModelPattern = regexp.MustCompile(`(?i)^gpt-([0-9]+)(?:\.([0-9]+))?(?:-[a-z0-9][a-z0-9.-]*)?$`)
 
 const (
-	GPTAccountDefaultGroupKey  = "GPTAccountDefaultGroup"
-	GPTAccountDefaultModelsKey = "GPTAccountDefaultModels"
-	GPTAccountDefaultModels    = "gpt-5.6"
+	GPTAccountDefaultGroupKey   = "GPTAccountDefaultGroup"
+	GPTAccountDefaultModelsKey  = "GPTAccountDefaultModels"
+	GPTAccountDefaultGatewayKey = "GPTAccountDefaultGateway"
+	GPTAccountDefaultModels     = "gpt-5.6"
 )
 
 func ValidateGPTAccountGroup(group string) error {
@@ -32,6 +33,44 @@ func ValidateGPTAccountGroup(group string) error {
 		}
 	}
 	return nil
+}
+
+// ResolveGPTAccountDefaultGateway selects the configured VM2API gateway for
+// newly created accounts. When no explicit option exists, a single VM2API
+// gateway is used automatically; multiple gateways require an explicit
+// administrator choice to avoid silently routing credentials to the wrong
+// instance.
+func ResolveGPTAccountDefaultGateway() (*int, error) {
+	if !DB.Migrator().HasTable(&GPTAccountGateway{}) {
+		return nil, nil
+	}
+	var option Option
+	err := DB.Where(&Option{Key: GPTAccountDefaultGatewayKey}).First(&option).Error
+	if err == nil {
+		id, parseErr := strconv.Atoi(strings.TrimSpace(option.Value))
+		if parseErr != nil || id <= 0 {
+			return nil, errors.New("invalid_gateway")
+		}
+		var gateway GPTAccountGateway
+		if DB.Where("id = ? AND provider = ?", id, "vm2api").First(&gateway).Error != nil {
+			return nil, errors.New("gateway_not_found")
+		}
+		return &id, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+	var gateways []GPTAccountGateway
+	if err := DB.Where("provider = ?", "vm2api").Order("id ASC").Find(&gateways).Error; err != nil {
+		return nil, err
+	}
+	if len(gateways) == 1 {
+		return &gateways[0].ID, nil
+	}
+	if len(gateways) > 1 {
+		return nil, errors.New("gateway_required")
+	}
+	return nil, nil
 }
 
 // ResolveGPTAccountGroup reads persisted defaults at submission time so a
@@ -271,6 +310,21 @@ func CreateGPTAccountCredential(account *GPTAccount, key, externalAccountID stri
 			}
 			if err := tx.Create(account).Error; err != nil {
 				return err
+			}
+			if account.GatewayID != nil {
+				now := time.Now().Unix()
+				if err := tx.Model(account).Updates(map[string]any{
+					"account_id": externalAccountID, "o_auth_subject": account.OAuthSubject,
+					"status": "pending", "gateway_sync_status": "pending", "last_error_code": "", "updated_at": now,
+				}).Error; err != nil {
+					return err
+				}
+				account.AccountID = externalAccountID
+				account.Status = "pending"
+				account.GatewaySyncStatus = "pending"
+				result = *account
+				created = true
+				return nil
 			}
 			channel := Channel{Type: constant.ChannelTypeCodex, Key: key, Name: account.Name, Status: common.ChannelStatusEnabled, Group: account.Group, Models: account.Models, CreatedTime: time.Now().Unix()}
 			if err := tx.Create(&channel).Error; err != nil {

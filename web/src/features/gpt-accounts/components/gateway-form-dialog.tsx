@@ -145,11 +145,17 @@ export function GatewayFormDialog(props: {
                         'management_version',
                         event.target.value === 'cpa' ? 'v8' : ''
                       )
+                      if (event.target.value !== 'sub2api') {
+                        form.setValue('remote_group_id', 0)
+                      }
                     }}
                   >
                     <NativeSelectOption value='cpa'>CPA</NativeSelectOption>
                     <NativeSelectOption value='sub2api'>
                       Sub2API
+                    </NativeSelectOption>
+                    <NativeSelectOption value='vm2api'>
+                      {t('VM2API')}
                     </NativeSelectOption>
                   </NativeSelect>
                 </FormControl>

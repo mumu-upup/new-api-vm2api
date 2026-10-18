@@ -34,7 +34,7 @@ type GPTGatewayChannelInput struct {
 	ForcedReasoningEffort string
 }
 
-// ParseGPTGatewayChannelJSON normalizes the supported CPA, Sub2API, and Prism
+// ParseGPTGatewayChannelJSON normalizes the supported CPA, Sub2API, VM2API, and Prism
 // channel JSON shapes into one channel input. This is a local parser only: it
 // never contacts a gateway and never returns the supplied credential in an
 // error.
@@ -60,6 +60,8 @@ func ParseGPTGatewayChannelJSON(raw string) (GPTGatewayChannelInput, error) {
 		provider = "cpa"
 	case "sub2api", "sub2-api", "sub2_api":
 		provider = "sub2api"
+	case "vm2api", "vm2-api", "vm2_api":
+		provider = "vm2api"
 	case "prism", "prism-bridge", "prism_bridge":
 		provider = "prism"
 	default:
@@ -270,13 +272,16 @@ func SaveGPTAccountGateway(existing *model.GPTAccountGateway, input GPTAccountGa
 	if input.Name == "" || len(input.Name) > 128 || len(input.Group) > 64 || strings.ContainsAny(input.Group, "\r\n") || len(input.Models) > 8192 || strings.ContainsAny(input.Models, "\r\n") || input.RemoteGroupID < 0 || len(input.ManagementKey) > 8192 || len(input.RelayKey) > 8192 || strings.ContainsAny(input.ManagementKey+input.RelayKey, "\r\n") {
 		return nil, errors.New("invalid_gateway")
 	}
-	if input.Provider != "cpa" && input.Provider != "sub2api" {
+	if input.Provider != "cpa" && input.Provider != "sub2api" && input.Provider != "vm2api" {
 		return nil, errors.New("invalid_gateway")
 	}
 	if input.Provider == "cpa" && input.ManagementVersion != "v8" && input.ManagementVersion != "legacy" {
 		return nil, errors.New("invalid_gateway")
 	}
 	if input.Provider == "sub2api" && (input.ManagementVersion != "" || input.RemoteGroupID <= 0) {
+		return nil, errors.New("invalid_gateway")
+	}
+	if input.Provider == "vm2api" && (input.ManagementVersion != "" || input.RemoteGroupID != 0 || input.ManagementURL != input.RelayURL) {
 		return nil, errors.New("invalid_gateway")
 	}
 	var err error
@@ -331,6 +336,13 @@ func SaveGPTAccountGateway(existing *model.GPTAccountGateway, input GPTAccountGa
 // ApplyGPTAccountGateway keeps direct and gateway associations mutually exclusive
 // and immutable once the account has been created. A nil update means unchanged.
 func ApplyGPTAccountGateway(account *model.GPTAccount, gatewayID *int) error {
+	if account.ID == 0 && gatewayID == nil {
+		resolved, err := model.ResolveGPTAccountDefaultGateway()
+		if err != nil {
+			return err
+		}
+		gatewayID = resolved
+	}
 	if gatewayID == nil {
 		gatewayID = account.GatewayID
 		if gatewayID == nil {
@@ -453,12 +465,14 @@ func newGPTGatewayClient(gateway *model.GPTAccountGateway, account *model.GPTAcc
 
 // request never returns remote error text, response bodies, URLs, or credentials.
 func (client *gptGatewayClient) request(ctx context.Context, method, path string, body any, out any) (int, error) {
-	if !gptAccountOwnerActive(client.account) {
+	if client.account != nil && !gptAccountOwnerActive(client.account) {
 		return 0, errors.New("authorization_forbidden")
 	}
-	var current model.GPTAccount
-	if model.DB.First(&current, client.account.ID).Error != nil || current.Generation != client.account.Generation || current.LeaseID != client.account.LeaseID || current.LeaseUntil <= time.Now().Unix() || current.GatewayID == nil || *current.GatewayID != client.gateway.ID {
-		return 0, model.ErrGPTAccountStale
+	if client.account != nil {
+		var current model.GPTAccount
+		if model.DB.First(&current, client.account.ID).Error != nil || current.Generation != client.account.Generation || current.LeaseID != client.account.LeaseID || current.LeaseUntil <= time.Now().Unix() || current.GatewayID == nil || *current.GatewayID != client.gateway.ID {
+			return 0, model.ErrGPTAccountStale
+		}
 	}
 	var gateway model.GPTAccountGateway
 	if model.DB.First(&gateway, client.gateway.ID).Error != nil || gateway.Generation != client.gateway.Generation {
@@ -554,10 +568,13 @@ func StoreVerifiedGPTAccountGatewayCredential(ctx context.Context, snapshot *mod
 	if err != nil {
 		return err
 	}
-	// Do not lose the identity of an uncertain initial create. Resolve it before
-	// starting a fresh OAuth import that could otherwise create another record.
-	if secrets.GatewayImportAttempted && secrets.GatewayRemoteID == "" {
-		return errors.New("gateway_import_uncertain")
+	// Reconcile any previous remote write before accepting a fresh OAuth bundle.
+	// VM2API has no import id to compare, so a slot without matching credentials
+	// remains uncertain and the new refresh token must not be replayed.
+	if secrets.GatewayImportAttempted {
+		if err := client.sync(ctx, secrets); err != nil {
+			return err
+		}
 	}
 	secrets.GatewayOAuth, secrets.GatewayImportID, secrets.GatewayImportAttempted = &key, uuid.NewString(), false
 	snapshot.AccountID = key.AccountID
@@ -609,14 +626,33 @@ func syncGPTAccountGatewaySnapshot(ctx context.Context, snapshot *model.GPTAccou
 	var path string
 	if gateway.Provider == "cpa" {
 		path = client.cpaPath() + "/refresh"
-	} else {
+	} else if gateway.Provider == "sub2api" {
 		path = "/api/v1/admin/openai/accounts/" + secrets.GatewayRemoteID + "/refresh"
+	} else {
+		path = "/api/panel/vms/" + url.PathEscape(secrets.GatewayRemoteID) + "/oauth/refresh"
 	}
 	var response struct {
 		OK   bool `json:"ok"`
 		Code *int `json:"code"`
 	}
-	status, err := client.request(ctx, http.MethodPost, path, map[string]string{"name": secrets.GatewayRemoteID}, &response)
+	var vmResponse struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			OK bool `json:"ok"`
+		} `json:"data"`
+	}
+	body := map[string]string{"name": secrets.GatewayRemoteID}
+	if gateway.Provider == "vm2api" {
+		body = map[string]string{"vm_id": secrets.GatewayRemoteID}
+	}
+	if gateway.Provider == "vm2api" {
+		status, err := client.request(ctx, http.MethodPost, path, body, &vmResponse)
+		if err != nil || status == http.StatusNotFound || !vmResponse.OK || !vmResponse.Data.OK {
+			return errors.New("gateway_import_failed")
+		}
+		return nil
+	}
+	status, err := client.request(ctx, http.MethodPost, path, body, &response)
 	if err != nil || status == http.StatusNotFound || (gateway.Provider == "cpa" && !response.OK) || (gateway.Provider == "sub2api" && (response.Code == nil || *response.Code != 0)) {
 		return errors.New("gateway_import_failed")
 	}
@@ -636,8 +672,10 @@ func (client *gptGatewayClient) sync(ctx context.Context, secrets *GPTAccountSec
 	var err error
 	if client.gateway.Provider == "cpa" {
 		err = client.syncCPA(ctx, secrets)
-	} else {
+	} else if client.gateway.Provider == "sub2api" {
 		err = client.syncSub2API(ctx, secrets)
+	} else {
+		err = client.syncVM2API(ctx, secrets)
 	}
 	if err != nil {
 		return err
@@ -654,6 +692,128 @@ func (client *gptGatewayClient) cpaPath() string {
 		return "/v0/management/auth-files"
 	}
 	return "/v8/management/credentials"
+}
+
+// GPTAccountVM2APIStatus is the redacted VM2API panel payload exposed by the
+// host dashboard. The nested maps intentionally retain quota fields added by
+// newer VM2API versions without persisting or returning credentials.
+type GPTAccountVM2APIStatus struct {
+	AccountID int            `json:"account_id"`
+	VMID      string         `json:"vm_id"`
+	GatewayID int            `json:"gateway_id"`
+	VM        map[string]any `json:"vm"`
+	Quota     map[string]any `json:"quota,omitempty"`
+}
+
+func vm2apiRemoteID(account *model.GPTAccount, secrets *GPTAccountSecrets) string {
+	if secrets.GatewayRemoteID != "" {
+		return secrets.GatewayRemoteID
+	}
+	return "new-api-" + model.GPTChannelKeyHash(account.SecretID)[:32]
+}
+
+func loadGPTAccountVM2APIClient(accountID int) (*model.GPTAccount, *model.GPTAccountGateway, *GPTAccountSecrets, *gptGatewayClient, error) {
+	var account model.GPTAccount
+	if model.DB.First(&account, accountID).Error != nil || account.GatewayID == nil {
+		return nil, nil, nil, nil, errors.New("account_not_found")
+	}
+	var gateway model.GPTAccountGateway
+	if model.DB.First(&gateway, *account.GatewayID).Error != nil || gateway.Provider != "vm2api" {
+		return nil, nil, nil, nil, errors.New("gateway_not_found")
+	}
+	secrets, err := DecryptGPTAccountSecrets(&account)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	client, err := newGPTGatewayClient(&gateway, nil)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return &account, &gateway, secrets, client, nil
+}
+
+func GetGPTAccountVM2APIStatus(ctx context.Context, accountID int) (*GPTAccountVM2APIStatus, error) {
+	account, gateway, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer client.client.CloseIdleConnections()
+	vmID := vm2apiRemoteID(account, secrets)
+	var response struct {
+		OK   bool `json:"ok"`
+		Data struct {
+			VM map[string]any `json:"vm"`
+		} `json:"data"`
+	}
+	status, err := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &response)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusNotFound || !response.OK {
+		return nil, errors.New("gateway_remote_missing")
+	}
+	result := &GPTAccountVM2APIStatus{AccountID: account.ID, VMID: vmID, GatewayID: gateway.ID, VM: response.Data.VM}
+	if quota, ok := response.Data.VM["quota"].(map[string]any); ok {
+		result.Quota = quota
+	}
+	return result, nil
+}
+
+func UpdateGPTAccountVM2APIPolicy(ctx context.Context, accountID int, body map[string]any) error {
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	if err != nil {
+		return err
+	}
+	defer client.client.CloseIdleConnections()
+	status, err := client.request(ctx, http.MethodPatch, "/api/panel/vms/"+url.PathEscape(vm2apiRemoteID(account, secrets)), body, nil)
+	if err != nil || status < 200 || status >= 300 {
+		return errors.New("gateway_import_failed")
+	}
+	return nil
+}
+
+func SetGPTAccountVM2APISchedulable(ctx context.Context, accountID int, schedulable bool) error {
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	if err != nil {
+		return err
+	}
+	defer client.client.CloseIdleConnections()
+	status, err := client.request(ctx, http.MethodPost, "/api/panel/vms/"+url.PathEscape(vm2apiRemoteID(account, secrets))+"/schedulable", map[string]any{"schedulable": schedulable}, nil)
+	if err != nil || status < 200 || status >= 300 {
+		return errors.New("gateway_import_failed")
+	}
+	return nil
+}
+
+func RefreshGPTAccountVM2APIQuota(ctx context.Context, accountID int) error {
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	if err != nil {
+		return err
+	}
+	defer client.client.CloseIdleConnections()
+	status, err := client.request(ctx, http.MethodPost, "/api/panel/vms/"+url.PathEscape(vm2apiRemoteID(account, secrets))+"/openai-quota/refresh", nil, nil)
+	if err != nil || status < 200 || status >= 300 {
+		return errors.New("gateway_import_failed")
+	}
+	return nil
+}
+
+func ListGPTAccountVM2APILogs(ctx context.Context, accountID int, limit int) (map[string]any, error) {
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer client.client.CloseIdleConnections()
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	params := url.Values{"vm_id": {vm2apiRemoteID(account, secrets)}, "limit": {strconv.Itoa(limit)}}
+	var response map[string]any
+	status, err := client.request(ctx, http.MethodGet, "/api/panel/request-logs?"+params.Encode(), nil, &response)
+	if err != nil || status < 200 || status >= 300 {
+		return nil, errors.New("gateway_import_failed")
+	}
+	return response, nil
 }
 
 type gptCPACredential struct {
@@ -823,5 +983,144 @@ func (client *gptGatewayClient) syncSub2API(ctx context.Context, secrets *GPTAcc
 		return errors.New("gateway_import_uncertain")
 	}
 	secrets.GatewayRemoteID = strconv.FormatInt(response.Data.ID, 10)
+	return nil
+}
+
+type gptVM2APIVM struct {
+	ID               string `json:"id"`
+	Platform         string `json:"platform"`
+	Family           string `json:"family"`
+	HasToken         bool   `json:"has_token"`
+	HasRefresh       bool   `json:"has_refresh"`
+	Email            string `json:"email"`
+	OrgUUID          string `json:"org_uuid"`
+	ChatGPTAccountID string `json:"chatgpt_account_id"`
+}
+
+type gptVM2APIVMResponse struct {
+	OK   bool `json:"ok"`
+	Data struct {
+		VM gptVM2APIVM `json:"vm"`
+	} `json:"data"`
+}
+
+func ownedVM2APISlot(vm gptVM2APIVM, vmID string) bool {
+	return vm.ID == vmID && vm.Platform == "openai" && vm.Family == "codex"
+}
+
+func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAccountSecrets) error {
+	vmID := "new-api-" + model.GPTChannelKeyHash(client.account.SecretID)[:32]
+	if secrets.GatewayRemoteID != "" && secrets.GatewayRemoteID != vmID {
+		return errors.New("gateway_remote_conflict")
+	}
+	var existing gptVM2APIVMResponse
+	status, err := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &existing)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusNotFound {
+		if !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
+			return errors.New("gateway_remote_conflict")
+		}
+		secrets.GatewayRemoteID = vmID
+		if existing.Data.VM.HasToken || existing.Data.VM.HasRefresh {
+			remoteAccountID := existing.Data.VM.ChatGPTAccountID
+			if remoteAccountID == "" {
+				remoteAccountID = existing.Data.VM.OrgUUID
+			}
+			if existing.Data.VM.Email == "" && remoteAccountID == "" {
+				return errors.New("gateway_remote_conflict")
+			}
+			if existing.Data.VM.Email != "" && !strings.EqualFold(existing.Data.VM.Email, client.account.Email) {
+				return errors.New("gateway_remote_conflict")
+			}
+			if remoteAccountID != "" && remoteAccountID != client.account.AccountID {
+				return errors.New("gateway_remote_conflict")
+			}
+			secrets.GatewayOAuth = nil
+			secrets.GatewayImportAttempted = false
+			return nil
+		}
+		if secrets.GatewayImportAttempted {
+			return errors.New("gateway_import_uncertain")
+		}
+		if secrets.GatewayOAuth == nil {
+			return errors.New("gateway_credentials_required")
+		}
+		secrets.GatewayImportAttempted = true
+		if err := client.checkpoint(secrets, "pending", "", false); err != nil {
+			return err
+		}
+	} else {
+		if secrets.GatewayImportAttempted {
+			return errors.New("gateway_import_uncertain")
+		}
+		if secrets.GatewayOAuth == nil {
+			return errors.New("gateway_credentials_required")
+		}
+		secrets.GatewayRemoteID, secrets.GatewayImportAttempted = vmID, true
+		if err := client.checkpoint(secrets, "pending", "", false); err != nil {
+			return err
+		}
+		createBody := map[string]any{
+			"id":                  vmID,
+			"name":                vmID,
+			"platform":            "openai",
+			"family":              "codex",
+			"start":               true,
+			"auto_allocate_proxy": true,
+		}
+		var createResponse gptVM2APIVMResponse
+		createStatus, createErr := client.request(ctx, http.MethodPost, "/api/panel/vms/create", createBody, &createResponse)
+		if createStatus != http.StatusCreated && createStatus != http.StatusOK && createStatus != http.StatusConflict {
+			if createStatus != http.StatusConflict && gptGatewayImportRejected(createStatus) {
+				secrets.GatewayRemoteID, secrets.GatewayImportAttempted = "", false
+				return errors.New("gateway_import_failed")
+			}
+			if createErr != nil || createStatus == http.StatusNotFound {
+				return errors.New("gateway_import_uncertain")
+			}
+			return errors.New("gateway_import_uncertain")
+		}
+		if createStatus != http.StatusConflict && (createErr != nil || !createResponse.OK || !ownedVM2APISlot(createResponse.Data.VM, vmID)) {
+			return errors.New("gateway_import_uncertain")
+		}
+		if createStatus == http.StatusConflict {
+			var conflict gptVM2APIVMResponse
+			conflictStatus, conflictErr := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &conflict)
+			if conflictErr != nil || conflictStatus == http.StatusNotFound || !conflict.OK || !ownedVM2APISlot(conflict.Data.VM, vmID) {
+				return errors.New("gateway_import_uncertain")
+			}
+		}
+	}
+	if secrets.GatewayOAuth == nil {
+		return nil
+	}
+	expires, expiryErr := time.Parse(time.RFC3339, secrets.GatewayOAuth.Expired)
+	if expiryErr != nil || !expires.After(time.Now()) {
+		return errors.New("gateway_credentials_required")
+	}
+	key := secrets.GatewayOAuth
+	account := map[string]any{
+		"access_token":       key.AccessToken,
+		"refresh_token":      key.RefreshToken,
+		"id_token":           key.IDToken,
+		"email":              key.Email,
+		"chatgpt_account_id": key.AccountID,
+		"expires_at":         expires.UnixMilli(),
+	}
+	encoded, err := common.Marshal(account)
+	if err != nil {
+		return errors.New("gateway_import_failed")
+	}
+	var importResponse gptVM2APIVMResponse
+	importStatus, importErr := client.request(ctx, http.MethodPost, "/api/panel/vms/import", map[string]any{"vm_id": vmID, "auth_json": string(encoded)}, &importResponse)
+	if gptGatewayImportRejected(importStatus) {
+		secrets.GatewayImportAttempted = false
+		return errors.New("gateway_import_failed")
+	}
+	if importErr != nil || importStatus < 200 || importStatus >= 300 || !importResponse.OK || !ownedVM2APISlot(importResponse.Data.VM, vmID) {
+		return errors.New("gateway_import_uncertain")
+	}
 	return nil
 }

@@ -23,6 +23,8 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 	// credential changes. These reads retain the parent API rate limiter.
 	handlePermissionRoute(group, http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccounts)
 	handlePermissionRoute(group, http.MethodGet, "/config", authz.GPTAccountRead, controller.GPTAccountsConfig)
+	handlePermissionRoute(group, http.MethodGet, "/:id/vm2api", authz.GPTAccountRead, controller.GetGPTAccountVM2APIStatus)
+	handlePermissionRoute(group, http.MethodGet, "/:id/vm2api/logs", authz.GPTAccountRead, controller.ListGPTAccountVM2APILogs)
 	for _, route := range []permissionRoute{
 		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccount},
 		{http.MethodPut, "/config", authz.GPTAccountManage, controller.UpdateGPTAccountsConfig},
@@ -37,6 +39,9 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 		{http.MethodPost, "/:id/callback", authz.GPTAccountManage, controller.CompleteGPTAccountOAuth},
 		{http.MethodPost, "/:id/refresh", authz.GPTAccountManage, controller.RefreshGPTAccount},
 		{http.MethodPost, "/:id/sync", authz.GPTAccountManage, controller.SyncGPTAccountGateway},
+		{http.MethodPatch, "/:id/vm2api/policy", authz.GPTAccountManage, controller.UpdateGPTAccountVM2APIPolicy},
+		{http.MethodPatch, "/:id/vm2api/schedulable", authz.GPTAccountManage, controller.SetGPTAccountVM2APISchedulable},
+		{http.MethodPost, "/:id/vm2api/quota/refresh", authz.GPTAccountManage, controller.RefreshGPTAccountVM2APIQuota},
 	} {
 		handlePermissionRoute(group, route.method, route.path, route.permission, middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("gpt-account"), route.handler)
 	}

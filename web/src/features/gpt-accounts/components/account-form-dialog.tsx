@@ -250,7 +250,11 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                     {props.gateways.map((gateway) => (
                       <NativeSelectOption key={gateway.id} value={gateway.id}>
                         {gateway.name} ·{' '}
-                        {gateway.provider === 'cpa' ? 'CPA' : 'Sub2API'}
+                        {gateway.provider === 'cpa'
+                          ? 'CPA'
+                          : gateway.provider === 'sub2api'
+                            ? 'Sub2API'
+                            : t('VM2API')}
                       </NativeSelectOption>
                     ))}
                     {props.account?.gateway_id &&

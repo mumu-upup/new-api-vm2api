@@ -6,7 +6,7 @@ export function gatewayFormSchema(editing: boolean) {
   return z
     .object({
       name: z.string().trim().min(1, 'Name is required').max(128),
-      provider: z.enum(['cpa', 'sub2api']),
+      provider: z.enum(['cpa', 'sub2api', 'vm2api']),
       management_version: z.enum(['', 'v8', 'legacy']),
       management_url: z
         .string()
@@ -51,6 +51,18 @@ export function gatewayFormSchema(editing: boolean) {
           code: 'custom',
           path: ['remote_group_id'],
           message: 'Choose a Sub2API group ID greater than zero.',
+        })
+      }
+      if (
+        values.provider === 'vm2api' &&
+        (values.management_version !== '' ||
+          values.remote_group_id !== 0 ||
+          values.management_url !== values.relay_url)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['relay_url'],
+          message: 'Enter a valid gateway address.',
         })
       }
       if (!editing) {
