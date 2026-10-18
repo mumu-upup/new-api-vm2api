@@ -331,6 +331,165 @@ it('sends an explicit OAuth import group directly', async () => {
   )
 })
 
+it('defaults new account creation to the configured VM2API gateway', async () => {
+  gateways = [
+    {
+      ...gateway,
+      id: 8,
+      name: 'VM2API pool',
+      provider: 'vm2api',
+    },
+  ]
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+            default_models: 'gpt-5.6',
+            default_gateway_id: 8,
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  const dialog = await screen.findByRole('dialog', { name: 'Add GPT account' })
+  expect(
+    within(dialog).getByRole('combobox', { name: 'Account destination' })
+  ).toHaveValue('8')
+  await userEvent.type(
+    within(dialog).getByLabelText('Account line'),
+    'vm2@example.com----password----JBSWY3DPEHPK3PXP'
+  )
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({ gateway_id: 8, channel_id: undefined }),
+      expect.anything()
+    )
+  )
+})
+
+it('defaults OAuth import to the configured VM2API gateway', async () => {
+  gateways = [
+    {
+      ...gateway,
+      id: 8,
+      name: 'VM2API pool',
+      provider: 'vm2api',
+    },
+  ]
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+            default_models: 'gpt-5.6',
+            default_gateway_id: 8,
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Import OAuth JSON' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import Codex OAuth JSON',
+  })
+  expect(
+    within(dialog).getByRole('combobox', { name: 'Account destination' })
+  ).toHaveValue('8')
+  const oauth =
+    '{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id","account_id":"test-account","email":"vm2@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}'
+  fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
+    target: { value: oauth },
+  })
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
+  )
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/import-oauth',
+      { oauth_json: oauth, gateway_id: 8 },
+      expect.anything()
+    )
+  )
+})
+
+it('keeps direct routing when an administrator overrides the VM2API default', async () => {
+  gateways = [
+    {
+      ...gateway,
+      id: 8,
+      name: 'VM2API pool',
+      provider: 'vm2api',
+    },
+  ]
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+            default_models: 'gpt-5.6',
+            default_gateway_id: 8,
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  const dialog = await screen.findByRole('dialog', { name: 'Add GPT account' })
+  await userEvent.selectOptions(
+    within(dialog).getByRole('combobox', { name: 'Account destination' }),
+    '0'
+  )
+  await userEvent.type(
+    within(dialog).getByLabelText('Account line'),
+    'direct@example.com----password----JBSWY3DPEHPK3PXP'
+  )
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({ gateway_id: 0, channel_id: undefined }),
+      expect.anything()
+    )
+  )
+})
+
 it('merges a channel JSON group override into the submitted JSON', async () => {
   renderPage()
   await userEvent.click(await screen.findByRole('tab', { name: 'Gateways' }))

@@ -36,6 +36,7 @@ import type { GptAccount, GptAccountGateway } from '../types'
 interface AccountFormDialogProps {
   defaultGroup?: string
   defaultModels?: string
+  defaultGatewayId?: number
   account?: GptAccount
   gateways: GptAccountGateway[]
   gatewaysLoading: boolean
@@ -68,7 +69,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
       group: props.account?.group ?? '',
       models: props.account?.models ?? '',
       channel_id: props.account?.channel_id ?? 0,
-      gateway_id: props.account?.gateway_id ?? 0,
+      gateway_id: props.account?.gateway_id ?? props.defaultGatewayId ?? 0,
     },
   })
   const gatewayId = form.watch('gateway_id')
@@ -247,16 +248,19 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                     <NativeSelectOption value={0}>
                       {t('Direct Codex channel')}
                     </NativeSelectOption>
-                    {props.gateways.map((gateway) => (
-                      <NativeSelectOption key={gateway.id} value={gateway.id}>
-                        {gateway.name} ·{' '}
-                        {gateway.provider === 'cpa'
-                          ? 'CPA'
-                          : gateway.provider === 'sub2api'
-                            ? 'Sub2API'
-                            : t('VM2API')}
-                      </NativeSelectOption>
-                    ))}
+                    {props.gateways.map((gateway) => {
+                      let providerLabel = t('VM2API')
+                      if (gateway.provider === 'cpa') {
+                        providerLabel = 'CPA'
+                      } else if (gateway.provider === 'sub2api') {
+                        providerLabel = 'Sub2API'
+                      }
+                      return (
+                        <NativeSelectOption key={gateway.id} value={gateway.id}>
+                          {gateway.name} · {providerLabel}
+                        </NativeSelectOption>
+                      )
+                    })}
                     {props.account?.gateway_id &&
                       !props.gateways.some(
                         (gateway) => gateway.id === props.account?.gateway_id

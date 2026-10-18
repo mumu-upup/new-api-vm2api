@@ -339,6 +339,7 @@ function GptAccountsPage(props: {
         <AccountFormDialog
           defaultGroup={config.data?.default_group}
           defaultModels={config.data?.default_models}
+          defaultGatewayId={config.data?.default_gateway_id}
           account={editor === 'create' ? undefined : editor}
           onClose={() => setEditor(null)}
           onSaved={refresh}
@@ -361,6 +362,7 @@ function GptAccountsPage(props: {
         <OAuthImportDialog
           defaultGroup={config.data?.default_group}
           defaultModels={config.data?.default_models}
+          defaultGatewayId={config.data?.default_gateway_id}
           accountGroup={oauthImportAccount?.group}
           accountModels={oauthImportAccount?.models}
           accountId={oauthImportAccount?.id}
