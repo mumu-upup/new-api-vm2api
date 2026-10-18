@@ -13,7 +13,7 @@ export interface GptAccount {
   channel_name?: string
   gateway_id?: number
   gateway_name?: string
-  gateway_provider?: 'cpa' | 'sub2api'
+  gateway_provider?: 'cpa' | 'sub2api' | 'vm2api'
   gateway_channel_id?: number
   gateway_channel_name?: string
   gateway_sync_status?: '' | 'pending' | 'synced' | 'error'
@@ -54,7 +54,7 @@ export interface GptAccountInput {
 export interface GptAccountGateway {
   id: number
   name: string
-  provider: 'cpa' | 'sub2api'
+  provider: 'cpa' | 'sub2api' | 'vm2api'
   management_version?: '' | 'v8' | 'legacy'
   management_url?: string
   relay_url?: string
@@ -70,7 +70,7 @@ export interface GptAccountGateway {
 
 export interface GptAccountGatewayInput {
   name: string
-  provider: 'cpa' | 'sub2api'
+  provider: 'cpa' | 'sub2api' | 'vm2api'
   management_version: '' | 'v8' | 'legacy'
   management_url: string
   relay_url: string
@@ -87,6 +87,21 @@ export interface GptAccountConfig {
   default_models: string
   encryption_available: boolean
   automation_available: boolean
+  default_gateway_id?: number
+}
+
+export interface GptAccountVm2ApiStatus {
+  account_id: number
+  vm_id: string
+  gateway_id: number
+  vm: Record<string, unknown>
+  quota?: Record<string, unknown>
+}
+
+export interface GptAccountVm2ApiLogs {
+  items?: Array<Record<string, unknown>>
+  total?: number
+  [key: string]: unknown
 }
 
 export interface GptAccountAuthorization {

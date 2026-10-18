@@ -29,6 +29,7 @@ export const STATIC_I18N_KEYS = [
   'Enter GPT model names at version 5.6 or later.',
   'Enter a valid group of up to 64 bytes.',
   'Enter a valid gateway address.',
+  'VM2API',
   'Use an HTTPS address, or enable local HTTP for a loopback address.',
   'Choose a Sub2API group ID greater than zero.',
   'Choose CPA, Sub2API, or Prism in the channel JSON.',

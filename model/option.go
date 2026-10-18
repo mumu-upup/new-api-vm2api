@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"maps"
 	"strconv"
 	"strings"
@@ -237,6 +238,12 @@ func validateOptionValue(key string, value string) error {
 	}
 	if key == GPTAccountDefaultModelsKey {
 		return ValidateGPTAccountDefaultModels(value)
+	}
+	if key == GPTAccountDefaultGatewayKey {
+		id, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || id <= 0 {
+			return errors.New("invalid_gateway")
+		}
 	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly

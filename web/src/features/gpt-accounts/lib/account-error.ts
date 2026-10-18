@@ -142,6 +142,8 @@ export function getAccountErrorMessage(
       return t('The channel model list is invalid.')
     case 'gateway_channel_create_failed':
       return t('The relay channel could not be created.')
+    case 'gateway_required':
+      return t('Select a default VM2API gateway before adding accounts.')
     case 'account_not_found':
       return t('This account no longer exists.')
     case 'invalid_account':

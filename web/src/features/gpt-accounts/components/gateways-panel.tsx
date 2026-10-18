@@ -32,7 +32,11 @@ export function GatewaysPanel(props: {
           {
             id: 'provider',
             header: t('Provider'),
-            cell: (gateway) => (gateway.provider === 'cpa' ? 'CPA' : 'Sub2API'),
+            cell: (gateway) => {
+              if (gateway.provider === 'cpa') return 'CPA'
+              if (gateway.provider === 'sub2api') return 'Sub2API'
+              return t('VM2API')
+            },
           },
           {
             id: 'channel',

@@ -23,6 +23,7 @@ type GPTAccountOAuthImportInput struct {
 	Group       string
 	Models      string
 	AutoRelogin *bool
+	GatewayID   *int
 }
 
 // ParseCodexOAuthImport validates the shape and lifetime of an operator-supplied
@@ -248,6 +249,18 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 		if input.AutoRelogin != nil {
 			account.AutoRelogin = *input.AutoRelogin
 		}
+		gatewayID := input.GatewayID
+		if gatewayID == nil {
+			gatewayID, err = model.ResolveGPTAccountDefaultGateway()
+			if err != nil {
+				return nil, err
+			}
+		}
+		if gatewayID != nil {
+			if err := ApplyGPTAccountGateway(&account, gatewayID); err != nil {
+				return nil, err
+			}
+		}
 		if err := EncryptGPTAccountSecrets(&account, GPTAccountSecrets{}); err != nil {
 			return nil, err
 		}
@@ -260,7 +273,7 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 		}
 		account = *resolved
 		created = isCreated
-		if created {
+		if created && account.GatewayID == nil {
 			return &account, nil
 		}
 	}
@@ -271,6 +284,31 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 		return nil, errors.New("identity_mismatch")
 	}
 	if account.GatewayID != nil {
+		if input.GatewayID != nil && *input.GatewayID != *account.GatewayID {
+			if created {
+				_ = model.DB.Delete(&account).Error
+			}
+			return nil, errors.New("gateway_immutable")
+		}
+		job, err := AcquireGPTAccountJob(account.ID, false)
+		if err != nil {
+			if created {
+				_ = model.DB.Delete(&account).Error
+			}
+			return nil, err
+		}
+		job.OAuthSubject = subject
+		err = StoreVerifiedGPTAccountGatewayCredential(ctx, job, key)
+		ReleaseGPTAccountJob(job, GPTAccountErrorCode(err))
+		if err != nil {
+			return nil, err
+		}
+		if model.DB.First(&account, account.ID).Error != nil {
+			return nil, errors.New("account_changed")
+		}
+		return &account, nil
+	}
+	if input.GatewayID != nil {
 		if created {
 			_ = model.DB.Delete(&account).Error
 		}

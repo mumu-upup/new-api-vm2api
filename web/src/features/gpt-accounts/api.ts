@@ -9,6 +9,8 @@ import type {
   GptAccountTotpReveal,
   GptAccountGateway,
   GptAccountGatewayInput,
+  GptAccountVm2ApiLogs,
+  GptAccountVm2ApiStatus,
 } from './types'
 
 export function listGptAccounts(
@@ -26,6 +28,45 @@ export function listGptAccounts(
   )
 }
 
+export function getGptAccountVm2ApiStatus(id: number, signal?: AbortSignal) {
+  return authResult<GptAccountVm2ApiStatus>(
+    api.get(`/api/gpt-accounts/${id}/vm2api`, { ...authRequestOptions, signal })
+  )
+}
+
+export function getGptAccountVm2ApiLogs(id: number, signal?: AbortSignal) {
+  return authResult<GptAccountVm2ApiLogs>(
+    api.get(`/api/gpt-accounts/${id}/vm2api/logs`, {
+      ...authRequestOptions,
+      params: { limit: 25 },
+      signal,
+    })
+  )
+}
+
+export function setGptAccountVm2ApiSchedulable(
+  id: number,
+  schedulable: boolean
+) {
+  return authResult<GptAccountVm2ApiStatus>(
+    api.patch(
+      `/api/gpt-accounts/${id}/vm2api/schedulable`,
+      { schedulable },
+      authRequestOptions
+    )
+  )
+}
+
+export function refreshGptAccountVm2ApiQuota(id: number) {
+  return authResult<GptAccountVm2ApiStatus>(
+    api.post(
+      `/api/gpt-accounts/${id}/vm2api/quota/refresh`,
+      {},
+      authRequestOptions
+    )
+  )
+}
+
 export function getGptAccountConfig(signal?: AbortSignal) {
   return authResult<GptAccountConfig>(
     api.get('/api/gpt-accounts/config', { ...authRequestOptions, signal })
@@ -33,7 +74,9 @@ export function getGptAccountConfig(signal?: AbortSignal) {
 }
 
 export function updateGptAccountConfig(
-  input: Partial<Pick<GptAccountConfig, 'default_group' | 'default_models'>>
+  input: Partial<
+    Pick<GptAccountConfig, 'default_group' | 'default_models' | 'default_gateway_id'>
+  >
 ) {
   return authResult<GptAccountConfig>(
     api.put('/api/gpt-accounts/config', input, authRequestOptions)
@@ -65,6 +108,7 @@ export function importGptAccountOAuth(
     group?: string
     models?: string
     auto_relogin?: boolean
+    gateway_id?: number
   },
   signal: AbortSignal
 ) {
