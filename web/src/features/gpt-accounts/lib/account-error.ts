@@ -26,6 +26,7 @@ export function getAccountErrorMessage(
       )
     case 'automation_unavailable':
     case 'worker_unavailable':
+    case 'security_flow_unavailable':
       return t(
         'Automatic sign-in is unavailable. Use browser sign-in to authorize an account.'
       )
@@ -124,6 +125,11 @@ export function getAccountErrorMessage(
       return t('No TOTP secret is stored for this account.')
     case 'invalid_totp_secret':
       return t('Enter a Base32 TOTP secret')
+    case 'replacement_unverified':
+    case 'replacement_invalid':
+      return t('The operation failed. Try again.')
+    case 'change_timeout':
+      return t('Sign-in timed out. Try again.')
     case 'invalid_channel':
       return t('Choose a Codex channel with a single credential.')
     case 'gateway_channel_json_invalid':

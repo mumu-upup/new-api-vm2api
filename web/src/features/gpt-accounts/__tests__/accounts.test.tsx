@@ -1855,7 +1855,7 @@ it.each(['cancel', 'identity'] as const)(
   }
 )
 
-it('opens the manual authenticator handoff from the main account row without mutating provider MFA', async () => {
+it('opens the automatic authenticator rotation from the main account row', async () => {
   const user = userEvent.setup()
   renderPage()
   const action = await screen.findByRole('button', {
@@ -1864,27 +1864,38 @@ it('opens the manual authenticator handoff from the main account row without mut
   expect(action).toHaveTextContent('Change 2FA')
   await user.click(action)
   const dialog = await screen.findByRole('dialog', {
-    name: 'Save replacement secret',
+    name: 'Change 2FA automatically',
   })
-  const link = within(dialog).getByRole('link', {
-    name: 'Open ChatGPT security settings',
-  })
-  expect(link).toHaveAttribute('href', 'https://chatgpt.com/#settings/Security')
-  expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   expect(
     within(dialog).getByText(
-      'On the official website, replace the authenticator yourself. After binding the new secret, return here to save it.'
+      'The gateway will verify the replacement before saving it. If the official flow fails, the configured Moyanovo fallback may be used once.'
     )
   ).toBeVisible()
   expect(
-    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+    within(dialog).getByRole('button', { name: 'Start automatic 2FA change' })
   ).toBeVisible()
-  expect(
-    within(dialog).getByRole('checkbox', {
-      name: 'I completed binding this secret on the official OpenAI website.',
-    })
-  ).not.toBeChecked()
   expect(api.post).not.toHaveBeenCalled()
+})
+
+it('starts automatic authenticator rotation through the dedicated endpoint', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(
+    await screen.findByRole('button', { name: 'Change 2FA for Work account' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Change 2FA automatically',
+  })
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Start automatic 2FA change' })
+  )
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/totp/change',
+      {},
+      expect.objectContaining({ singleUseAuthorization: true })
+    )
+  )
 })
 
 it.each([

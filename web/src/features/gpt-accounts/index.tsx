@@ -59,7 +59,7 @@ function GptAccountsPage(props: {
   const operation = useAccountOperation()
   const [totp, setTotp] = useState<{
     account: GptAccount
-    mode: 'save' | 'reveal'
+    mode: 'save' | 'reveal' | 'change'
   } | null>(null)
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [editor, setEditor] = useState<GptAccount | 'create' | null>(null)
@@ -142,7 +142,7 @@ function GptAccountsPage(props: {
         account.status !== 'logging_in' &&
         config.data?.encryption_available
       ) {
-        setTotp({ account, mode: 'save' })
+        setTotp({ account, mode: 'change' })
       }
       return
     }

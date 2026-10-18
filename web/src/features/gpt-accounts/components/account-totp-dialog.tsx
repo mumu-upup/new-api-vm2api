@@ -18,14 +18,14 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 
-import { revealGptAccountTotp, saveGptAccountTotp } from '../api'
+import { changeGptAccountTotp, revealGptAccountTotp, saveGptAccountTotp } from '../api'
 import { useAccountOperation } from '../hooks/use-account-operation'
 import { accountTotpSchema, type AccountTotpValues } from '../lib/account-form'
 import type { GptAccount, GptAccountTotpReveal } from '../types'
 
 interface AccountTotpDialogProps {
   account: GptAccount
-  mode: 'save' | 'reveal'
+  mode: 'save' | 'reveal' | 'change'
   onClose: () => void
   onSaved: () => void
 }
@@ -92,17 +92,25 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
       })
     })
   }
+  const change = async () => {
+    if (!props.account.can_manage || !props.account.has_totp) return
+    const changed = await operation.execute((signal) =>
+      changeGptAccountTotp(props.account.id, signal)
+    )
+    if (!changed) return
+    props.onSaved()
+    props.onClose()
+  }
+  let title = t('Current TOTP secret')
+  if (props.mode === 'save') title = t('Save replacement secret')
+  if (props.mode === 'change') title = t('Change 2FA automatically')
   return (
     <Dialog
       open
       onOpenChange={(open) => {
         if (!open) props.onClose()
       }}
-      title={
-        props.mode === 'save'
-          ? t('Save replacement secret')
-          : t('Current TOTP secret')
-      }
+      title={title}
       description={`${props.account.name} · ${props.account.email}`}
       footer={
         <>
@@ -130,6 +138,15 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
               {t('Reveal secret')}
             </Button>
           )}
+          {props.mode === 'change' && (
+            <Button
+              onClick={() => void change()}
+              disabled={operation.pending}
+            >
+              {operation.pending && <Loader2 className='animate-spin' />}
+              {t('Start automatic 2FA change')}
+            </Button>
+          )}
         </>
       }
     >
@@ -142,6 +159,13 @@ export function AccountTotpDialog(props: AccountTotpDialogProps) {
         {operation.error && (
           <p role='alert' className='text-destructive text-sm'>
             {operation.error}
+          </p>
+        )}
+        {props.mode === 'change' && (
+          <p className='text-muted-foreground text-sm'>
+            {t(
+              'The gateway will verify the replacement before saving it. If the official flow fails, the configured Moyanovo fallback may be used once.'
+            )}
           </p>
         )}
         {props.mode === 'save' && (

@@ -7,6 +7,7 @@ import type {
   GptAccountConfig,
   GptAccountInput,
   GptAccountTotpReveal,
+  GptAccountTotpChangeResult,
   GptAccountGateway,
   GptAccountGatewayInput,
   GptAccountVm2ApiLogs,
@@ -246,6 +247,20 @@ export function revealGptAccountTotp(id: number, signal: AbortSignal) {
   return authResult<GptAccountTotpReveal>(
     api.post(
       `/api/gpt-accounts/${id}/totp/reveal`,
+      {},
+      {
+        ...authRequestOptions,
+        singleUseAuthorization: true,
+        signal,
+      }
+    )
+  )
+}
+
+export function changeGptAccountTotp(id: number, signal: AbortSignal) {
+  return authResult<GptAccountTotpChangeResult>(
+    api.post(
+      `/api/gpt-accounts/${id}/totp/change`,
       {},
       {
         ...authRequestOptions,

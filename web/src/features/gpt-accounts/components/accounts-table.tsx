@@ -184,7 +184,7 @@ export function AccountsTable(props: AccountsTableProps) {
                 size='sm'
                 aria-label={t('Change 2FA for {{name}}', { name: item.name })}
                 disabled={
-                  !item.can_manage || busy || !props.encryptionAvailable
+                  !item.can_manage || !item.has_totp || busy || !props.encryptionAvailable
                 }
                 onClick={() => props.onAction(item, 'totp')}
               >

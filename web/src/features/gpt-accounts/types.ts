@@ -31,7 +31,7 @@ export interface GptAccount {
   has_totp: boolean
   totp_version: number
   totp_updated_at: number
-  totp_status: '' | 'saved' | 'operator_confirmed'
+  totp_status: '' | 'saved' | 'operator_confirmed' | 'automated'
   totp_provider?: '' | 'local' | '2fa_cn'
   can_manage: boolean
   group: string
@@ -112,4 +112,9 @@ export interface GptAccountAuthorization {
 export interface GptAccountTotpReveal {
   totp_secret: string
   expires_at: number
+}
+
+export interface GptAccountTotpChangeResult {
+  stage: 'primary' | 'fallback'
+  fallback_used: boolean
 }

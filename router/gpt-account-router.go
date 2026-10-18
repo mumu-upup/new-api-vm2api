@@ -31,6 +31,7 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 		{http.MethodPost, "/import-oauth", authz.GPTAccountManage, controller.ImportGPTAccountOAuth},
 		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccount},
 		{http.MethodPost, "/:id/totp", authz.GPTAccountManage, controller.UpdateGPTAccountTOTP},
+		{http.MethodPost, "/:id/totp/change", authz.GPTAccountManage, controller.ChangeGPTAccountTOTP},
 		{http.MethodPost, "/:id/totp/reveal", authz.GPTAccountManage, controller.RevealGPTAccountTOTP},
 		{http.MethodDelete, "/:id", authz.GPTAccountManage, controller.DeleteGPTAccount},
 		{http.MethodPost, "/:id/login", authz.GPTAccountManage, controller.LoginGPTAccount},

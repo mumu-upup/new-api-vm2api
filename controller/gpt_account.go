@@ -404,6 +404,34 @@ func UpdateGPTAccountTOTP(c *gin.Context) {
 	gptAccountResponse(c, account.ID)
 }
 
+// ChangeGPTAccountTOTP performs an administrator-triggered rotation. The
+// worker returns only the outcome; the replacement secret is never sent to the
+// browser or written to an audit record.
+func ChangeGPTAccountTOTP(c *gin.Context) {
+	identity, ok := gptAccountIdentity(c, true)
+	if !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	result, err := service.ChangeGPTAccountTOTP(c.Request.Context(), account.ID, identity)
+	if err != nil {
+		code := service.GPTAccountErrorCode(err)
+		status := http.StatusConflict
+		if code == "credentials_required" || code == "invalid_totp_secret" {
+			status = http.StatusBadRequest
+		} else if code == "encryption_unavailable" || code == "automation_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		gptAccountError(c, status, code)
+		return
+	}
+	recordManageAudit(c, "gpt_account.totp.change", map[string]any{"account_id": account.ID, "stage": result.Stage, "fallback_used": result.FallbackUsed})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": result})
+}
+
 func RevealGPTAccountTOTP(c *gin.Context) {
 	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private, max-age=0")
 	c.Header("Pragma", "no-cache")
