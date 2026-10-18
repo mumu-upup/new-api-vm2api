@@ -444,6 +444,36 @@ it('imports Codex OAuth JSON directly', async () => {
   ).not.toBeInTheDocument()
 })
 
+it('imports Codex OAuth JSON into the selected managed gateway', async () => {
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Import OAuth JSON' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import Codex OAuth JSON',
+  })
+  await userEvent.selectOptions(
+    within(dialog).getByRole('combobox', { name: 'Account destination' }),
+    '5'
+  )
+  const oauth =
+    '{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id","account_id":"test-account","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}'
+  fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
+    target: { value: oauth },
+  })
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
+  )
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/import-oauth',
+      { oauth_json: oauth, gateway_id: 5 },
+      expect.anything()
+    )
+  )
+})
+
 it('updates account OAuth JSON directly while preserving its existing group', async () => {
   items = [{ ...account, group: 'team' }]
   renderPage()

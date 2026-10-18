@@ -28,6 +28,7 @@ import { GatewayChannelJSONDialog } from './components/gateway-channel-json-dial
 import { GatewayFormDialog } from './components/gateway-form-dialog'
 import { GatewaysPanel } from './components/gateways-panel'
 import { OAuthImportDialog } from './components/oauth-import-dialog'
+import { Vm2ApiPanel } from './components/vm2api-panel'
 import { useAccountOperation } from './hooks/use-account-operation'
 import type { GptAccount, GptAccountGateway } from './types'
 
@@ -197,6 +198,8 @@ function GptAccountsPage(props: {
                 key={`${config.data.default_group}:${config.data.default_models}`}
                 defaultGroup={config.data.default_group ?? 'default'}
                 defaultModels={config.data.default_models ?? 'gpt-5.6'}
+                defaultGatewayId={config.data.default_gateway_id}
+                gateways={gateways.data?.items ?? []}
                 canEdit={props.role === ROLE.SUPER_ADMIN}
                 onSaved={refresh}
               />
@@ -258,6 +261,7 @@ function GptAccountsPage(props: {
                       void action(account, kind)
                     }}
                   />
+                  <Vm2ApiPanel accounts={query.data?.items ?? []} />
                 </TabsContent>
                 <TabsContent
                   value='totp'
@@ -360,6 +364,7 @@ function GptAccountsPage(props: {
           accountGroup={oauthImportAccount?.group}
           accountModels={oauthImportAccount?.models}
           accountId={oauthImportAccount?.id}
+          gateways={gateways.data?.items ?? []}
           onClose={() => {
             setOAuthImportOpen(false)
             setOAuthImportAccount(null)

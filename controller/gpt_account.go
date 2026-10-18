@@ -38,6 +38,7 @@ type gptAccountOAuthImportRequest struct {
 	Group       string `json:"group"`
 	Models      string `json:"models"`
 	AutoRelogin *bool  `json:"auto_relogin"`
+	GatewayID   *int   `json:"gateway_id"`
 }
 
 func gptAccountError(c *gin.Context, status int, code string) {
@@ -220,7 +221,12 @@ func GPTAccountsConfig(c *gin.Context) {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"encryption_available": service.GPTAccountEncryptionAvailable(), "automation_available": service.GPTAccountAutomationAvailable(), "default_group": group, "default_models": models}})
+	defaultGateway, err := model.ResolveGPTAccountDefaultGateway()
+	if err != nil {
+		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"encryption_available": service.GPTAccountEncryptionAvailable(), "automation_available": service.GPTAccountAutomationAvailable(), "default_group": group, "default_models": models, "default_gateway_id": defaultGateway}})
 }
 
 func UpdateGPTAccountsConfig(c *gin.Context) {
@@ -233,14 +239,15 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	var input struct {
-		DefaultGroup  *string `json:"default_group"`
-		DefaultModels *string `json:"default_models"`
+		DefaultGroup     *string `json:"default_group"`
+		DefaultModels    *string `json:"default_models"`
+		DefaultGatewayID *int    `json:"default_gateway_id"`
 	}
 	if c.ShouldBindJSON(&input) != nil {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return
 	}
-	updates := make(map[string]string, 2)
+	updates := make(map[string]string, 3)
 	if input.DefaultGroup != nil {
 		group := strings.TrimSpace(*input.DefaultGroup)
 		if model.ValidateGPTAccountGroup(group) != nil || !ratio_setting.ContainsGroupRatio(group) {
@@ -257,6 +264,25 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		}
 		updates[model.GPTAccountDefaultModelsKey] = models
 	}
+	if input.DefaultGatewayID != nil {
+		if *input.DefaultGatewayID < 0 {
+			gptAccountError(c, http.StatusBadRequest, "invalid_gateway")
+			return
+		}
+		if *input.DefaultGatewayID > 0 {
+			var gateway model.GPTAccountGateway
+			if model.DB.Where("id = ? AND provider = ?", *input.DefaultGatewayID, "vm2api").First(&gateway).Error != nil {
+				gptAccountError(c, http.StatusBadRequest, "gateway_not_found")
+				return
+			}
+			updates[model.GPTAccountDefaultGatewayKey] = strconv.Itoa(*input.DefaultGatewayID)
+		} else {
+			if err := model.DB.Where("key = ?", model.GPTAccountDefaultGatewayKey).Delete(&model.Option{}).Error; err != nil {
+				gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+				return
+			}
+		}
+	}
 	if len(updates) == 0 {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return
@@ -265,7 +291,7 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
 	}
-	recordManageAudit(c, "gpt_account.config.update", map[string]any{"default_group": input.DefaultGroup, "default_models": input.DefaultModels})
+	recordManageAudit(c, "gpt_account.config.update", map[string]any{"default_group": input.DefaultGroup, "default_models": input.DefaultModels, "default_gateway_id": input.DefaultGatewayID})
 	GPTAccountsConfig(c)
 }
 
@@ -585,7 +611,7 @@ func normalizeGPTAccountOAuthImport(c *gin.Context) (*service.GPTAccountOAuthImp
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return nil, false
 	}
-	return &service.GPTAccountOAuthImportInput{OAuthJSON: request.OAuthJSON, Name: request.Name, Group: request.Group, Models: request.Models, AutoRelogin: request.AutoRelogin}, true
+	return &service.GPTAccountOAuthImportInput{OAuthJSON: request.OAuthJSON, Name: request.Name, Group: request.Group, Models: request.Models, AutoRelogin: request.AutoRelogin, GatewayID: request.GatewayID}, true
 }
 
 func gptAccountOAuthImportError(c *gin.Context, err error) {
@@ -594,7 +620,7 @@ func gptAccountOAuthImportError(c *gin.Context, err error) {
 	switch code {
 	case "account_not_found":
 		status = http.StatusNotFound
-	case "account_conflict", "account_busy", "account_changed", "identity_mismatch", "gateway_immutable":
+	case "account_conflict", "account_busy", "account_changed", "identity_mismatch", "gateway_immutable", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing":
 		status = http.StatusConflict
 	case "authorization_forbidden":
 		status = http.StatusForbidden
