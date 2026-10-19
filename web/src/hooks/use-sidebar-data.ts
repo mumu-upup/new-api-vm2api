@@ -106,6 +106,12 @@ export function useSidebarData(): SidebarData {
             configUrls: ['/usage-logs/drawing', '/usage-logs/task'],
             icon: ListTodo,
           },
+          {
+            title: t('Channel monitor'),
+            url: '/channel-monitor',
+            icon: Activity,
+            requiredRole: ROLE.ADMIN,
+          },
         ],
       },
       {

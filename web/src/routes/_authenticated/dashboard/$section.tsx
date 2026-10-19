@@ -26,6 +26,9 @@ import {
 
 export const Route = createFileRoute('/_authenticated/dashboard/$section')({
   beforeLoad: ({ params }) => {
+    if (params.section === 'channel-monitor') {
+      throw redirect({ to: '/channel-monitor', replace: true })
+    }
     const validSections = DASHBOARD_SECTION_IDS as unknown as string[]
     if (!validSections.includes(params.section)) {
       throw redirect({

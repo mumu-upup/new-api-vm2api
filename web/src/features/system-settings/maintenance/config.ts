@@ -67,6 +67,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     audit: true,
     midjourney: true,
     task: true,
+    channel_monitor: true,
   },
   personal: {
     enabled: true,
