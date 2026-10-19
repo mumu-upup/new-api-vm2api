@@ -50,6 +50,7 @@ const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
     audit: true,
     midjourney: true,
     task: true,
+    channel_monitor: true,
   },
   personal: {
     enabled: true,
@@ -105,6 +106,7 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/dashboard/models': { section: 'console', module: 'detail' },
   '/dashboard/users': { section: 'console', module: 'detail' },
   '/dashboard/degradation': { section: 'console', module: 'detail' },
+  '/channel-monitor': { section: 'console', module: 'channel_monitor' },
   '/keys': { section: 'console', module: 'token' },
   '/usage-logs': { section: 'console', module: 'log' },
   '/usage-logs/common': { section: 'console', module: 'log' },

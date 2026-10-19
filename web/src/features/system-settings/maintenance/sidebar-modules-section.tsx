@@ -122,6 +122,10 @@ export function SidebarModulesSection({
         title: t('Task logs'),
         description: t('Background job tracker for queued work.'),
       },
+      channel_monitor: {
+        title: t('Channel monitor'),
+        description: t('Success rate and response timing for the selected window.'),
+      },
     },
     personal: {
       topup: {
