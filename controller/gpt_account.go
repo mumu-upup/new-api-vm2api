@@ -271,7 +271,7 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		}
 		if *input.DefaultGatewayID > 0 {
 			var gateway model.GPTAccountGateway
-			if model.DB.Where("id = ? AND provider = ?", *input.DefaultGatewayID, "vm2api").First(&gateway).Error != nil {
+			if model.DB.Where("id = ? AND provider = ? AND managed_account_id IS NULL", *input.DefaultGatewayID, "vm2api").First(&gateway).Error != nil {
 				gptAccountError(c, http.StatusBadRequest, "gateway_not_found")
 				return
 			}
@@ -592,8 +592,8 @@ func DeleteGPTAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if model.DB.Delete(account).Error != nil {
-		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+	if err := service.DeleteGPTAccountWithInstance(c.Request.Context(), account.ID); err != nil {
+		gptAccountError(c, http.StatusConflict, service.GPTAccountErrorCode(err))
 		return
 	}
 	recordManageAudit(c, "gpt_account.delete", map[string]any{"account_id": account.ID})

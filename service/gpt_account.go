@@ -89,7 +89,7 @@ func AcquireGPTAccountJob(accountID int, automatic bool) (*model.GPTAccount, err
 func acquireGPTAccountJob(accountID int, automatic, requireAutoRelogin bool, leaseSeconds int64) (*model.GPTAccount, error) {
 	now := time.Now().Unix()
 	lease := uuid.NewString()
-	query := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND lease_until <= ?", accountID, now)
+	query := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND lease_until <= ? AND status <> ?", accountID, now, "pending_cleanup")
 	if automatic {
 		query = query.Where("next_retry_at <= ? AND failure_count < ? AND status NOT IN ?", now, 3, []string{"needs_attention", "logging_in"})
 	}
@@ -223,6 +223,9 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 			ReleaseGPTAccountJob(&account, resultErr.Error())
 		} else {
 			ReleaseGPTAccountJob(&account, "")
+			if GPTAccountVM2APIIsolationEnabled() && account.GatewayID != nil {
+				StartGPTAccountVM2APIInstanceJob(account.ID)
+			}
 		}
 	}()
 	if identity.SessionID != "" {
@@ -575,6 +578,7 @@ func ScheduleGPTAccountRecovery(channelID int, failedKey string) bool {
 // ScheduleGPTAccountRecoveries resumes transient recovery failures after the
 // persisted cooldown. Browser jobs that were abandoned require manual action.
 func ScheduleGPTAccountRecoveries() {
+	ScheduleGPTAccountVM2APIInstances()
 	now := time.Now().Unix()
 	var accounts []model.GPTAccount
 	if model.DB.Where("auto_relogin = ? AND status = ? AND failure_count < ? AND lease_until <= ? AND next_retry_at <= ?", true, "error", 3, now, now).Order("next_retry_at ASC, id ASC").Limit(100).Find(&accounts).Error != nil {
@@ -653,6 +657,8 @@ func GPTAccountErrorCode(err error) string {
 		return ""
 	}
 	switch err.Error() {
+	case "instance_unavailable", "instance_invalid_response", "instance_capacity_exhausted", "instance_not_found", "instance_not_running", "instance_not_ready", "instance_migration_failed", "instance_source_not_paused":
+		return err.Error()
 	case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_required", "gateway_immutable", "gateway_unavailable", "gateway_import_failed", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required", "gateway_channel_json_invalid", "gateway_channel_provider_required", "gateway_channel_url_required", "gateway_channel_url_invalid", "gateway_channel_key_required", "gateway_channel_key_invalid", "gateway_channel_models_invalid", "gateway_channel_create_failed":
 		return err.Error()
 	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code", "workspace_selection_required", "session_cleanup_unverified", "session_cleanup_failed", "session_cleanup_unsupported", "security_flow_unavailable", "replacement_unverified", "replacement_invalid":

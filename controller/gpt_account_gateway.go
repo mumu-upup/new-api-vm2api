@@ -19,7 +19,7 @@ func ListGPTAccountGateways(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	var gateways []model.GPTAccountGateway
-	if model.DB.Order("id ASC").Find(&gateways).Error != nil {
+	if model.DB.Where("managed_account_id IS NULL").Order("id ASC").Find(&gateways).Error != nil {
 		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 		return
 	}

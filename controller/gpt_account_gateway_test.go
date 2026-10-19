@@ -3,10 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1009,4 +1013,495 @@ func TestGPTAccountGatewaySyncRequiresOwnedAdminSession(t *testing.T) {
 	require.NoError(t, model.DB.Model(account).Update("owner_id", identity.UserID+1).Error)
 	response = gptAccountRequest(t, identity, common.RoleAdminUser, account.ID, http.MethodPost, `{}`, SyncGPTAccountGateway)
 	assert.Equal(t, http.StatusNotFound, response.Code)
+}
+
+// This fixture uses a real Unix HTTP socket and separate HTTP listeners, so
+// isolation, credential transport and recovery run through the production client.
+type isolatedVM2APIFixture struct {
+	guestStarts     int
+	failNextVMRead  bool
+	mu              sync.Mutex
+	instances       map[string]string
+	states          map[string]string
+	slots           map[string]map[string]any
+	failDelete      bool
+	malformedDelete bool
+	ensures         int
+	imports         int
+	packageImports  int
+	ensureHook      func()
+}
+
+func isolatedVM2APIManagerFixture(t *testing.T) *isolatedVM2APIFixture {
+	t.Helper()
+	fixture := &isolatedVM2APIFixture{instances: map[string]string{}, states: map[string]string{}, slots: map[string]map[string]any{}}
+	directory, err := os.MkdirTemp("/tmp", "vm2-test-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	socket := filepath.Join(directory, "manager.sock")
+	listener, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fixture.mu.Lock()
+		defer fixture.mu.Unlock()
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		require.GreaterOrEqual(t, len(parts), 3)
+		id := parts[2]
+		if r.Method == http.MethodDelete {
+			if fixture.malformedDelete {
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+			if fixture.failDelete {
+				w.WriteHeader(503)
+				_, _ = w.Write([]byte(`{"error_code":"cleanup_failed","error":"secret"}`))
+				return
+			}
+			delete(fixture.instances, id)
+			_, _ = w.Write([]byte(`{"id":"` + id + `","status":"deleted"}`))
+			return
+		}
+		endpoint := fixture.instances[id]
+		if endpoint == "" && r.Method != http.MethodPut {
+			w.WriteHeader(404)
+			_, _ = w.Write([]byte(`{"error_code":"instance_missing"}`))
+			return
+		}
+		if endpoint == "" {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				assert.Equal(t, "management-"+id, r.Header.Get("x-api-key"))
+				slotID := "new-api-" + id + "-isolated"
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/api/panel/vms/"+slotID:
+					if fixture.failNextVMRead {
+						fixture.failNextVMRead = false
+						w.WriteHeader(503)
+						return
+					}
+
+					slot := fixture.slots[id]
+					if slot == nil {
+						w.WriteHeader(404)
+						return
+					}
+					raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"vm": slot}})
+					_, _ = w.Write(raw)
+				case r.URL.Path == "/api/panel/vms/create":
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &body))
+					assert.Equal(t, slotID, body["id"])
+					slot := map[string]any{"id": slotID, "platform": "openai", "family": "codex", "status": "running", "schedulable": true, "has_token": false}
+					fixture.slots[id] = slot
+					raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"vm": slot}})
+					_, _ = w.Write(raw)
+				case r.URL.Path == "/api/panel/vms/package":
+					fixture.packageImports++
+					var payload map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &payload))
+					vm := payload["vm"].(map[string]any)
+					assert.Equal(t, slotID, vm["id"])
+					assert.Equal(t, "unchanged-name", vm["name"])
+					accounts := payload["credential"].(map[string]any)["accounts"].([]any)
+					require.Len(t, accounts, 1)
+					credential := accounts[0].(map[string]any)
+					fixture.slots[id] = map[string]any{"id": slotID, "platform": "openai", "family": "codex", "status": "error", "has_token": true, "email": credential["email"], "chatgpt_account_id": credential["chatgpt_account_id"]}
+					w.WriteHeader(503) // Write succeeded before the response was lost.
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/start"):
+					fixture.guestStarts++
+					fixture.slots[id]["status"] = "running"
+					raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"vm": fixture.slots[id]}})
+					_, _ = w.Write(raw)
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/schedulable"):
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &body))
+					fixture.slots[id]["schedulable"] = body["schedulable"]
+					_, _ = w.Write([]byte(`{"ok":true}`))
+				case r.URL.Path == "/api/panel/vms/import":
+					fixture.imports++
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &body))
+					var credential map[string]any
+					require.NoError(t, common.UnmarshalJsonStr(body["auth_json"].(string), &credential))
+					slot := fixture.slots[id]
+					slot["has_token"] = true
+					slot["email"] = credential["email"]
+					slot["chatgpt_account_id"] = credential["chatgpt_account_id"]
+					raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"vm": slot}})
+					_, _ = w.Write(raw)
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			endpoint = upstream.URL
+			fixture.instances[id] = endpoint
+			fixture.states[id] = "running"
+		}
+		if r.Method == http.MethodPut {
+			fixture.ensures++
+			if fixture.ensureHook != nil {
+				fixture.ensureHook()
+			}
+		}
+		port, _ := strconv.Atoi(strings.TrimPrefix(endpoint, "http://127.0.0.1:"))
+		if len(parts) == 4 {
+			if parts[3] == "stop" {
+				fixture.states[id] = "stopped"
+			} else {
+				fixture.states[id] = "running"
+			}
+		}
+		body := map[string]any{"id": id, "status": fixture.states[id], "container_name": "vm2api-account-" + id, "data_directory": "/srv/instances/" + id, "image": "vm2api@sha256:test", "port": port, "management_url": endpoint, "relay_url": endpoint, "updated_at": time.Now().Unix()}
+		if r.Method == http.MethodPut {
+			body["management_key"] = "management-" + id
+			body["relay_key"] = "relay-" + id
+		}
+		raw, _ := common.Marshal(body)
+		_, _ = w.Write(raw)
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { _ = server.Close() })
+	t.Setenv("VM2API_INSTANCE_MANAGER_SOCKET", socket)
+	t.Setenv("VM2API_INSTANCE_HOST", "127.0.0.1")
+	return fixture
+}
+
+func TestVM2APIInstanceIsolationRecoveryAndCleanup(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountVM2APIInstance{}))
+	fixture := isolatedVM2APIManagerFixture(t)
+	template, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "template", Provider: "vm2api", ManagementURL: "https://shared.example", RelayURL: "https://shared.example", ManagementKey: "shared-management", RelayKey: "shared-relay", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	var gateways []int
+	for _, suffix := range []string{"isolated-first", "isolated-second"} {
+		snapshot, key := gatewayAccountFixture(t, identity, template, suffix)
+		require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+		service.ReleaseGPTAccountJob(snapshot, "")
+		require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+		require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+		var account model.GPTAccount
+		require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+		require.NotNil(t, account.GatewayID)
+		assert.NotEqual(t, template.ID, *account.GatewayID)
+		gateways = append(gateways, *account.GatewayID)
+		var gateway model.GPTAccountGateway
+		require.NoError(t, model.DB.First(&gateway, *account.GatewayID).Error)
+		require.NotNil(t, gateway.ManagedAccountID)
+		assert.Equal(t, account.ID, *gateway.ManagedAccountID)
+		var channel model.Channel
+		require.NoError(t, model.DB.First(&channel, *gateway.ChannelID).Error)
+		assert.Equal(t, common.ChannelStatusEnabled, channel.Status)
+		require.NoError(t, service.ManageGPTAccountVM2APIInstance(context.Background(), account.ID, "stop"))
+		require.NoError(t, model.DB.First(&channel, channel.Id).Error)
+		assert.Equal(t, common.ChannelStatusAutoDisabled, channel.Status)
+		stopped, err := service.GetGPTAccountVM2APIInstance(context.Background(), account.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "stopped", stopped.RuntimeStatus)
+		require.NoError(t, service.ManageGPTAccountVM2APIInstance(context.Background(), account.ID, "start"))
+		require.NoError(t, model.DB.First(&channel, channel.Id).Error)
+		assert.Equal(t, common.ChannelStatusEnabled, channel.Status)
+		fixture.mu.Lock()
+		fixture.failNextVMRead = true
+		fixture.mu.Unlock()
+		assert.Error(t, service.ManageGPTAccountVM2APIInstance(context.Background(), account.ID, "restart"))
+		var interrupted model.GPTAccountVM2APIInstance
+		require.NoError(t, model.DB.First(&interrupted, "account_id = ?", account.ID).Error)
+		assert.Equal(t, "failed", interrupted.Status, "a slow control-plane restart must remain retryable")
+		require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), account.ID))
+		require.NoError(t, model.DB.First(&channel, channel.Id).Error)
+		assert.Equal(t, common.ChannelStatusEnabled, channel.Status)
+		_, err = service.SaveGPTAccountGateway(&gateway, service.GPTAccountGatewayInput{Name: "reassign"})
+		assert.EqualError(t, err, "gateway_immutable")
+		assert.Equal(t, "ready", account.Status)
+		id := model.GPTChannelKeyHash(account.SecretID)[:32]
+		fixture.mu.Lock()
+		fixture.slots[id]["status"] = "stopped"
+		fixture.mu.Unlock()
+		require.NoError(t, model.DB.Model(&model.GPTAccountVM2APIInstance{}).Where("account_id = ?", account.ID).Update("status", "failed").Error)
+		require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), account.ID), "retry must recover a persisted slot whose initial runtime startup failed")
+		require.NoError(t, service.RequestGPTAccountVM2APIInstance(context.Background(), account.ID))
+		require.NoError(t, model.DB.First(&account, account.ID).Error)
+		assert.Equal(t, "ready", account.Status, "an idempotent ensure request must not leave a login running")
+		other := model.GPTAccount{SecretID: "other"}
+		assert.EqualError(t, service.ApplyGPTAccountGateway(&other, account.GatewayID), "gateway_immutable")
+		status, err := service.GetGPTAccountVM2APIInstance(context.Background(), account.ID)
+		require.NoError(t, err)
+		encoded, err := common.Marshal(status)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), "management-")
+		assert.NotContains(t, string(encoded), "relay-")
+		if suffix == "isolated-first" {
+			fixture.mu.Lock()
+			fixture.malformedDelete = true
+			fixture.mu.Unlock()
+			assert.EqualError(t, service.DeleteGPTAccountWithInstance(context.Background(), account.ID), "instance_invalid_response")
+			require.NoError(t, model.DB.First(&account, account.ID).Error)
+			fixture.mu.Lock()
+			fixture.malformedDelete = false
+			fixture.mu.Unlock()
+			fixture.mu.Lock()
+			fixture.failDelete = true
+			fixture.mu.Unlock()
+			assert.Error(t, service.DeleteGPTAccountWithInstance(context.Background(), account.ID))
+			require.NoError(t, model.DB.First(&account, account.ID).Error)
+			assert.Equal(t, "pending_cleanup", account.Status)
+			require.NoError(t, model.DB.First(&channel, channel.Id).Error)
+			assert.NotEqual(t, common.ChannelStatusEnabled, channel.Status)
+			fixture.mu.Lock()
+			fixture.failDelete = false
+			fixture.mu.Unlock()
+			require.NoError(t, service.DeleteGPTAccountWithInstance(context.Background(), account.ID))
+			var count int64
+			require.NoError(t, model.DB.Model(&model.GPTAccount{}).Where("id = ?", account.ID).Count(&count).Error)
+			assert.Zero(t, count)
+		}
+	}
+	assert.NotEqual(t, gateways[0], gateways[1])
+	fixture.mu.Lock()
+	assert.Equal(t, 2, fixture.imports)
+	fixture.mu.Unlock()
+	var source model.GPTAccountGateway
+	require.NoError(t, model.DB.First(&source, template.ID).Error)
+	defaultGateway, err := model.ResolveGPTAccountDefaultGateway()
+	require.NoError(t, err)
+	assert.Equal(t, &template.ID, defaultGateway)
+}
+
+func TestVM2APIMonitoringFiltersSecretsAndForeignSlots(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	const slotID = "new-api-safe"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/panel/vms/") {
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"new-api-safe","platform":"openai","family":"codex","status":"running","email":"monitor@example.com","access_token":"unsafe-token","proxy":{"password":"unsafe-proxy"},"codex_usage":{"quota":{"utilization_5h":12,"access_token":"nested-token"}},"utilization_7d":34,"schedulable":true}}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"ok":true,"config":{"key":"secret-config"},"items":[{"id":"owned","vm_id":"new-api-safe","first_token_ms":123,"duration_ms":456,"api_key_presented":"unsafe-key","error_message":"Authorization: Bearer unsafe-error","error_code":"rate_limit"},{"id":"foreign","vm_id":"other","duration_ms":9}],"total":2}`))
+	}))
+	defer upstream.Close()
+	gateway, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "monitor", Provider: "vm2api", ManagementURL: upstream.URL, RelayURL: upstream.URL, AllowLocalHTTP: true, ManagementKey: "key", RelayKey: "key", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	account := model.GPTAccount{OwnerID: identity.UserID, Email: "monitor@example.com", GatewayID: &gateway.ID, SecretID: "monitor", Generation: 1}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{GatewayRemoteID: slotID}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	status, err := service.GetGPTAccountVM2APIStatus(context.Background(), account.ID)
+	require.NoError(t, err)
+	encoded, err := common.Marshal(status)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "unsafe")
+	assert.NotContains(t, string(encoded), "nested-token")
+	assert.Equal(t, float64(12), status.Quota["utilization_5h"])
+	logs, err := service.ListGPTAccountVM2APILogs(context.Background(), account.ID, 50)
+	require.NoError(t, err)
+	encoded, err = common.Marshal(logs)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "unsafe")
+	assert.NotContains(t, string(encoded), "foreign")
+	assert.NotContains(t, string(encoded), "secret-config")
+	assert.Contains(t, string(encoded), `"first_token_ms":123`)
+	assert.Contains(t, string(encoded), `"duration_ms":456`)
+	assert.EqualError(t, service.UpdateGPTAccountVM2APIPolicy(context.Background(), account.ID, map[string]any{"machine": map[string]any{"memory": "16g"}}), "invalid_gateway")
+}
+
+func TestVM2APIInstanceMigrationStopsSourceAndRecoversAmbiguousImport(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountVM2APIInstance{}))
+	fixture := isolatedVM2APIManagerFixture(t)
+	stopped := false
+	sourceSlot := "new-api-" + model.GPTChannelKeyHash("owned-migration")[:32]
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/"+sourceSlot+"/stop":
+			stopped = true
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case r.URL.Path == "/api/panel/vms/"+sourceSlot+"/package":
+			assert.True(t, stopped, "source must stop before credentials leave its runtime")
+			raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"type": "vm2api-vm-package", "version": 1, "vm": map[string]any{"id": sourceSlot, "name": "unchanged-name", "platform": "openai", "family": "codex", "schedulable": false}, "credential": map[string]any{"platform": "openai", "accounts": []any{map[string]any{"email": "migration@example.com", "chatgpt_account_id": "remote-migration", "access_token": "rotated-access", "refresh_token": "rotated-refresh"}}}}})
+			_, _ = w.Write(raw)
+		default:
+			status := "running"
+			if stopped {
+				status = "stopped"
+			}
+			raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"vm": map[string]any{"id": sourceSlot, "platform": "openai", "family": "codex", "status": status, "schedulable": !stopped, "has_token": true, "email": "migration@example.com", "chatgpt_account_id": "remote-migration"}}})
+			_, _ = w.Write(raw)
+		}
+	}))
+	defer source.Close()
+	template, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "shared", Provider: "vm2api", ManagementURL: source.URL, RelayURL: source.URL, AllowLocalHTTP: true, ManagementKey: "source-key", RelayKey: "source-key", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	snapshot, key := gatewayAccountFixture(t, identity, template, "migration")
+	snapshot.AccountID = key.AccountID
+	require.NoError(t, service.EncryptGPTAccountSecrets(snapshot, service.GPTAccountSecrets{GatewayRemoteID: sourceSlot}))
+	require.NoError(t, model.DB.Model(&model.GPTAccount{}).Where("id = ?", snapshot.ID).Updates(map[string]any{"account_id": key.AccountID, "o_auth_subject": snapshot.OAuthSubject, "secrets_ciphertext": snapshot.SecretsCiphertext, "gateway_sync_status": "synced", "status": "ready"}).Error)
+	service.ReleaseGPTAccountJob(snapshot, "")
+	require.NoError(t, service.RequestGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+	require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+	require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+	assert.True(t, stopped)
+	fixture.mu.Lock()
+	assert.Equal(t, 1, fixture.packageImports)
+	assert.Equal(t, 1, fixture.guestStarts, "persisted package with failed startup must recover without package replay")
+	assert.Zero(t, fixture.imports)
+	fixture.mu.Unlock()
+	var instance model.GPTAccountVM2APIInstance
+	require.NoError(t, model.DB.First(&instance, "account_id = ?", snapshot.ID).Error)
+	assert.Equal(t, "ready", instance.Status)
+	assert.True(t, instance.SourcePaused)
+	assert.Equal(t, "running", instance.SourceStatus)
+	assert.True(t, instance.SourceSchedulable)
+	assert.Equal(t, template.ID, instance.SourceGatewayID)
+	assert.Empty(t, instance.PackageCiphertext)
+	assert.NotContains(t, instance.SourceSecretsCiphertext, "rotated")
+	// Once migration completes, user scheduling changes override the historical
+	// source policy during lifecycle operations and their recovery retries.
+	require.NoError(t, service.SetGPTAccountVM2APISchedulable(context.Background(), snapshot.ID, false))
+	for _, action := range []string{"restart", "rebuild"} {
+		require.NoError(t, service.ManageGPTAccountVM2APIInstance(context.Background(), snapshot.ID, action))
+		fixture.mu.Lock()
+		assert.Equal(t, false, fixture.slots[instance.InstanceID]["schedulable"], action+" must preserve the current scheduling policy")
+		fixture.mu.Unlock()
+	}
+	fixture.mu.Lock()
+	fixture.failNextVMRead = true
+	fixture.mu.Unlock()
+	require.Error(t, service.ManageGPTAccountVM2APIInstance(context.Background(), snapshot.ID, "restart"))
+	require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+	fixture.mu.Lock()
+	assert.Equal(t, false, fixture.slots[instance.InstanceID]["schedulable"], "retry must preserve the current scheduling policy")
+	assert.Equal(t, 1, fixture.packageImports, "completed migration must never replay the credential package")
+	fixture.mu.Unlock()
+	var sourceChannel model.Channel
+	require.NoError(t, model.DB.First(&sourceChannel, *template.ChannelID).Error)
+	assert.Equal(t, common.ChannelStatusEnabled, sourceChannel.Status, "other source accounts keep their shared channel")
+}
+
+func TestVM2APIInstanceLeaseRevocationAndAdminBoundary(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountVM2APIInstance{}))
+	fixture := isolatedVM2APIManagerFixture(t)
+	template, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "shared", Provider: "vm2api", ManagementURL: "https://shared.example", RelayURL: "https://shared.example", ManagementKey: "key", RelayKey: "key", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	snapshot, key := gatewayAccountFixture(t, identity, template, "fenced")
+	require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+	assert.EqualError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID), "account_busy")
+	assert.EqualError(t, service.DeleteGPTAccountWithInstance(context.Background(), snapshot.ID), "account_busy")
+	assert.EqualError(t, service.SetGPTAccountVM2APISchedulable(context.Background(), snapshot.ID, true), "account_busy")
+	service.ReleaseGPTAccountJob(snapshot, "")
+	denied := gptAccountRequest(t, identity, common.RoleCommonUser, snapshot.ID, http.MethodGet, "", GetGPTAccountVM2APIInstance)
+	assert.Equal(t, http.StatusForbidden, denied.Code)
+	fixture.ensureHook = func() {
+		require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", snapshot.OwnerID).Update("status", common.UserStatusDisabled).Error)
+	}
+	assert.ErrorIs(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID), model.ErrGPTAccountStale)
+	var account model.GPTAccount
+	require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+	assert.Equal(t, &template.ID, account.GatewayID)
+	fixture.mu.Lock()
+	assert.Zero(t, fixture.imports)
+	fixture.mu.Unlock()
+	require.NoError(t, model.DB.Model(&model.User{}).Where("id = ?", snapshot.OwnerID).Update("status", common.UserStatusEnabled).Error)
+	fixture.ensureHook = nil
+	t.Setenv("VM2API_INSTANCE_MANAGER_SOCKET", "/tmp/nonexistent-vm2api-manager.sock")
+	status, err := service.GetGPTAccountVM2APIInstance(context.Background(), snapshot.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "unavailable", status.RuntimeStatus)
+}
+
+func TestVM2APIInstanceRetryNeverFallsBackToSharedGateway(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	fixture := isolatedVM2APIManagerFixture(t)
+	socket := os.Getenv("VM2API_INSTANCE_MANAGER_SOCKET")
+	template, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "shared", Provider: "vm2api", ManagementURL: "https://shared.example", RelayURL: "https://shared.example", ManagementKey: "key", RelayKey: "key", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	snapshot, key := gatewayAccountFixture(t, identity, template, "retry")
+	require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+	service.ReleaseGPTAccountJob(snapshot, "")
+	require.NoError(t, model.DB.Where("account_id = ?", snapshot.ID).Delete(&model.GPTAccountVM2APIInstance{}).Error)
+	assert.EqualError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID), "instance_not_ready")
+
+	t.Setenv("VM2API_INSTANCE_MANAGER_SOCKET", "/tmp/nonexistent-vm2api-manager.sock")
+	assert.EqualError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID), "instance_unavailable")
+	var account model.GPTAccount
+	require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+	secrets, err := service.DecryptGPTAccountSecrets(&account)
+	require.NoError(t, err)
+	require.NotNil(t, secrets.GatewayOAuth)
+	assert.Equal(t, key.RefreshToken, secrets.GatewayOAuth.RefreshToken)
+	var instance model.GPTAccountVM2APIInstance
+	require.NoError(t, model.DB.First(&instance, "account_id = ?", snapshot.ID).Error)
+	assert.Equal(t, "failed", instance.Status)
+	t.Setenv("VM2API_INSTANCE_MANAGER_SOCKET", socket)
+	entered, release := make(chan struct{}), make(chan struct{})
+	fixture.ensureHook = func() { close(entered); <-release }
+	done := make(chan error, 1)
+	go func() { done <- service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID) }()
+	<-entered
+	assert.EqualError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID), "account_busy")
+	close(release)
+	require.NoError(t, <-done)
+	fixture.mu.Lock()
+	assert.Equal(t, 1, fixture.imports)
+	fixture.mu.Unlock()
+	require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+	assert.Equal(t, "ready", account.Status)
+}
+
+func TestVM2APIInstanceDatabaseMigrationPreservesSharedBindings(t *testing.T) {
+	for _, upgrade := range []bool{false, true} {
+		t.Run(fmt.Sprintf("upgrade=%v", upgrade), func(t *testing.T) {
+			identity := setupGPTAccountGatewayTest(t)
+			gateway, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "legacy shared", Provider: "vm2api", ManagementURL: "https://shared.example", RelayURL: "https://shared.example", ManagementKey: "management", RelayKey: "relay", Group: "default", Models: "gpt-5"})
+			require.NoError(t, err)
+			snapshot, _ := gatewayAccountFixture(t, identity, gateway, "migration-schema")
+			service.ReleaseGPTAccountJob(snapshot, "")
+			if upgrade {
+				// This is the exact c76cc8951 gateway schema: all existing columns and
+				// indexes, without the newly introduced managed owner column/table.
+				require.NoError(t, model.DB.Migrator().DropIndex(&model.GPTAccountGateway{}, "idx_gpt_account_gateways_managed_account_id"))
+				require.NoError(t, model.DB.Migrator().DropColumn(&model.GPTAccountGateway{}, "ManagedAccountID"))
+				require.NoError(t, model.DB.Migrator().DropTable(&model.GPTAccountVM2APIInstance{}))
+			}
+			for range 2 {
+				require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountGateway{}, &model.GPTAccountVM2APIInstance{}, &model.GPTAccount{}))
+			}
+			var preserved model.GPTAccountGateway
+			require.NoError(t, model.DB.First(&preserved, gateway.ID).Error)
+			assert.Nil(t, preserved.ManagedAccountID)
+			assert.Equal(t, gateway.ChannelID, preserved.ChannelID)
+			assert.Equal(t, gateway.SecretsCiphertext, preserved.SecretsCiphertext)
+			var account model.GPTAccount
+			require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+			assert.Equal(t, &gateway.ID, account.GatewayID)
+			instance := model.GPTAccountVM2APIInstance{AccountID: account.ID, InstanceID: strings.Repeat("a", 32), SourceGatewayID: gateway.ID, Status: "pending"}
+			require.NoError(t, model.DB.Create(&instance).Error)
+			duplicate := instance
+			duplicate.AccountID++
+			assert.Error(t, model.DB.Create(&duplicate).Error, "instance IDs must remain unique")
+			duplicate = instance
+			duplicate.InstanceID = strings.Repeat("b", 32)
+			assert.Error(t, model.DB.Create(&duplicate).Error, "account may only own one instance")
+			for range 2 {
+				require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountGateway{}, &model.GPTAccountVM2APIInstance{}, &model.GPTAccount{}))
+			}
+			require.NoError(t, model.DB.First(&instance, "account_id = ?", account.ID).Error)
+			assert.Equal(t, "pending", instance.Status)
+		})
+	}
+}
+
+func TestVM2APIIsolationRequiresTemplateAndCannotBeBypassedByDirectSelection(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	isolatedVM2APIManagerFixture(t)
+	account := model.GPTAccount{}
+	assert.EqualError(t, service.ApplyGPTAccountGateway(&account, nil), "gateway_required")
+	direct := 0
+	assert.EqualError(t, service.ApplyGPTAccountGateway(&account, &direct), "gateway_required")
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"no-template","email":"none@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("none@example.com", "no-template", "subject"))
+	_, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	assert.EqualError(t, err, "gateway_required")
+	var count int64
+	require.NoError(t, model.DB.Model(&model.GPTAccount{}).Count(&count).Error)
+	assert.Zero(t, count)
 }

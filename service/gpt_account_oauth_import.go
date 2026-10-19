@@ -256,6 +256,9 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 				return nil, err
 			}
 		}
+		if GPTAccountVM2APIIsolationEnabled() && (gatewayID == nil || *gatewayID == 0) {
+			return nil, errors.New("gateway_required")
+		}
 		if gatewayID != nil {
 			if err := ApplyGPTAccountGateway(&account, gatewayID); err != nil {
 				return nil, err
@@ -300,6 +303,9 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 		job.OAuthSubject = subject
 		err = StoreVerifiedGPTAccountGatewayCredential(ctx, job, key)
 		ReleaseGPTAccountJob(job, GPTAccountErrorCode(err))
+		if err == nil && GPTAccountVM2APIIsolationEnabled() {
+			StartGPTAccountVM2APIInstanceJob(account.ID)
+		}
 		if err != nil {
 			return nil, err
 		}

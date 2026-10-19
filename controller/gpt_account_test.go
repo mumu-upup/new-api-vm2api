@@ -1207,7 +1207,7 @@ func TestGPTAccountRefreshRespectsAttentionAndOwnerRevocation(t *testing.T) {
 func setupGPTAccountTest(t *testing.T) service.AuthIdentity {
 	t.Helper()
 	db := setupManageUserTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}, &model.Channel{}, &model.Ability{}, &model.Option{}))
+	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}, &model.GPTAccountVM2APIInstance{}, &model.Channel{}, &model.Ability{}, &model.Option{}))
 	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}))
 	previousMaster, previousMemory := common.IsMasterNode, common.MemoryCacheEnabled
 	common.IsMasterNode, common.MemoryCacheEnabled = true, false
