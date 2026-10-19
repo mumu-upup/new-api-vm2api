@@ -32,3 +32,40 @@ it.each([
 ])('maps %s to a specific channel import message', (code, message) => {
   expect(getAccountErrorMessage(code, translate)).toBe(message)
 })
+
+it.each([
+  [
+    'instance_unavailable',
+    'The instance manager is unavailable. Try again later.',
+  ],
+  [
+    'instance_invalid_response',
+    'The instance manager returned an invalid response. Retry synchronization.',
+  ],
+  [
+    'instance_capacity_exhausted',
+    'Instance capacity is full. Contact the administrator or try again later.',
+  ],
+  [
+    'instance_not_found',
+    'The instance was not found. Retry synchronization to restore it.',
+  ],
+  [
+    'instance_not_running',
+    'The instance is stopped. Start it before retrying.',
+  ],
+  [
+    'instance_not_ready',
+    'The instance is not ready. Wait for synchronization and try again.',
+  ],
+  [
+    'instance_migration_failed',
+    'Account migration failed. Retry synchronization.',
+  ],
+  [
+    'instance_source_not_paused',
+    'The shared slot could not be paused. Retry migration before using the dedicated instance.',
+  ],
+])('maps %s to a safe actionable instance message', (code, message) => {
+  expect(getAccountErrorMessage(code, translate)).toBe(message)
+})

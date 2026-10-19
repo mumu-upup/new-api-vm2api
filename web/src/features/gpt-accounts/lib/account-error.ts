@@ -6,6 +6,33 @@ export function getAccountErrorMessage(
   fallback?: string
 ): string {
   switch (code) {
+    case 'instance_unavailable':
+      return t('The instance manager is unavailable. Try again later.')
+    case 'instance_invalid_response':
+      return t(
+        'The instance manager returned an invalid response. Retry synchronization.'
+      )
+    case 'instance_capacity_exhausted':
+      return t(
+        'Instance capacity is full. Contact the administrator or try again later.'
+      )
+    case 'instance_not_found':
+      return t(
+        'The instance was not found. Retry synchronization to restore it.'
+      )
+    case 'instance_not_running':
+      return t('The instance is stopped. Start it before retrying.')
+    case 'instance_not_ready':
+      return t(
+        'The instance is not ready. Wait for synchronization and try again.'
+      )
+    case 'instance_migration_failed':
+      return t('Account migration failed. Retry synchronization.')
+    case 'instance_source_not_paused':
+      return t(
+        'The shared slot could not be paused. Retry migration before using the dedicated instance.'
+      )
+
     case 'gateway_import_uncertain':
       return t(
         'Gateway import could not be confirmed. Synchronize the gateway before signing in again.'

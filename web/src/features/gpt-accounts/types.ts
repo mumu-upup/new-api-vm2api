@@ -118,3 +118,26 @@ export interface GptAccountTotpChangeResult {
   stage: 'primary' | 'fallback'
   fallback_used: boolean
 }
+
+export interface GptAccountVm2ApiInstance {
+  account_id: number
+  isolation: 'shared' | 'dedicated'
+  instance_id?: string
+  gateway_id?: number
+  source_gateway_id?: number
+  status: string
+  runtime_status?: string
+  error_code?: string
+  container_name?: string
+  data_directory?: string
+  image?: string
+  port?: number
+  updated_at?: number
+  vm_id?: string
+}
+export type Vm2ApiInstanceAction =
+  | 'start'
+  | 'stop'
+  | 'restart'
+  | 'rebuild'
+  | 'provision'

@@ -240,6 +240,7 @@ function GptAccountsPage(props: {
               >
                 <TabsList aria-label={t('GPT Accounts')}>
                   <TabsTrigger value='accounts'>{t('Accounts')}</TabsTrigger>
+                  <TabsTrigger value='vm2api'>{t('VM2API')}</TabsTrigger>
                   <TabsTrigger value='totp'>{t('2FA management')}</TabsTrigger>
                   {props.role === ROLE.SUPER_ADMIN && (
                     <TabsTrigger value='gateways'>{t('Gateways')}</TabsTrigger>
@@ -261,7 +262,15 @@ function GptAccountsPage(props: {
                       void action(account, kind)
                     }}
                   />
-                  <Vm2ApiPanel accounts={query.data?.items ?? []} />
+                </TabsContent>
+                <TabsContent value='vm2api' className='min-h-0 overflow-auto'>
+                  <Vm2ApiPanel
+                    accounts={query.data?.items ?? []}
+                    total={query.data?.total ?? 0}
+                    pagination={pagination}
+                    onPaginationChange={setPagination}
+                    queryScope={`${props.userId}:${props.role}:${props.sessionId ?? ''}`}
+                  />
                 </TabsContent>
                 <TabsContent
                   value='totp'
