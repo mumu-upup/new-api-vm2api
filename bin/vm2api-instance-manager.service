@@ -9,6 +9,7 @@ User=root
 UMask=0077
 RuntimeDirectory=new-api-vm2api
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 ExecStart=/usr/bin/python3 /opt/new-api-vm2api/vm2api-instance-manager.py --config /etc/new-api-vm2api/manager.json
 Restart=on-failure
 RestartSec=5
