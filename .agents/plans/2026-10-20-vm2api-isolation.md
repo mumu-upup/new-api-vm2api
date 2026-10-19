@@ -37,7 +37,7 @@ Files: model/gpt_account_vm2api_instance.go; model/main.go registration; service
 ## Manager task
 Files: bin/vm2api-instance-manager.py; bin/vm2api-instance-manager_test.py; bin/vm2api-instance-manager.service.
 - Implement exact contract above; unittest fixtures use actual temp directories and Unix HTTP socket with controlled Docker process adapter, not live credentials. Test distinct identity/ports/keys/roots, restart persistence, capacity, unexpected containers/mounts, invalid IDs/actions/payloads, redaction, cleanup ordering, lock serialization.
-- Validate python3 -m unittest discover -s bin -p '*manager_test.py'; python3 -m py_compile outside production. Smoke with actual Docker on isolated external environment before deploy.
+- Validate python3 bin/vm2api-instance-manager_test.py; python3 -m py_compile outside production. Smoke with actual Docker on isolated external environment before deploy.
 
 ## UI task
 Files: web/src/features/gpt-accounts/components/vm2api-panel.tsx, index.tsx, api.ts, types.ts; existing account tests and seven locale files. Read web/AGENTS.md and shadcn/i18n/React skills first.
