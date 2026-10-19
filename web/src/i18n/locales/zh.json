@@ -2895,6 +2895,7 @@
     "Full width": "全宽",
     "Function calling": "函数调用",
     "Functions": "函数",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "无法确认网关导入结果。请先同步网关，再尝试重新登录。",
     "Gateway options could not be loaded.": "无法加载网关选项。",
     "Gateway synchronization failed": "网关同步失败",
     "Gateway synchronization pending": "等待网关同步",

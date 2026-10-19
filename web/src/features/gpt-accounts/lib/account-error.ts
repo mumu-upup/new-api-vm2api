@@ -6,6 +6,13 @@ export function getAccountErrorMessage(
   fallback?: string
 ): string {
   switch (code) {
+    case 'gateway_import_uncertain':
+      return t(
+        'Gateway import could not be confirmed. Synchronize the gateway before signing in again.'
+      )
+    case 'gateway_unavailable':
+    case 'gateway_import_failed':
+      return t('Gateway synchronization failed')
     case 'job_active':
       return t(
         'An account check is already running. Cancel it or wait for it to finish.'

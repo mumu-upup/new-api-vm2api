@@ -2895,6 +2895,7 @@
     "Full width": "Pleine largeur",
     "Function calling": "Appel de fonction",
     "Functions": "Fonctions",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "Importation dans la passerelle non confirmée. Synchronisez la passerelle avant de vous reconnecter.",
     "Gateway options could not be loaded.": "Impossible de charger les options de passerelle.",
     "Gateway synchronization failed": "Échec de synchronisation",
     "Gateway synchronization pending": "Synchronisation en attente",

@@ -2895,6 +2895,7 @@
     "Full width": "全幅",
     "Function calling": "関数呼び出し",
     "Functions": "関数",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "ゲートウェイへのインポート結果を確認できません。再ログインする前にゲートウェイを同期してください。",
     "Gateway options could not be loaded.": "ゲートウェイの選択肢を読み込めませんでした。",
     "Gateway synchronization failed": "ゲートウェイの同期に失敗",
     "Gateway synchronization pending": "ゲートウェイの同期待ち",

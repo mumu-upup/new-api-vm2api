@@ -2895,6 +2895,7 @@
     "Full width": "全寬",
     "Function calling": "函數呼叫",
     "Functions": "函數",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "無法確認閘道匯入結果。請先同步閘道，再嘗試重新登入。",
     "Gateway options could not be loaded.": "無法載入閘道選項。",
     "Gateway synchronization failed": "閘道同步失敗",
     "Gateway synchronization pending": "等待閘道同步",

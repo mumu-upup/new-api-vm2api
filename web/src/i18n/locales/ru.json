@@ -2895,6 +2895,7 @@
     "Full width": "Полная ширина",
     "Function calling": "Вызов функций",
     "Functions": "Функции",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "Не удалось подтвердить импорт в шлюз. Синхронизируйте шлюз перед повторным входом.",
     "Gateway options could not be loaded.": "Не удалось загрузить варианты шлюзов.",
     "Gateway synchronization failed": "Ошибка синхронизации шлюза",
     "Gateway synchronization pending": "Ожидание синхронизации шлюза",

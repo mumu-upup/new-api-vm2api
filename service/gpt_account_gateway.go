@@ -1018,83 +1018,66 @@ func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAcco
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNotFound {
-		if !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
-			return errors.New("gateway_remote_conflict")
+	if status == http.StatusNotFound {
+		if secrets.GatewayImportAttempted {
+			return errors.New("gateway_import_uncertain")
 		}
+		if secrets.GatewayOAuth == nil {
+			return errors.New("gateway_credentials_required")
+		}
+		// Slot provisioning carries no OAuth credentials. A slow image pull or
+		// startup must not consume the one-time credential import attempt.
 		secrets.GatewayRemoteID = vmID
-		if existing.Data.VM.HasToken || existing.Data.VM.HasRefresh {
-			remoteAccountID := existing.Data.VM.ChatGPTAccountID
-			if remoteAccountID == "" {
-				remoteAccountID = existing.Data.VM.OrgUUID
-			}
-			if existing.Data.VM.Email == "" && remoteAccountID == "" {
-				return errors.New("gateway_remote_conflict")
-			}
-			if existing.Data.VM.Email != "" && !strings.EqualFold(existing.Data.VM.Email, client.account.Email) {
-				return errors.New("gateway_remote_conflict")
-			}
-			if remoteAccountID != "" && remoteAccountID != client.account.AccountID {
-				return errors.New("gateway_remote_conflict")
-			}
-			secrets.GatewayOAuth = nil
-			secrets.GatewayImportAttempted = false
-			return nil
-		}
-		if secrets.GatewayImportAttempted {
-			return errors.New("gateway_import_uncertain")
-		}
-		if secrets.GatewayOAuth == nil {
-			return errors.New("gateway_credentials_required")
-		}
-		secrets.GatewayImportAttempted = true
-		if err := client.checkpoint(secrets, "pending", "", false); err != nil {
-			return err
-		}
-	} else {
-		if secrets.GatewayImportAttempted {
-			return errors.New("gateway_import_uncertain")
-		}
-		if secrets.GatewayOAuth == nil {
-			return errors.New("gateway_credentials_required")
-		}
-		secrets.GatewayRemoteID, secrets.GatewayImportAttempted = vmID, true
 		if err := client.checkpoint(secrets, "pending", "", false); err != nil {
 			return err
 		}
 		createBody := map[string]any{
-			"id":                  vmID,
-			"name":                vmID,
-			"platform":            "openai",
-			"family":              "codex",
-			"start":               true,
-			"auto_allocate_proxy": true,
+			"id": vmID, "name": vmID, "platform": "openai", "family": "codex",
+			"start": true, "auto_allocate_proxy": true,
 		}
-		var createResponse gptVM2APIVMResponse
-		createStatus, createErr := client.request(ctx, http.MethodPost, "/api/panel/vms/create", createBody, &createResponse)
-		if createStatus != http.StatusCreated && createStatus != http.StatusOK && createStatus != http.StatusConflict {
-			if createStatus != http.StatusConflict && gptGatewayImportRejected(createStatus) {
-				secrets.GatewayRemoteID, secrets.GatewayImportAttempted = "", false
-				return errors.New("gateway_import_failed")
-			}
-			if createErr != nil || createStatus == http.StatusNotFound {
-				return errors.New("gateway_import_uncertain")
-			}
-			return errors.New("gateway_import_uncertain")
+		createStatus, createErr := client.request(ctx, http.MethodPost, "/api/panel/vms/create", createBody, &existing)
+		if gptGatewayImportRejected(createStatus) {
+			secrets.GatewayRemoteID = ""
+			return errors.New("gateway_import_failed")
 		}
-		if createStatus != http.StatusConflict && (createErr != nil || !createResponse.OK || !ownedVM2APISlot(createResponse.Data.VM, vmID)) {
-			return errors.New("gateway_import_uncertain")
-		}
-		if createStatus == http.StatusConflict {
-			var conflict gptVM2APIVMResponse
-			conflictStatus, conflictErr := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &conflict)
-			if conflictErr != nil || conflictStatus == http.StatusNotFound || !conflict.OK || !ownedVM2APISlot(conflict.Data.VM, vmID) {
-				return errors.New("gateway_import_uncertain")
+		if createErr != nil || !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
+			// VM2API persists the slot before waiting for its runtime to boot.
+			// Read it back after an ambiguous response; never blindly recreate it
+			// or assume that an existing slot is empty.
+			existing = gptVM2APIVMResponse{}
+			status, err = client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &existing)
+			if err != nil || status == http.StatusNotFound {
+				return errors.New("gateway_unavailable")
 			}
 		}
 	}
-	if secrets.GatewayOAuth == nil {
+	if !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
+		return errors.New("gateway_remote_conflict")
+	}
+	secrets.GatewayRemoteID = vmID
+	if existing.Data.VM.HasToken || existing.Data.VM.HasRefresh {
+		remoteAccountID := existing.Data.VM.ChatGPTAccountID
+		if remoteAccountID == "" {
+			remoteAccountID = existing.Data.VM.OrgUUID
+		}
+		if existing.Data.VM.Email == "" && remoteAccountID == "" {
+			return errors.New("gateway_remote_conflict")
+		}
+		if existing.Data.VM.Email != "" && !strings.EqualFold(existing.Data.VM.Email, client.account.Email) {
+			return errors.New("gateway_remote_conflict")
+		}
+		if remoteAccountID != "" && remoteAccountID != client.account.AccountID {
+			return errors.New("gateway_remote_conflict")
+		}
+		secrets.GatewayOAuth = nil
+		secrets.GatewayImportAttempted = false
 		return nil
+	}
+	if secrets.GatewayImportAttempted {
+		return errors.New("gateway_import_uncertain")
+	}
+	if secrets.GatewayOAuth == nil {
+		return errors.New("gateway_credentials_required")
 	}
 	expires, expiryErr := time.Parse(time.RFC3339, secrets.GatewayOAuth.Expired)
 	if expiryErr != nil || !expires.After(time.Now()) {
@@ -1112,6 +1095,11 @@ func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAcco
 	encoded, err := common.Marshal(account)
 	if err != nil {
 		return errors.New("gateway_import_failed")
+	}
+	// Only the credential-bearing request needs conservative replay protection.
+	secrets.GatewayImportAttempted = true
+	if err := client.checkpoint(secrets, "pending", "", false); err != nil {
+		return err
 	}
 	var importResponse gptVM2APIVMResponse
 	importStatus, importErr := client.request(ctx, http.MethodPost, "/api/panel/vms/import", map[string]any{"vm_id": vmID, "auth_json": string(encoded)}, &importResponse)

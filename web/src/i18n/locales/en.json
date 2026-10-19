@@ -2895,6 +2895,7 @@
     "Full width": "Full width",
     "Function calling": "Function calling",
     "Functions": "Functions",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "Gateway import could not be confirmed. Synchronize the gateway before signing in again.",
     "Gateway options could not be loaded.": "Gateway options could not be loaded.",
     "Gateway synchronization failed": "Gateway synchronization failed",
     "Gateway synchronization pending": "Gateway synchronization pending",

@@ -109,6 +109,15 @@ func TestParseGPTGatewayChannelJSONAcceptsDirectCPAAndSub2APIConfigs(t *testing.
 			group:    "",
 		},
 		{
+			name:     "VM2API base URL",
+			raw:      `{"provider":"vm2api","base_url":"https://vm2api.example/v1","api_key":"vm-key","model":"gpt-5"}`,
+			provider: "vm2api",
+			baseURL:  "https://vm2api.example",
+			key:      "vm-key",
+			models:   "gpt-5",
+			group:    "",
+		},
+		{
 			name:     "Prism bridge",
 			raw:      `{"provider":"prism-bridge","base_url":"http://127.0.0.1:18765/v1","allow_local_http":true,"api_key":"local-key","model":"gpt-6.1-sol"}`,
 			provider: "prism",
@@ -441,6 +450,211 @@ func TestGPTAccountGatewaySub2APIUnknownCreateIsNeverBlindlyRepeated(t *testing.
 	service.ReleaseGPTAccountJob(snapshot, err.Error())
 	assert.EqualError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID), "gateway_import_uncertain")
 	assert.Equal(t, 1, creates)
+}
+
+func TestGPTAccountGatewayVM2APICreatesDeterministicCodexSlotAndReusesIt(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	var vmID string
+	creates, imports, refreshes := 0, 0, 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "management-secret", r.Header.Get("x-api-key"))
+		assert.Empty(t, r.Header.Get("Authorization"))
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/panel/vms/"):
+			if vmID == "" || r.URL.Path != "/api/panel/vms/"+vmID {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex","has_token":true,"email":"first@example.com","chatgpt_account_id":"remote-first"}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/create":
+			creates++
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &body))
+			vmID, _ = body["id"].(string)
+			assert.NotEmpty(t, vmID)
+			assert.Equal(t, "openai", body["platform"])
+			assert.Equal(t, true, body["auto_allocate_proxy"])
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex"}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/import":
+			imports++
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &body))
+			assert.Equal(t, vmID, body["vm_id"])
+			raw, ok := body["auth_json"].(string)
+			require.True(t, ok)
+			var account map[string]any
+			require.NoError(t, common.Unmarshal([]byte(raw), &account))
+			assert.Equal(t, "remote-first", account["chatgpt_account_id"])
+			assert.Equal(t, "first@example.com", account["email"])
+			assert.IsType(t, float64(0), account["expires_at"])
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex"}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/"+vmID+"/oauth/refresh":
+			refreshes++
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &body))
+			assert.Equal(t, vmID, body["vm_id"])
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"ok":true,"refreshed":true,"platform":"openai"}}`))
+		default:
+			t.Fatalf("unexpected vm2api request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	gateway, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "Pool", Provider: "vm2api", ManagementURL: upstream.URL, RelayURL: upstream.URL, AllowLocalHTTP: true, ManagementKey: "management-secret", RelayKey: "relay-secret", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	snapshot, key := gatewayAccountFixture(t, identity, gateway, "first")
+	key.AccountID = "remote-first"
+	key.Email = snapshot.Email
+	require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+	assert.Equal(t, 1, creates)
+	assert.Equal(t, 1, imports)
+	require.NoError(t, service.RefreshManagedGPTAccountGateway(context.Background(), snapshot))
+	assert.Equal(t, 1, refreshes)
+	service.ReleaseGPTAccountJob(snapshot, "")
+	assert.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+	assert.Equal(t, 1, creates)
+	assert.Equal(t, 1, imports)
+}
+
+func TestImportGPTAccountOAuthWithVM2APIGatewayCreatesManagedSlot(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	var vmID string
+	imports := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "management-secret", r.Header.Get("x-api-key"))
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/panel/vms/"):
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/create":
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &body))
+			vmID, _ = body["id"].(string)
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex"}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/import":
+			imports++
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &body))
+			assert.Equal(t, vmID, body["vm_id"])
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex"},"platform":"openai"}}`))
+		default:
+			t.Fatalf("unexpected vm2api request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	gateway, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "Pool", Provider: "vm2api", ManagementURL: upstream.URL, RelayURL: upstream.URL, AllowLocalHTTP: true, ManagementKey: "management-secret", RelayKey: "relay-secret", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"remote-import","email":"import@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("import@example.com", "remote-import", "subject-import"))
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw, GatewayID: &gateway.ID})
+	require.NoError(t, err)
+	assert.Nil(t, account.ChannelID)
+	assert.Equal(t, &gateway.ID, account.GatewayID)
+	assert.Equal(t, "ready", account.Status)
+	assert.Equal(t, 1, imports)
+	var stored model.GPTAccount
+	require.NoError(t, model.DB.First(&stored, account.ID).Error)
+	assert.Nil(t, stored.ChannelID)
+	assert.Equal(t, &gateway.ID, stored.GatewayID)
+}
+
+func TestGPTAccountGatewayVM2APIUncertainImportDoesNotReplayFreshOAuth(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	var vmID string
+	creates, imports := 0, 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "management-secret", r.Header.Get("x-api-key"))
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/panel/vms/"):
+			if vmID == "" || r.URL.Path != "/api/panel/vms/"+vmID {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex","has_token":false,"has_refresh":false}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/create":
+			creates++
+			var body map[string]any
+			require.NoError(t, common.DecodeJson(r.Body, &body))
+			vmID, _ = body["id"].(string)
+			_, _ = w.Write([]byte(`{"ok":true,"data":{"vm":{"id":"` + vmID + `","platform":"openai","family":"codex"}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/panel/vms/import":
+			imports++
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			t.Fatalf("unexpected vm2api request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+	gateway, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "Pool", Provider: "vm2api", ManagementURL: upstream.URL, RelayURL: upstream.URL, AllowLocalHTTP: true, ManagementKey: "management-secret", RelayKey: "relay-secret", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	snapshot, key := gatewayAccountFixture(t, identity, gateway, "uncertain")
+	err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key)
+	require.EqualError(t, err, "gateway_import_uncertain")
+	service.ReleaseGPTAccountJob(snapshot, err.Error())
+	retry, err := service.AcquireGPTAccountJob(snapshot.ID, false)
+	require.NoError(t, err)
+	key.AccessToken = "fresh-access"
+	key.RefreshToken = "fresh-refresh"
+	err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), retry, key)
+	assert.EqualError(t, err, "gateway_import_uncertain")
+	service.ReleaseGPTAccountJob(retry, service.GPTAccountErrorCode(err))
+	assert.Equal(t, 1, creates)
+	assert.Equal(t, 1, imports)
+}
+
+func TestGPTAccountGatewayVM2APIRecoversUncertainSlotCreation(t *testing.T) {
+	for _, immediate := range []bool{true, false} {
+		t.Run(fmt.Sprintf("visible_immediately_%t", immediate), func(t *testing.T) {
+			identity := setupGPTAccountGatewayTest(t)
+			var vmID string
+			visible, imported := false, false
+			creates, imports := 0, 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet:
+					if !visible {
+						w.WriteHeader(http.StatusNotFound)
+						return
+					}
+					fmt.Fprintf(w, `{"ok":true,"data":{"vm":{"id":%q,"platform":"openai","family":"codex","has_token":%t,"email":"first@example.com","chatgpt_account_id":"remote-first"}}}`, vmID, imported)
+				case r.URL.Path == "/api/panel/vms/create":
+					creates++
+					var body map[string]any
+					require.NoError(t, common.DecodeJson(r.Body, &body))
+					vmID = body["id"].(string)
+					visible = immediate
+					// Provisioning outlives the HTTP request; no OAuth was sent.
+					w.WriteHeader(http.StatusGatewayTimeout)
+				case r.URL.Path == "/api/panel/vms/import":
+					imports++
+					imported = true
+					fmt.Fprintf(w, `{"ok":true,"data":{"vm":{"id":%q,"platform":"openai","family":"codex"}}}`, vmID)
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer upstream.Close()
+			gateway, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "Pool", Provider: "vm2api", ManagementURL: upstream.URL, RelayURL: upstream.URL, AllowLocalHTTP: true, ManagementKey: "management-secret", RelayKey: "relay-secret", Group: "default", Models: "gpt-5"})
+			require.NoError(t, err)
+			snapshot, key := gatewayAccountFixture(t, identity, gateway, "first")
+			err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key)
+			if immediate {
+				require.NoError(t, err, "an existing empty slot can receive its first credential after create times out")
+				service.ReleaseGPTAccountJob(snapshot, "")
+			} else {
+				require.Error(t, err)
+				service.ReleaseGPTAccountJob(snapshot, service.GPTAccountErrorCode(err))
+				var account model.GPTAccount
+				require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+				secrets, decryptErr := service.DecryptGPTAccountSecrets(&account)
+				require.NoError(t, decryptErr)
+				assert.False(t, secrets.GatewayImportAttempted, "creating an empty slot must not consume the credential import attempt")
+				visible = true
+				require.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+			}
+			require.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+			assert.Equal(t, 1, creates)
+			assert.Equal(t, 1, imports)
+		})
+	}
 }
 
 func TestGPTAccountGatewayRejectedImportsCanRetry(t *testing.T) {

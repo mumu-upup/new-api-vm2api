@@ -2895,6 +2895,7 @@
     "Full width": "Toàn chiều rộng",
     "Function calling": "Gọi hàm",
     "Functions": "Hàm",
+    "Gateway import could not be confirmed. Synchronize the gateway before signing in again.": "Không thể xác nhận kết quả nhập vào cổng. Hãy đồng bộ cổng trước khi đăng nhập lại.",
     "Gateway options could not be loaded.": "Không thể tải các tùy chọn cổng.",
     "Gateway synchronization failed": "Đồng bộ cổng thất bại",
     "Gateway synchronization pending": "Đang chờ đồng bộ cổng",

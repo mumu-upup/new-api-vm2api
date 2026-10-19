@@ -69,7 +69,9 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
       group: props.account?.group ?? '',
       models: props.account?.models ?? '',
       channel_id: props.account?.channel_id ?? 0,
-      gateway_id: props.account?.gateway_id ?? props.defaultGatewayId ?? 0,
+      gateway_id: props.account
+        ? (props.account.gateway_id ?? 0)
+        : (props.defaultGatewayId ?? 0),
     },
   })
   const gatewayId = form.watch('gateway_id')
