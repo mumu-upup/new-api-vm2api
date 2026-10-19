@@ -33,7 +33,7 @@ def docker(args):
     if result.returncode:
         # Only an explicit not-found result is absence. Daemon/network errors
         # must never lead to deleting registry state or recreating containers.
-        if args[0] == 'inspect' and b'No such object:' in result.stderr:
+        if args[0] == 'inspect' and b'no such object:' in result.stderr.lower():
             raise ManagerError('container_missing')
         raise ManagerError('docker_failed')
     if args[0] == 'inspect' or args[:2] == ['image', 'inspect']:
@@ -153,7 +153,17 @@ class InstanceManager:
             return self.public(self.read(ident))
 
     def allocate(self, ident):
-        records = [self.read(path.name) for path in self.root.iterdir() if ID.fullmatch(path.name)]
+        pinned_images = self.preflight()
+        records = []
+        for path in self.root.iterdir():
+            if not ID.fullmatch(path.name):
+                continue
+            try:
+                records.append(self.read(path.name))
+            except ManagerError as error:
+                if str(error) != 'instance_missing' or self.inspect('vm2api-account-' + path.name) is not None:
+                    raise
+
         if len(records) >= self.config['capacity']:
             raise ManagerError('capacity_exhausted')
         used = {item['port'] for item in records}
@@ -172,7 +182,7 @@ class InstanceManager:
             raise ManagerError('ports_exhausted')
         directory = self.directory(ident)
         directory.mkdir(mode=0o700, exist_ok=True)
-        record = {'slot_images': self.preflight(), 'id': ident, 'container_name': 'vm2api-account-' + ident, 'image': self.config['image'], 'port': port, 'updated_at': int(time.time()), 'api_key': secrets.token_hex(32), 'db_secret': secrets.token_hex(32), 'admin_password': secrets.token_hex(32)}
+        record = {'slot_images': pinned_images, 'id': ident, 'container_name': 'vm2api-account-' + ident, 'image': self.config['image'], 'port': port, 'updated_at': int(time.time()), 'api_key': secrets.token_hex(32), 'db_secret': secrets.token_hex(32), 'admin_password': secrets.token_hex(32)}
         self.write(ident, record)
         return record
 

@@ -183,4 +183,15 @@ class ManagerTest(unittest.TestCase):
         with self.assertRaises(ValueError): guard.guarded_arguments(['run', 'unapproved:latest'], pinned)
         with self.assertRaises(ValueError): guard.guarded_arguments(['image', 'build', '.'], pinned)
 
+    def test_missing_image_does_not_poison_later_provisioning(self):
+        actual = self.manager.run
+        def unavailable(args):
+            if args[:2] == ['image', 'inspect']: raise manager.ManagerError('docker_failed')
+            return actual(args)
+        self.manager.run = unavailable
+        with self.assertRaises(manager.ManagerError): self.manager.ensure('a'*32)
+        self.manager.run = actual
+        self.assertEqual('running', self.manager.ensure('a'*32)['status'])
+        self.assertEqual('running', self.manager.ensure('b'*32)['status'])
+
 if __name__ == '__main__': unittest.main()
