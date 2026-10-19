@@ -82,7 +82,7 @@ class InstanceManager:
             raise ManagerError('unsafe_path')
         # Reject mount substitutions, including a link planted by a compromised
         # guest into an otherwise owned instance directory.
-        for name in ('data', 'bin', 'share', 'vms', 'config', 'restricted', 'instance.json', 'runtime.env', 'bin/kin-computer', 'restricted/docker'):
+        for name in ('data', 'bin', 'share', 'vms', 'config', 'restricted', 'approved', 'instance.json', 'runtime.env', 'bin/kin-computer', 'approved/kin-computer', 'restricted/docker', 'restricted/images.json'):
             if (path / name).is_symlink():
                 raise ManagerError('unsafe_path')
         return path
@@ -97,7 +97,7 @@ class InstanceManager:
             raise ManagerError('registry_invalid') from None
         if value.get('id') != ident or value.get('container_name') != 'vm2api-account-' + ident:
             raise ManagerError('registry_invalid')
-        if value.get('image') != self.config['image'] or not self.config['port_start'] <= value.get('port', 0) <= self.config['port_end']:
+        if not IMAGE.fullmatch(value.get('image', '')) or not self.config['port_start'] <= value.get('port', 0) <= self.config['port_end']:
             raise ManagerError('registry_config_conflict')
         return value
 
@@ -172,15 +172,17 @@ class InstanceManager:
             raise ManagerError('ports_exhausted')
         directory = self.directory(ident)
         directory.mkdir(mode=0o700, exist_ok=True)
-        record = {'id': ident, 'container_name': 'vm2api-account-' + ident, 'image': self.config['image'], 'port': port, 'updated_at': int(time.time()), 'api_key': secrets.token_hex(32), 'db_secret': secrets.token_hex(32), 'admin_password': secrets.token_hex(32)}
+        record = {'slot_images': self.preflight(), 'id': ident, 'container_name': 'vm2api-account-' + ident, 'image': self.config['image'], 'port': port, 'updated_at': int(time.time()), 'api_key': secrets.token_hex(32), 'db_secret': secrets.token_hex(32), 'admin_password': secrets.token_hex(32)}
         self.write(ident, record)
         return record
 
     def create(self, record):
+        for image in [record['image'], *record['slot_images'].values()]:
+            self.run(['image', 'inspect', image])
         root = self.directory(record['id'])
-        for subdir in ('data', 'bin', 'share', 'vms', 'config', 'restricted'):
+        for subdir in ('data', 'bin', 'share', 'vms', 'config', 'restricted', 'approved'):
             (root / subdir).mkdir(mode=0o700, exist_ok=True)
-        target = root / 'bin' / 'kin-computer'
+        target = root / 'approved' / 'kin-computer'
         if not target.exists():
             shutil.copyfile(self.config['kin_computer'], target)
             target.chmod(0o755)
@@ -189,32 +191,38 @@ class InstanceManager:
         wrapper = root / 'restricted' / 'docker'
         if wrapper.is_symlink():
             raise ManagerError('unsafe_path')
-        wrapper.write_text('#!/bin/sh\ncase "$1" in build|buildx|builder|compose) echo "Production image builds are disabled" >&2; exit 126;; esac\nexec /usr/local/bin/docker "$@"\n')
+        shutil.copyfile(pathlib.Path(__file__).with_name('vm2api-docker-guard.py'), wrapper)
         wrapper.chmod(0o755)
+        (root / 'restricted' / 'images.json').write_text(json.dumps(record['slot_images']))
         env = {
             'VM2API_API_KEY': record['api_key'], 'VM2API_DB_SECRET': record['db_secret'],
             'VM2API_ADMIN_USER': 'admin', 'VM2API_ADMIN_PASSWORD': record['admin_password'],
             'VM2API_CONTAINER_NAME': record['container_name'], 'VM2API_HOST_ROOT': str(root),
             'HOST': self.config['host'], 'PORT': str(record['port']),
-            'KIN_AUTO_SYNC_WRAP': '0', 'PATH': '/restricted:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+            'KIN_COMPUTER_BIN': '/opt/vm2api/approved/kin-computer', 'KIN_AUTO_SYNC_WRAP': '0', 'PATH': '/restricted:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         }
         env_file = root / 'runtime.env'
         fd = os.open(env_file, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as handle:
             handle.write(''.join(key + '=' + value + '\n' for key, value in env.items()))
         args = ['run', '--detach', '--name', record['container_name'], '--label', OWNER + '=' + record['id'], '--restart', 'unless-stopped', '--init', '--network', 'host', '--memory', self.config.get('memory', '512m'), '--cpus', str(self.config.get('cpus', 1)), '--pids-limit', '256', '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '--cap-add', 'NET_ADMIN', '--cap-add', 'NET_RAW', '--env-file', str(env_file)]
-        for source, destination in [('data', '/opt/vm2api/data'), ('vms', '/opt/vm2api/vms'), ('bin', '/opt/vm2api/bin'), ('share', '/opt/vm2api/share'), ('config', '/opt/vm2api/src/config'), ('restricted', '/restricted:ro')]:
+        for source, destination in [('data', '/opt/vm2api/data'), ('vms', '/opt/vm2api/vms'), ('bin', '/opt/vm2api/bin'), ('share', '/opt/vm2api/share'), ('config', '/opt/vm2api/src/config'), ('restricted', '/restricted:ro'), ('approved', '/opt/vm2api/approved:ro')]:
             args += ['--volume', str(root / source) + ':' + destination]
         args += ['--volume', '/var/run/docker.sock:/var/run/docker.sock', record['image']]
         self.run(args)
 
-    def ensure_locked(self, ident):
-        self.directory(ident)
-        # Fail before allocation if artifacts were not delivered; never build.
+    def preflight(self):
+        result = {}
         for image in [self.config['image'], *self.config['slot_images']]:
             images = self.run(['image', 'inspect', image])
-            if not images or images[0].get('Architecture') != 'amd64' or images[0].get('Os') != 'linux':
+            if not images or images[0].get('Architecture') != 'amd64' or images[0].get('Os') != 'linux' or not IMAGE.fullmatch(images[0].get('Id', '')):
                 raise ManagerError('image_platform_mismatch')
+            if image != self.config['image']:
+                result[image] = images[0]['Id']
+        return result
+
+    def ensure_locked(self, ident):
+        self.directory(ident)
         try:
             record = self.read(ident)
         except ManagerError as error:
@@ -242,9 +250,15 @@ class InstanceManager:
             record = self.read(ident)
             state, child = self.owned(record), self.owned(record, child=True)
             child_name = 'kin-new-api-' + ident + '-isolated'
+            if action in ('stop', 'restart', 'rebuild') and state is not None:
+                self.run(['stop', record['container_name']])
+                child = self.owned(record, child=True)
             if action in ('stop', 'restart', 'rebuild') and child is not None:
                 self.run(['stop', child_name])
             if action == 'rebuild':
+                record['slot_images'] = self.preflight()
+                record['image'] = self.config['image']
+                self.write(ident, record)
                 if state is not None:
                     self.run(['rm', '-f', record['container_name']])
                 self.create(record)
@@ -271,10 +285,17 @@ class InstanceManager:
             # Validate both BEFORE touching either. Never remove an unrelated
             # container based only on its name or a stale database row.
             state, child = self.owned(record), self.owned(record, child=True)
+            if state is not None:
+                self.run(['stop', record['container_name']])
+            # With the controller stopped it cannot race deletion by starting
+            # another slot. Recheck after stopping to catch an in-flight create.
+            child = self.owned(record, child=True)
             if child is not None:
                 self.run(['rm', '-f', 'kin-new-api-' + ident + '-isolated'])
             if state is not None:
                 self.run(['rm', '-f', record['container_name']])
+            if self.owned(record) is not None or self.owned(record, child=True) is not None:
+                raise ManagerError('cleanup_incomplete')
             shutil.rmtree(self.directory(ident))
             return {'id': ident, 'status': 'deleted'}
 

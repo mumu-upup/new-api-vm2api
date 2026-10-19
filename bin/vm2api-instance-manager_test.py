@@ -21,7 +21,7 @@ class Docker:
     def __call__(self, args):
         self.calls.append(args)
         if args[:2] == ['image', 'inspect']:
-            return [{'Architecture': 'amd64', 'Os': 'linux'}]
+            return [{'Architecture': 'amd64', 'Os': 'linux', 'Id': 'sha256:' + 'a'*64}]
         if args[0] == 'inspect':
             if args[-1] not in self.containers:
                 raise manager.ManagerError('container_missing')
@@ -82,6 +82,8 @@ class ManagerTest(unittest.TestCase):
         self.assertTrue(pathlib.Path(a['data_directory']).exists())
         self.docker.fail_remove = False
         self.manager.delete('a'*32)
+        removal = [c for c in self.docker.calls if c[0] in ('stop', 'rm')]
+        self.assertEqual('stop', removal[0][0])
         self.assertFalse(pathlib.Path(a['data_directory']).exists())
         self.manager.delete('a'*32)
     def test_refuses_foreign_container_and_symlink(self):
@@ -157,5 +159,28 @@ class ManagerTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             worker.join()
+
+    def test_config_image_upgrade_keeps_status_and_rebuild_updates_image(self):
+        first = self.manager.ensure('a'*32)
+        changed = dict(self.config, image='sha256:' + 'b'*64)
+        upgraded = manager.InstanceManager(changed, self.docker)
+        self.assertEqual(first['image'], upgraded.status('a'*32)['image'])
+        self.assertEqual(changed['image'], upgraded.action('a'*32, 'rebuild')['image'])
+        self.assertEqual(first['management_key'], upgraded.ensure('a'*32)['management_key'])
+
+    def test_docker_guard_pins_images_and_caps_guest_resources(self):
+        guard_spec = importlib.util.spec_from_file_location('guard', pathlib.Path(__file__).with_name('vm2api-docker-guard.py'))
+        guard = importlib.util.module_from_spec(guard_spec)
+        guard_spec.loader.exec_module(guard)
+        pinned = {'slot:test': 'sha256:' + 'b'*64}
+        args = guard.guarded_arguments(['run', '--memory', '8g', '--cpus=0', 'slot:test'], pinned)
+        self.assertIn('--memory=512m', args)
+        self.assertIn('--cpus=1', args)
+        self.assertNotIn('8g', args)
+        self.assertNotIn('--cpus=0', args)
+        self.assertEqual('sha256:' + 'b'*64, args[-1])
+        self.assertEqual(['image', 'inspect', 'sha256:'+'b'*64], guard.guarded_arguments(['pull', 'slot:test'], pinned))
+        with self.assertRaises(ValueError): guard.guarded_arguments(['run', 'unapproved:latest'], pinned)
+        with self.assertRaises(ValueError): guard.guarded_arguments(['image', 'build', '.'], pinned)
 
 if __name__ == '__main__': unittest.main()
