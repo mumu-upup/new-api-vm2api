@@ -54,6 +54,8 @@ Review complete diff and fix findings. Sync current origin/main, test real DB ma
 - [x] Approved design and correct integration worktree identified; clean initial HEAD ee513c81c.
 - [x] origin/main fetched/integrated (already ancestor) at 32e587406c6ebe891f18ab9aeb2f4a1f6b7b9e14.
 - [x] Manager implementation: 14 tests; independent review clean; real amd64 Docker control + archlinux slot create, resource/image checks, stop/start/restart/rebuild persistence and deletion passed on local Colima.
-- [ ] Backend isolation and migration with DB matrix.
-- [ ] UI entry, monitoring, lifecycle and translations.
+- [x] Backend isolation and migration: SQLite 3.50.4, MySQL 8.4.11, PostgreSQL 16.15 with separate log DB, fresh and upgrade migration twice; focused controller/service/model/router regressions and go build passed. Review recovery and scheduling findings fixed.
+- [x] UI entry, monitoring, lifecycle and seven-language translations: 156 tests, scoped lint, typecheck, production build passed; independent final review clear.
 - [ ] Review, external build, branch push, production rollout and two-account verification.
+
+Release capacity: production 4 vCPU / 8 GB; initially two dedicated instances, control 0.5 CPU + 512 MiB and guest 1 CPU + 512 MiB each. Preserve existing pause policies and disable the emptied shared channel only after verifying both migrations.
