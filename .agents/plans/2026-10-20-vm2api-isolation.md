@@ -53,7 +53,7 @@ Review complete diff and fix findings. Sync current origin/main, test real DB ma
 ## Progress
 - [x] Approved design and correct integration worktree identified; clean initial HEAD ee513c81c.
 - [x] origin/main fetched/integrated (already ancestor) at 32e587406c6ebe891f18ab9aeb2f4a1f6b7b9e14.
-- [ ] Manager implementation and tests.
+- [x] Manager implementation: 14 tests; independent review clean; real amd64 Docker control + archlinux slot create, resource/image checks, stop/start/restart/rebuild persistence and deletion passed on local Colima.
 - [ ] Backend isolation and migration with DB matrix.
 - [ ] UI entry, monitoring, lifecycle and translations.
 - [ ] Review, external build, branch push, production rollout and two-account verification.
