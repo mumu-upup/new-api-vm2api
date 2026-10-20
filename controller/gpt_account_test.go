@@ -249,6 +249,31 @@ func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
 	}
 }
 
+func TestGPTAccountImportDefaultsToDirectWhenMultipleGatewaysHaveNoDefault(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountGateway{}))
+	for _, name := range []string{"Pool A", "Pool B"} {
+		require.NoError(t, model.DB.Create(&model.GPTAccountGateway{
+			Name: name, Provider: "vm2api", SecretID: name, SecretsCiphertext: "cipher",
+			Generation: 1,
+		}).Error)
+	}
+
+	gatewayID, err := model.ResolveGPTAccountDefaultGateway()
+	require.NoError(t, err)
+	assert.Nil(t, gatewayID)
+
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"direct-account","email":"direct@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("direct@example.com", "direct-account", "direct-subject"))
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	require.NoError(t, err)
+	assert.NotNil(t, account.ChannelID)
+	assert.Nil(t, account.GatewayID)
+	require.NoError(t, model.DB.Where("name = ?", "Pool B").Delete(&model.GPTAccountGateway{}).Error)
+	gatewayID, err = model.ResolveGPTAccountDefaultGateway()
+	require.NoError(t, err)
+	assert.Nil(t, gatewayID)
+}
+
 func TestGPTAccountDefaultModelsApplyToNewAccountsAndImports(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	common.OptionMapRWMutex.Lock()

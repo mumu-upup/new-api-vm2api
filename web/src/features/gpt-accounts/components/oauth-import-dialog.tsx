@@ -73,7 +73,7 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
           ...(!props.accountId && models.trim()
             ? { models: models.trim() }
             : {}),
-          ...(!props.accountId && gatewayId ? { gateway_id: gatewayId } : {}),
+          ...(!props.accountId ? { gateway_id: gatewayId } : {}),
         },
         signal
       )

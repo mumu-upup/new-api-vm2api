@@ -325,6 +325,7 @@ it('sends an explicit OAuth import group directly', async () => {
         oauth_json: '{"email":"import@example.com"}',
         group: 'premium',
         models: 'gpt-6-astra',
+        gateway_id: 0,
       },
       expect.anything()
     )
@@ -433,7 +434,7 @@ it('imports Codex OAuth JSON directly', async () => {
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/import-oauth',
-      { oauth_json: oauth },
+      { oauth_json: oauth, gateway_id: 0 },
       expect.objectContaining({
         singleUseAuthorization: true,
       })
