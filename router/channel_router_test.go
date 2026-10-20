@@ -24,6 +24,18 @@ func TestChannelDefaultBaseURLsRequireReadPermission(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
 }
 
+func TestChannelCreateRouteAcceptsWithoutTrailingSlash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.RedirectTrailingSlash = false
+	registerChannelRoutes(engine.Group("/api"))
+
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/channel", nil))
+
+	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
+}
+
 func TestChannelStatusRoutesUseExpectedPermissions(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodGet, "/priority/order", authz.ChannelRead, controller.GetChannelPriorityOrder)
 	assertChannelRoutePermission(t, http.MethodPost, "/priority/reorder", authz.ChannelWrite, controller.ReorderChannelPriority)
