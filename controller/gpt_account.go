@@ -248,6 +248,7 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		return
 	}
 	updates := make(map[string]string, 3)
+	defaultGatewayCleared := false
 	if input.DefaultGroup != nil {
 		group := strings.TrimSpace(*input.DefaultGroup)
 		if model.ValidateGPTAccountGroup(group) != nil || !ratio_setting.ContainsGroupRatio(group) {
@@ -281,9 +282,10 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 				gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 				return
 			}
+			defaultGatewayCleared = true
 		}
 	}
-	if len(updates) == 0 {
+	if len(updates) == 0 && !defaultGatewayCleared {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return
 	}

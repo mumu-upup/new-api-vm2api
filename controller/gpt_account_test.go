@@ -214,6 +214,18 @@ func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testi
 	require.Error(t, model.UpdateOptionsBulk(map[string]string{model.GPTAccountDefaultGroupKey: ""}))
 }
 
+func TestGPTAccountConfigCanClearDefaultGatewayAlone(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	require.NoError(t, model.DB.Create(&model.Option{Key: model.GPTAccountDefaultGatewayKey, Value: "1"}).Error)
+
+	response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_gateway_id":0}`, UpdateGPTAccountsConfig)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+
+	gatewayID, err := model.ResolveGPTAccountDefaultGateway()
+	require.NoError(t, err)
+	assert.Nil(t, gatewayID)
+}
+
 func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
 	identity := setupGPTAccountTest(t)
 	require.NoError(t, model.DB.AutoMigrate(&model.Option{}))
