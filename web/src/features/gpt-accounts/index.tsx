@@ -59,7 +59,7 @@ function GptAccountsPage(props: {
   const operation = useAccountOperation()
   const [totp, setTotp] = useState<{
     account: GptAccount
-    mode: 'save' | 'reveal'
+    mode: 'save' | 'reveal' | 'change'
   } | null>(null)
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 20 })
   const [editor, setEditor] = useState<GptAccount | 'create' | null>(null)
@@ -142,7 +142,7 @@ function GptAccountsPage(props: {
         account.status !== 'logging_in' &&
         config.data?.encryption_available
       ) {
-        setTotp({ account, mode: 'save' })
+        setTotp({ account, mode: 'change' })
       }
       return
     }
@@ -240,6 +240,7 @@ function GptAccountsPage(props: {
               >
                 <TabsList aria-label={t('GPT Accounts')}>
                   <TabsTrigger value='accounts'>{t('Accounts')}</TabsTrigger>
+                  <TabsTrigger value='vm2api'>{t('VM2API')}</TabsTrigger>
                   <TabsTrigger value='totp'>{t('2FA management')}</TabsTrigger>
                   {props.role === ROLE.SUPER_ADMIN && (
                     <TabsTrigger value='gateways'>{t('Gateways')}</TabsTrigger>
@@ -261,7 +262,19 @@ function GptAccountsPage(props: {
                       void action(account, kind)
                     }}
                   />
-                  <Vm2ApiPanel accounts={query.data?.items ?? []} />
+                </TabsContent>
+                <TabsContent value='vm2api' className='min-h-0 overflow-auto'>
+                  <Vm2ApiPanel
+                    accounts={query.data?.items ?? []}
+                    total={query.data?.total ?? 0}
+                    pagination={pagination}
+                    onPaginationChange={setPagination}
+                    queryScope={`${props.userId}:${props.role}:${props.sessionId ?? ''}`}
+                    pending={operation.pending}
+                    onDelete={(account) => {
+                      void action(account, 'delete')
+                    }}
+                  />
                 </TabsContent>
                 <TabsContent
                   value='totp'
@@ -339,6 +352,7 @@ function GptAccountsPage(props: {
         <AccountFormDialog
           defaultGroup={config.data?.default_group}
           defaultModels={config.data?.default_models}
+          defaultGatewayId={config.data?.default_gateway_id}
           account={editor === 'create' ? undefined : editor}
           onClose={() => setEditor(null)}
           onSaved={refresh}
@@ -361,6 +375,7 @@ function GptAccountsPage(props: {
         <OAuthImportDialog
           defaultGroup={config.data?.default_group}
           defaultModels={config.data?.default_models}
+          defaultGatewayId={config.data?.default_gateway_id}
           accountGroup={oauthImportAccount?.group}
           accountModels={oauthImportAccount?.models}
           accountId={oauthImportAccount?.id}
@@ -379,7 +394,8 @@ function GptAccountsPage(props: {
         }}
         title={t('Delete GPT account?')}
         desc={t(
-          'This deletes the stored account credentials. The associated channel is kept.'
+          'This deletes the stored credentials for {{name}} and any dedicated VM2API instance and its data. Direct channels are kept.',
+          { name: deleting?.name ?? '' }
         )}
         destructive
         isLoading={operation.pending}

@@ -23,14 +23,18 @@ func registerGPTAccountRoutes(api *gin.RouterGroup) {
 	// credential changes. These reads retain the parent API rate limiter.
 	handlePermissionRoute(group, http.MethodGet, "", authz.GPTAccountRead, controller.ListGPTAccounts)
 	handlePermissionRoute(group, http.MethodGet, "/config", authz.GPTAccountRead, controller.GPTAccountsConfig)
+	handlePermissionRoute(group, http.MethodGet, "/:id/vm2api/instance", authz.GPTAccountRead, controller.GetGPTAccountVM2APIInstance)
 	handlePermissionRoute(group, http.MethodGet, "/:id/vm2api", authz.GPTAccountRead, controller.GetGPTAccountVM2APIStatus)
 	handlePermissionRoute(group, http.MethodGet, "/:id/vm2api/logs", authz.GPTAccountRead, controller.ListGPTAccountVM2APILogs)
 	for _, route := range []permissionRoute{
+		{http.MethodPost, "/:id/vm2api/instance", authz.GPTAccountManage, controller.CreateGPTAccountVM2APIInstance},
+		{http.MethodPost, "/:id/vm2api/instance/:action", authz.GPTAccountManage, controller.ManageGPTAccountVM2APIInstance},
 		{http.MethodPost, "", authz.GPTAccountManage, controller.CreateGPTAccount},
 		{http.MethodPut, "/config", authz.GPTAccountManage, controller.UpdateGPTAccountsConfig},
 		{http.MethodPost, "/import-oauth", authz.GPTAccountManage, controller.ImportGPTAccountOAuth},
 		{http.MethodPut, "/:id", authz.GPTAccountManage, controller.UpdateGPTAccount},
 		{http.MethodPost, "/:id/totp", authz.GPTAccountManage, controller.UpdateGPTAccountTOTP},
+		{http.MethodPost, "/:id/totp/change", authz.GPTAccountManage, controller.ChangeGPTAccountTOTP},
 		{http.MethodPost, "/:id/totp/reveal", authz.GPTAccountManage, controller.RevealGPTAccountTOTP},
 		{http.MethodDelete, "/:id", authz.GPTAccountManage, controller.DeleteGPTAccount},
 		{http.MethodPost, "/:id/login", authz.GPTAccountManage, controller.LoginGPTAccount},

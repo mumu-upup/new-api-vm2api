@@ -71,9 +71,13 @@ export function AccountTotpTable(props: AccountTotpTableProps) {
         cell: ({ row }) => {
           if (!row.original.has_totp) return t('Not configured')
           const confirmed = row.original.totp_status === 'operator_confirmed'
+          const automated = row.original.totp_status === 'automated'
+          let label = t('Saved')
+          if (confirmed) label = t('Operator confirmed')
+          if (automated) label = t('Automatically changed')
           return (
             <StatusBadge
-              label={confirmed ? t('Operator confirmed') : t('Saved')}
+              label={label}
               variant='info'
               copyable={false}
             />

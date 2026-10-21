@@ -3,8 +3,9 @@ import { timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { validateLoginRequest, safeLoginResult, safeCheckResult } from './login.mjs'
+import { validateChangeRequest, safeChangeResult } from './change-2fa.mjs'
 
-export function createLoginServer({ token, login }) {
+export function createLoginServer({ token, login, change2FA }) {
   if (typeof token !== 'string' || token.length < 32 || /\s/.test(token)) throw new Error('invalid_worker_token')
   const expected = Buffer.from(`Bearer ${token}`)
   let busy = false
@@ -22,7 +23,7 @@ export function createLoginServer({ token, login }) {
       req.resume()
       return
     }
-    if (req.method !== 'POST' || !['/login', '/check', '/probe'].includes(req.url)) {
+    if (req.method !== 'POST' || !['/login', '/check', '/probe', '/change-2fa'].includes(req.url)) {
       res.writeHead(404).end('{"error_code":"not_found"}')
       req.resume()
       return
@@ -49,7 +50,8 @@ export function createLoginServer({ token, login }) {
         }
         chunks.push(chunk)
       }
-      payload = validateLoginRequest(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      const rawPayload = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      payload = req.url === '/change-2fa' ? validateChangeRequest(rawPayload) : validateLoginRequest(rawPayload)
     } catch {
       if (!res.headersSent) res.writeHead(400).end('{"error_code":"invalid_request"}')
       return
@@ -64,14 +66,22 @@ export function createLoginServer({ token, login }) {
     const deadline = setTimeout(() => abort.abort(), 165000)
     res.on('close', () => { if (!res.writableEnded) abort.abort() })
     try {
-      const checkOnly = req.url === '/check'
-      const probe = req.url === '/probe'
-      if (checkOnly || probe) payload.totp_provider = 'local'
-      if (probe) payload.workspace_preference = 'team_then_personal'
-      const result = await login(payload, abort.signal, {
-        checkOnly, probe, autoConsent: req.url === '/login', cleanupSessions: req.url === '/login',
-      })
-      const response = req.url === '/check' ? safeCheckResult(result, payload.state) : safeLoginResult(result, payload.state)
+      let response
+      if (req.url === '/change-2fa') {
+        const result = typeof change2FA === 'function'
+          ? await change2FA(payload, abort.signal)
+          : { status: 'failed', stage: 'primary', fallback_used: false, error_code: 'automation_unavailable' }
+        response = safeChangeResult(result)
+      } else {
+        const checkOnly = req.url === '/check'
+        const probe = req.url === '/probe'
+        if (checkOnly || probe) payload.totp_provider = 'local'
+        if (probe) payload.workspace_preference = 'team_then_personal'
+        const result = await login(payload, abort.signal, {
+          checkOnly, probe, autoConsent: req.url === '/login', cleanupSessions: req.url === '/login',
+        })
+        response = req.url === '/check' ? safeCheckResult(result, payload.state) : safeLoginResult(result, payload.state)
+      }
       res.end(JSON.stringify(response))
     } catch {
       res.end('{"status":"failed","error_code":"automation_unavailable"}')
@@ -79,6 +89,7 @@ export function createLoginServer({ token, login }) {
       clearTimeout(deadline)
       payload.password = ''
       payload.totp_secret = ''
+      payload.old_totp_secret = ''
       busy = false
     }
   })
@@ -93,7 +104,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   if (!tokenFile) throw new Error('worker_token_file_required')
   const token = (await readFile(tokenFile, 'utf8')).trim()
   const { browserLogin } = await import('./browser.mjs')
-  const server = createLoginServer({ token, login: browserLogin })
+  const { primaryBrowserChange, moyanovoBrowserChange } = await import('./change-2fa-browser.mjs')
+  const { changeTwoFactor } = await import('./change-2fa.mjs')
+  const server = createLoginServer({
+    token,
+    login: browserLogin,
+    change2FA: (input, signal) => changeTwoFactor(input, signal, {
+      primary: primaryBrowserChange,
+      fallback: moyanovoBrowserChange,
+    }),
+  })
   server.listen(Number(process.env.PORT || 8787), process.env.HOST || '127.0.0.1')
   process.on('SIGTERM', () => server.close(() => process.exit(0)))
 }

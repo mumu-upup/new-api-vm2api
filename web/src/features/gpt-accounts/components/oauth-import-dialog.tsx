@@ -17,6 +17,7 @@ import type { GptAccountGateway } from '../types'
 interface OAuthImportDialogProps {
   defaultGroup?: string
   defaultModels?: string
+  defaultGatewayId?: number
   accountGroup?: string
   accountModels?: string
   accountId?: number
@@ -44,7 +45,7 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
   const [oauthJSON, setOAuthJSON] = useState('')
   const [group, setGroup] = useState('')
   const [models, setModels] = useState('')
-  const [gatewayId, setGatewayId] = useState(0)
+  const [gatewayId, setGatewayId] = useState(props.defaultGatewayId ?? 0)
   const [validation, setValidation] = useState('')
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -143,8 +144,11 @@ export function OAuthImportDialog(props: OAuthImportDialogProps) {
               </NativeSelectOption>
               {(props.gateways ?? []).map((gateway) => {
                 let providerLabel = t('VM2API')
-                if (gateway.provider === 'cpa') providerLabel = 'CPA'
-                else if (gateway.provider === 'sub2api') providerLabel = 'Sub2API'
+                if (gateway.provider === 'cpa') {
+                  providerLabel = 'CPA'
+                } else if (gateway.provider === 'sub2api') {
+                  providerLabel = 'Sub2API'
+                }
                 return (
                   <NativeSelectOption key={gateway.id} value={gateway.id}>
                     {gateway.name} · {providerLabel}

@@ -50,16 +50,12 @@ func ResolveGPTAccountDefaultGateway() (*int, error) {
 			return nil, errors.New("invalid_gateway")
 		}
 		var gateway GPTAccountGateway
-		if DB.Where("id = ? AND provider = ?", id, "vm2api").First(&gateway).Error != nil {
+		if DB.Where("id = ? AND provider = ? AND managed_account_id IS NULL", id, "vm2api").First(&gateway).Error != nil {
 			return nil, errors.New("gateway_not_found")
 		}
 		return &id, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, err
-	}
-	var gateways []GPTAccountGateway
-	if err := DB.Where("provider = ?", "vm2api").Order("id ASC").Find(&gateways).Error; err != nil {
 		return nil, err
 	}
 	return nil, nil

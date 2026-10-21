@@ -216,6 +216,8 @@ func TestGPTAccountDefaultGroupConfigPersistsAndProtectsExistingRouting(t *testi
 
 func TestGPTAccountConfigCanClearDefaultGatewayAlone(t *testing.T) {
 	identity := setupGPTAccountTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.GPTAccountGateway{}))
+	require.NoError(t, model.DB.Create(&model.GPTAccountGateway{Name: "Configured", Provider: "vm2api", SecretID: "configured", Generation: 1}).Error)
 	require.NoError(t, model.DB.Create(&model.Option{Key: model.GPTAccountDefaultGatewayKey, Value: "1"}).Error)
 
 	response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPut, `{"default_gateway_id":0}`, UpdateGPTAccountsConfig)
@@ -224,6 +226,9 @@ func TestGPTAccountConfigCanClearDefaultGatewayAlone(t *testing.T) {
 	gatewayID, err := model.ResolveGPTAccountDefaultGateway()
 	require.NoError(t, err)
 	assert.Nil(t, gatewayID)
+	var count int64
+	require.NoError(t, model.DB.Model(&model.Option{}).Where(&model.Option{Key: model.GPTAccountDefaultGatewayKey}).Count(&count).Error)
+	assert.Zero(t, count)
 }
 
 func TestGPTAccountDefaultGroupAppliesToNewAccountsAndImports(t *testing.T) {
@@ -284,6 +289,23 @@ func TestGPTAccountImportDefaultsToDirectWhenMultipleGatewaysHaveNoDefault(t *te
 	gatewayID, err = model.ResolveGPTAccountDefaultGateway()
 	require.NoError(t, err)
 	assert.Nil(t, gatewayID)
+}
+
+func TestGPTAccountDirectOAuthReimportPreservesChannelWithExplicitDirectChoice(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"direct-account","email":"direct@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("direct@example.com", "direct-account", "direct-subject"))
+	directID := 0
+	input := service.GPTAccountOAuthImportInput{OAuthJSON: raw, GatewayID: &directID}
+	account, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, input)
+	require.NoError(t, err)
+	require.NotNil(t, account.ChannelID)
+	for _, accountID := range []int{0, account.ID} {
+		updated, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, accountID, input)
+		require.NoError(t, err)
+		assert.Equal(t, account.ID, updated.ID)
+		assert.Equal(t, account.ChannelID, updated.ChannelID)
+		assert.Nil(t, updated.GatewayID)
+	}
 }
 
 func TestGPTAccountDefaultModelsApplyToNewAccountsAndImports(t *testing.T) {
@@ -698,6 +720,53 @@ func TestGPTAccountWorkerReceivesTOTPSourceAndReturnsSpecificError(t *testing.T)
 		assert.Equal(t, "error", account.Status)
 		assert.Equal(t, "totp_provider_timeout", account.LastErrorCode)
 	}
+}
+
+func TestGPTAccountTOTPChangeUsesWorkerAndFencesPersistence(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	var changeCalls atomic.Int32
+	received := make(chan map[string]string, 1)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/change-2fa" {
+			changeCalls.Add(1)
+			var body map[string]string
+			if common.DecodeJson(r.Body, &body) != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			received <- body
+			_, _ = io.WriteString(w, `{"status":"success","stage":"fallback","fallback_used":true,"new_totp_secret":"MZXW6YTBON2GK3TB"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"failed","error_code":"automation_unavailable"}`)
+	}))
+	defer worker.Close()
+	tokenFile := filepath.Join(t.TempDir(), "worker-token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte(strings.Repeat("t", 32)), 0600))
+	t.Setenv("GPT_ACCOUNT_WORKER_URL", worker.URL)
+	t.Setenv("GPT_ACCOUNT_WORKER_TOKEN_FILE", tokenFile)
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Managed", Email: "owner@example.com", SecretID: "totp-change", Generation: 1, Status: "ready"}
+	require.NoError(t, service.EncryptGPTAccountSecrets(&account, service.GPTAccountSecrets{Password: "private-password", TOTPSecret: "JBSWY3DPEHPK3PXP"}))
+	require.NoError(t, model.DB.Create(&account).Error)
+	oldCiphertext := account.SecretsCiphertext
+	denied := gptAccountRequest(t, identity, common.RoleCommonUser, account.ID, http.MethodPost, `{}`, ChangeGPTAccountTOTP)
+	assert.Equal(t, http.StatusForbidden, denied.Code)
+	response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPost, `{}`, ChangeGPTAccountTOTP)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"stage":"fallback"`)
+	assert.NotContains(t, response.Body.String(), "MZXW6YTBON2GK3TB")
+	assert.Equal(t, int32(1), changeCalls.Load())
+	body := <-received
+	assert.Equal(t, "owner@example.com", body["email"])
+	assert.Equal(t, "private-password", body["password"])
+	assert.Equal(t, "JBSWY3DPEHPK3PXP", body["old_totp_secret"])
+	require.Eventually(t, func() bool {
+		return model.DB.First(&account, account.ID).Error == nil && account.TOTPVersion == 1 && account.TOTPStatus == "automated"
+	}, 3*time.Second, 10*time.Millisecond)
+	assert.NotEqual(t, oldCiphertext, account.SecretsCiphertext)
+	secrets, err := service.DecryptGPTAccountSecrets(&account)
+	require.NoError(t, err)
+	assert.Equal(t, "MZXW6YTBON2GK3TB", secrets.TOTPSecret)
 }
 
 func TestGPTAccountGatewayProofScopes(t *testing.T) {
@@ -1197,7 +1266,7 @@ func TestGPTAccountRefreshRespectsAttentionAndOwnerRevocation(t *testing.T) {
 func setupGPTAccountTest(t *testing.T) service.AuthIdentity {
 	t.Helper()
 	db := setupManageUserTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}, &model.Channel{}, &model.Ability{}, &model.Option{}))
+	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}, &model.GPTAccountVM2APIInstance{}, &model.Channel{}, &model.Ability{}, &model.Option{}))
 	require.NoError(t, db.AutoMigrate(&model.GPTAccount{}))
 	previousMaster, previousMemory := common.IsMasterNode, common.MemoryCacheEnabled
 	common.IsMasterNode, common.MemoryCacheEnabled = true, false

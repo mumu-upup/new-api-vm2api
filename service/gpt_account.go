@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"encoding/base32"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -34,6 +35,11 @@ const gptAccountRetryCooldownSeconds = 900
 type GPTAccountAuthorization struct {
 	AuthorizationURL string `json:"authorization_url"`
 	ExpiresAt        int64  `json:"expires_at"`
+}
+
+type GPTAccountTOTPChangeResult struct {
+	Stage        string `json:"stage"`
+	FallbackUsed bool   `json:"fallback_used"`
 }
 
 type gptAccountOAuthFlow struct {
@@ -69,6 +75,13 @@ func gptWorkerConfiguration() (string, string, error) {
 
 func GPTAccountAutomationAvailable() bool { _, _, err := gptWorkerConfiguration(); return err == nil }
 
+func normalizeGPTAccountTOTPChangeSecret(value string) (string, bool) {
+	value = strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(value), " ", ""))
+	seed, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.TrimRight(value, "="))
+	canonical := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(seed)
+	return strings.TrimRight(value, "="), err == nil && len(seed) >= 10 && len(value) <= 128 && canonical == strings.TrimRight(value, "=")
+}
+
 func AcquireGPTAccountJob(accountID int, automatic bool) (*model.GPTAccount, error) {
 	return acquireGPTAccountJob(accountID, automatic, automatic, gptAccountJobLeaseSeconds)
 }
@@ -76,7 +89,7 @@ func AcquireGPTAccountJob(accountID int, automatic bool) (*model.GPTAccount, err
 func acquireGPTAccountJob(accountID int, automatic, requireAutoRelogin bool, leaseSeconds int64) (*model.GPTAccount, error) {
 	now := time.Now().Unix()
 	lease := uuid.NewString()
-	query := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND lease_until <= ?", accountID, now)
+	query := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND lease_until <= ? AND status <> ?", accountID, now, "pending_cleanup")
 	if automatic {
 		query = query.Where("next_retry_at <= ? AND failure_count < ? AND status NOT IN ?", now, 3, []string{"needs_attention", "logging_in"})
 	}
@@ -115,7 +128,7 @@ func releaseGPTAccountJob(account *model.GPTAccount, code string, countFailure b
 		switch code {
 		case "needs_attention", "identity_mismatch", "identity_verification_failed", "credentials_required", "automation_unavailable", "encryption_unavailable", "account_changed", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback", "authorization_invalid", "authorization_forbidden":
 			status = "needs_attention"
-		case "login_navigation_blocked", "login_screen_unrecognized", "totp_secret_required", "totp_provider_invalid_response", "invalid_totp_code":
+		case "login_navigation_blocked", "login_screen_unrecognized", "totp_secret_required", "totp_provider_invalid_response", "invalid_totp_code", "security_flow_unavailable", "replacement_unverified", "replacement_invalid":
 			status = "needs_attention"
 		case "session_cleanup_unverified", "session_cleanup_failed", "session_cleanup_unsupported":
 			status = "needs_attention"
@@ -210,6 +223,9 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 			ReleaseGPTAccountJob(&account, resultErr.Error())
 		} else {
 			ReleaseGPTAccountJob(&account, "")
+			if GPTAccountVM2APIIsolationEnabled() && account.GatewayID != nil {
+				StartGPTAccountVM2APIInstanceJob(account.ID)
+			}
 		}
 	}()
 	if identity.SessionID != "" {
@@ -329,6 +345,104 @@ func StartGPTAccountLogin(accountID int, identity AuthIdentity, automatic bool) 
 	}
 	go runGPTAccountLogin(account, identity, false)
 	return nil
+}
+
+// ChangeGPTAccountTOTP runs the worker's bounded rotation flow and persists a
+// replacement only after the worker has verified it. The old ciphertext stays
+// untouched whenever the worker, validation, or fencing check fails.
+func ChangeGPTAccountTOTP(ctx context.Context, accountID int, identity AuthIdentity) (*GPTAccountTOTPChangeResult, error) {
+	if !GPTAccountAutomationAvailable() {
+		return nil, errors.New("automation_unavailable")
+	}
+	account, err := acquireGPTAccountJob(accountID, false, false, gptAccountBrowserLeaseSeconds)
+	if err != nil {
+		return nil, err
+	}
+	resultErr := func(code string) (*GPTAccountTOTPChangeResult, error) {
+		ReleaseGPTAccountJob(account, code)
+		return nil, errors.New(code)
+	}
+	secrets, err := DecryptGPTAccountSecrets(account)
+	if err != nil {
+		return resultErr("encryption_unavailable")
+	}
+	if secrets.Password == "" || secrets.TOTPSecret == "" {
+		return resultErr("credentials_required")
+	}
+	workerURL, token, err := gptWorkerConfiguration()
+	if err != nil {
+		return resultErr("automation_unavailable")
+	}
+	body, err := common.Marshal(map[string]string{
+		"email": account.Email, "password": secrets.Password, "old_totp_secret": secrets.TOTPSecret,
+	})
+	if err != nil {
+		return resultErr("authorization_failed")
+	}
+	endpoint := strings.TrimSuffix(workerURL, "/login") + "/change-2fa"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return resultErr("automation_unavailable")
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, TLSHandshakeTimeout: 10 * time.Second}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 180 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		return resultErr("worker_unavailable")
+	}
+	defer response.Body.Close()
+	var workerResult struct {
+		Status        string `json:"status"`
+		Stage         string `json:"stage"`
+		FallbackUsed  bool   `json:"fallback_used"`
+		NewTOTPSecret string `json:"new_totp_secret"`
+		ErrorCode     string `json:"error_code"`
+	}
+	if response.StatusCode == http.StatusTooManyRequests {
+		return resultErr("worker_busy")
+	}
+	if response.StatusCode != http.StatusOK || common.DecodeJson(io.LimitReader(response.Body, 32<<10), &workerResult) != nil {
+		return resultErr("worker_unavailable")
+	}
+	if workerResult.Status != "success" {
+		code := GPTAccountErrorCode(errors.New(workerResult.ErrorCode))
+		if code == "operation_failed" {
+			code = "needs_attention"
+		}
+		return resultErr(code)
+	}
+	secret, valid := normalizeGPTAccountTOTPChangeSecret(workerResult.NewTOTPSecret)
+	if !valid || workerResult.Stage != "primary" && workerResult.Stage != "fallback" {
+		return resultErr("authorization_invalid")
+	}
+	if workerResult.Stage == "fallback" && !workerResult.FallbackUsed {
+		return resultErr("authorization_invalid")
+	}
+	secrets.TOTPSecret = secret
+	if err := EncryptGPTAccountSecrets(account, *secrets); err != nil {
+		return resultErr("encryption_unavailable")
+	}
+	now := time.Now().Unix()
+	version := account.TOTPVersion + 1
+	updated := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND owner_id = ? AND generation = ? AND lease_id = ?", account.ID, account.OwnerID, account.Generation, account.LeaseID).Updates(map[string]any{
+		"secrets_ciphertext": account.SecretsCiphertext, "has_totp": true,
+		"totp_version": version, "totp_updated_at": now, "totp_status": "automated",
+		"generation": account.Generation + 1, "lease_id": "", "lease_until": 0,
+		"failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": now,
+	})
+	if updated.Error != nil || updated.RowsAffected != 1 {
+		ReleaseGPTAccountJob(account, "account_changed")
+		return nil, errors.New("account_changed")
+	}
+	// The rotation flow already verifies the replacement. Run one normal login
+	// afterwards so the account's OAuth credential and device cleanup are
+	// refreshed under the same session rules as every other login.
+	_ = StartGPTAccountLogin(account.ID, identity, false)
+	model.RecordAuditLog(nil, model.AuditLog{UserId: account.OwnerID, ActorRole: account.OwnerRole, Category: model.AuditCategorySecurity, Action: "gpt_account.totp.change", Content: "GPT account TOTP changed", Success: true, Other: model.AuditOther{Op: &model.AuditOperation{Action: "gpt_account.totp.change", Params: model.AuditFields{"account_id": account.ID, "totp_version": version, "stage": workerResult.Stage, "fallback_used": workerResult.FallbackUsed}}}})
+	return &GPTAccountTOTPChangeResult{Stage: workerResult.Stage, FallbackUsed: workerResult.FallbackUsed}, nil
 }
 
 func runGPTAccountLogin(account *model.GPTAccount, identity AuthIdentity, refreshFirst bool) {
@@ -464,6 +578,7 @@ func ScheduleGPTAccountRecovery(channelID int, failedKey string) bool {
 // ScheduleGPTAccountRecoveries resumes transient recovery failures after the
 // persisted cooldown. Browser jobs that were abandoned require manual action.
 func ScheduleGPTAccountRecoveries() {
+	ScheduleGPTAccountVM2APIInstances()
 	now := time.Now().Unix()
 	var accounts []model.GPTAccount
 	if model.DB.Where("auto_relogin = ? AND status = ? AND failure_count < ? AND lease_until <= ? AND next_retry_at <= ?", true, "error", 3, now, now).Order("next_retry_at ASC, id ASC").Limit(100).Find(&accounts).Error != nil {
@@ -542,11 +657,13 @@ func GPTAccountErrorCode(err error) string {
 		return ""
 	}
 	switch err.Error() {
+	case "instance_unavailable", "instance_invalid_response", "instance_capacity_exhausted", "instance_not_found", "instance_not_running", "instance_not_ready", "instance_migration_failed", "instance_source_not_paused":
+		return err.Error()
 	case "invalid_gateway", "gateway_keys_required", "gateway_not_found", "gateway_required", "gateway_immutable", "gateway_unavailable", "gateway_import_failed", "gateway_import_uncertain", "gateway_remote_conflict", "gateway_remote_missing", "gateway_credentials_required", "gateway_channel_json_invalid", "gateway_channel_provider_required", "gateway_channel_url_required", "gateway_channel_url_invalid", "gateway_channel_key_required", "gateway_channel_key_invalid", "gateway_channel_models_invalid", "gateway_channel_create_failed":
 		return err.Error()
-	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code", "workspace_selection_required", "session_cleanup_unverified", "session_cleanup_failed", "session_cleanup_unsupported":
+	case "login_navigation_blocked", "login_navigation_failed", "email_submission_failed", "password_submission_failed", "totp_submission_failed", "email_step_timeout", "password_step_timeout", "totp_step_timeout", "login_screen_unrecognized", "totp_secret_required", "totp_provider_unavailable", "totp_provider_timeout", "totp_provider_invalid_response", "invalid_totp_code", "workspace_selection_required", "session_cleanup_unverified", "session_cleanup_failed", "session_cleanup_unsupported", "security_flow_unavailable", "replacement_unverified", "replacement_invalid":
 		return err.Error()
-	case "", "encryption_unavailable", "automation_unavailable", "account_busy", "account_changed", "authorization_invalid", "authorization_failed", "identity_verification_failed", "identity_mismatch", "credentials_required", "worker_unavailable", "worker_busy", "needs_attention", "refresh_failed", "channel_required", "authorization_forbidden", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback":
+	case "", "encryption_unavailable", "automation_unavailable", "account_busy", "account_changed", "authorization_invalid", "authorization_failed", "identity_verification_failed", "identity_mismatch", "credentials_required", "worker_unavailable", "worker_busy", "needs_attention", "refresh_failed", "channel_required", "authorization_forbidden", "captcha_required", "email_verification_required", "consent_required", "additional_verification_required", "invalid_credentials", "account_unavailable", "account_disabled", "login_timeout", "invalid_callback", "change_timeout":
 		return err.Error()
 	case "oauth_import_invalid", "account_not_found", "account_conflict":
 		return err.Error()

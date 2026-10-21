@@ -6,6 +6,40 @@ export function getAccountErrorMessage(
   fallback?: string
 ): string {
   switch (code) {
+    case 'instance_unavailable':
+      return t('The instance manager is unavailable. Try again later.')
+    case 'instance_invalid_response':
+      return t(
+        'The instance manager returned an invalid response. Retry synchronization.'
+      )
+    case 'instance_capacity_exhausted':
+      return t(
+        'Instance capacity is full. Contact the administrator or try again later.'
+      )
+    case 'instance_not_found':
+      return t(
+        'The instance was not found. Retry synchronization to restore it.'
+      )
+    case 'instance_not_running':
+      return t('The instance is stopped. Start it before retrying.')
+    case 'instance_not_ready':
+      return t(
+        'The instance is not ready. Wait for synchronization and try again.'
+      )
+    case 'instance_migration_failed':
+      return t('Account migration failed. Retry synchronization.')
+    case 'instance_source_not_paused':
+      return t(
+        'The shared slot could not be paused. Retry migration before using the dedicated instance.'
+      )
+
+    case 'gateway_import_uncertain':
+      return t(
+        'Gateway import could not be confirmed. Synchronize the gateway before signing in again.'
+      )
+    case 'gateway_unavailable':
+    case 'gateway_import_failed':
+      return t('Gateway synchronization failed')
     case 'job_active':
       return t(
         'An account check is already running. Cancel it or wait for it to finish.'
@@ -26,6 +60,7 @@ export function getAccountErrorMessage(
       )
     case 'automation_unavailable':
     case 'worker_unavailable':
+    case 'security_flow_unavailable':
       return t(
         'Automatic sign-in is unavailable. Use browser sign-in to authorize an account.'
       )
@@ -124,6 +159,11 @@ export function getAccountErrorMessage(
       return t('No TOTP secret is stored for this account.')
     case 'invalid_totp_secret':
       return t('Enter a Base32 TOTP secret')
+    case 'replacement_unverified':
+    case 'replacement_invalid':
+      return t('The operation failed. Try again.')
+    case 'change_timeout':
+      return t('Sign-in timed out. Try again.')
     case 'invalid_channel':
       return t('Choose a Codex channel with a single credential.')
     case 'gateway_channel_json_invalid':

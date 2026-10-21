@@ -24,6 +24,25 @@ func TestChannelDefaultBaseURLsRequireReadPermission(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, recorder.Code)
 }
 
+func TestChannelCreateRoutesAcceptBothPathsWithoutRedirect(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	engine.RedirectTrailingSlash = false
+	registerChannelRoutes(engine.Group("/api"))
+
+	for _, path := range []string{"", "/"} {
+		t.Run("/api/channel"+path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/api/channel"+path, nil))
+
+			require.Equal(t, http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+			assert.Contains(t, recorder.Body.String(), "AUTH_UNAUTHORIZED")
+			assert.Empty(t, recorder.Header().Get("Location"))
+			assertChannelRoutePermission(t, http.MethodPost, path, authz.ChannelSensitiveWrite, controller.AddChannel)
+		})
+	}
+}
+
 func TestChannelStatusRoutesUseExpectedPermissions(t *testing.T) {
 	assertChannelRoutePermission(t, http.MethodGet, "/priority/order", authz.ChannelRead, controller.GetChannelPriorityOrder)
 	assertChannelRoutePermission(t, http.MethodPost, "/priority/reorder", authz.ChannelWrite, controller.ReorderChannelPriority)

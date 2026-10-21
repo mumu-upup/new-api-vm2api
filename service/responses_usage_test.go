@@ -78,7 +78,7 @@ func TestResponsesUsageAccumulatorObservesTopLevelEventModel(t *testing.T) {
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mapped"},
 	}
 	accumulator := NewResponsesUsageAccumulator(info)
-	accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.created", Model: "returned"})
+	accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.created", Model: "returned"}, nil)
 
 	require.NotNil(t, info.ResponseModel)
 	assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
