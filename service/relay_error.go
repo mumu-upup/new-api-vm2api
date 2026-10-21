@@ -21,6 +21,9 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
 	}
+	if c != nil && c.Request != nil && c.Request.Context().Err() != nil {
+		return PolicyDecision{Action: "stop", Reason: "request_canceled", Source: "client"}
+	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
 		if source == "" {
@@ -60,13 +63,31 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 	return DecideRelayRetry(c, openaiErr, retryTimes).Action == "retry"
 }
 
+func isCanceledRelayTransportError(c *gin.Context, err *types.NewAPIError) bool {
+	if c == nil || c.Request == nil || c.Request.Context().Err() == nil || err == nil {
+		return false
+	}
+	switch err.GetErrorCode() {
+	case types.ErrorCodeDoRequestFailed, types.ErrorCodeReadResponseBodyFailed, types.ErrorCodeBadResponseBody:
+		return true
+	default:
+		return false
+	}
+}
+
+// ShouldDisableChannelForRequest excludes canceled transport and body reads.
+// Completed upstream rejections retain their normal channel-health policy.
+func ShouldDisableChannelForRequest(c *gin.Context, err *types.NewAPIError) bool {
+	return !isCanceledRelayTransportError(c, err) && ShouldDisableChannel(err)
+}
+
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	if err == nil {
 		return
 	}
 	upstreamURLs := common.UpstreamAddresses(c)
 	logger.LogError(c, common.LogText("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode(upstreamURLs...))))
-	if ShouldDisableChannel(err) && channelError.AutoBan && c.GetInt("gpt_account_recovery_channel_id") != channelError.ChannelId {
+	if ShouldDisableChannelForRequest(c, err) && channelError.AutoBan && c.GetInt("gpt_account_recovery_channel_id") != channelError.ChannelId {
 		reason := err.MaskSensitiveErrorWithStatusCode(upstreamURLs...)
 		gopool.Go(func() {
 			DisableChannel(channelError, reason)

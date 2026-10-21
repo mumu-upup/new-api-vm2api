@@ -101,6 +101,13 @@ func RecordPolicyFailure(c *gin.Context, channelID int, err *types.NewAPIError, 
 	if c == nil || err == nil {
 		return
 	}
+	if isCanceledRelayTransportError(c, err) {
+		RequestPolicy(c).AddEvent(PolicyEvent{
+			ChannelID: channelID, Status: err.StatusCode, ErrorCode: string(err.GetErrorCode()), ErrorSource: "client",
+			Decision: PolicyDecision{Action: "stop", Reason: "request_canceled", Source: "client"}, Health: "unchanged",
+		})
+		return
+	}
 	source := "upstream"
 	switch {
 	case types.IsChannelError(err):
@@ -117,7 +124,7 @@ func RecordPolicyFailure(c *gin.Context, channelID int, err *types.NewAPIError, 
 	}
 	state.AddEvent(event)
 	event.Decision, event.Health = decision, "unchanged"
-	if source != "local" && c.GetBool("auto_ban") && ShouldDisableChannel(err) {
+	if source != "local" && c.GetBool("auto_ban") && ShouldDisableChannelForRequest(c, err) {
 		event.Health = "channel_disable_requested"
 		if common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey) {
 			event.Health = "key_disable_requested"
