@@ -1184,19 +1184,22 @@ func isolatedVM2APIManagerFixture(t *testing.T) *isolatedVM2APIFixture {
 
 func TestVM2APIInstanceRestoresOnlyInitialCredentialPause(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		reason          string
-		manual          bool
-		wrongIdentity   bool
-		wrongAfterStart bool
-		failedReadback  bool
-		stillPaused     bool
-		wantError       string
-		wantStarts      int
-		wantSchedulable bool
+		name             string
+		reason           string
+		manual           bool
+		nonRunningStatus string
+		wrongIdentity    bool
+		wrongAfterStart  bool
+		failedReadback   bool
+		stillPaused      bool
+		wantError        string
+		wantStarts       int
+		wantSchedulable  bool
 	}{
 		{name: "initial import and reconciliation", reason: "no_credential", wantStarts: 1, wantSchedulable: true},
 		{name: "manual credential pause", reason: "no_credential", manual: true},
+		{name: "manual paused runtime", reason: "disabled", manual: true, nonRunningStatus: "paused", wantError: "instance_not_running"},
+		{name: "manual stopped runtime", reason: "stopped", manual: true, nonRunningStatus: "stopped", wantError: "instance_not_running"},
 		{name: "explicit pause", reason: "disabled"},
 		{name: "proxy failure", reason: "proxy_required"},
 		{name: "foreign imported identity", reason: "no_credential", wrongIdentity: true, wantError: "gateway_import_uncertain"},
@@ -1210,6 +1213,9 @@ func TestVM2APIInstanceRestoresOnlyInitialCredentialPause(t *testing.T) {
 			fixture.importVMHook = func(slot map[string]any) {
 				slot["schedule_disabled_reason"] = tc.reason
 				slot["schedule_manual"] = tc.manual
+				if tc.nonRunningStatus != "" {
+					slot["status"] = tc.nonRunningStatus
+				}
 				if tc.wrongIdentity {
 					slot["email"] = "another-account@example.com"
 				}
@@ -1231,6 +1237,10 @@ func TestVM2APIInstanceRestoresOnlyInitialCredentialPause(t *testing.T) {
 			require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
 			service.ReleaseGPTAccountJob(snapshot, "")
 			err = service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID)
+			if tc.nonRunningStatus != "" {
+				require.EqualError(t, err, "gateway_import_uncertain")
+				err = service.SyncGPTAccountGateway(context.Background(), snapshot.ID)
+			}
 			if tc.wantError == "" {
 				require.NoError(t, err)
 			} else {
@@ -1251,6 +1261,9 @@ func TestVM2APIInstanceRestoresOnlyInitialCredentialPause(t *testing.T) {
 			assert.Equal(t, tc.wantSchedulable, fixture.slots[instance.InstanceID]["schedulable"])
 			assert.Equal(t, tc.manual, fixture.slots[instance.InstanceID]["schedule_manual"])
 			assert.Equal(t, 1, fixture.imports)
+			if tc.nonRunningStatus != "" {
+				assert.Equal(t, tc.nonRunningStatus, fixture.slots[instance.InstanceID]["status"])
+			}
 			if tc.name == "initial import and reconciliation" {
 				fixture.slots[instance.InstanceID]["schedulable"] = false
 				fixture.slots[instance.InstanceID]["schedule_disabled_reason"] = "no_credential"

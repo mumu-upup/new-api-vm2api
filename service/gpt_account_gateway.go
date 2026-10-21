@@ -1218,6 +1218,9 @@ func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAcco
 		if (existing.Data.VM.HasToken || existing.Data.VM.HasRefresh) && !ownedVM2APIIdentity(existing.Data.VM, vmID, client.account) {
 			return errors.New("gateway_remote_conflict")
 		}
+		if !existing.Data.VM.Schedulable && existing.Data.VM.ScheduleManual {
+			return errors.New("instance_not_running")
+		}
 		existing, err = client.startVM2APISlot(ctx, vmID)
 		if err != nil {
 			return err
