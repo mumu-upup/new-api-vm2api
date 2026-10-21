@@ -27,6 +27,20 @@ export type PricingVendor = {
   description?: string
 }
 
+export type PricingCatalogVendor = {
+  vendor_id: number
+  name: string
+  icon?: string
+  description?: string
+  region: 'domestic' | 'international'
+  groups: {
+    name: string
+    description: string
+    ratio: number
+    model_count: number
+  }[]
+}
+
 export type BillingUsageUnit = 'second' | 'count' | 'token' | 'credit'
 
 export type BillingUsageFieldSchema = {
@@ -127,7 +141,8 @@ export type PricingData = {
   data: PricingModel[]
   vendors: PricingVendor[]
   group_ratio: Record<string, number>
-  usable_group: Record<string, { desc: string; ratio: number }>
+  usable_group: Record<string, string>
+  catalog?: PricingCatalogVendor[]
   supported_endpoint: Record<string, string>
   auto_groups: string[]
 }

@@ -31,11 +31,12 @@ import {
   type ViewMode,
 } from '../constants'
 import { filterAndSortModels, extractAllTags } from '../lib/filters'
-import type { PricingModel, TokenUnit } from '../types'
+import type { PricingCatalogVendor, PricingModel, TokenUnit } from '../types'
 
 type FilterState = {
   search?: string
   sort?: string
+  region?: string
   vendor?: string
   group?: string
   quotaType?: string
@@ -53,7 +54,12 @@ function normalizeViewMode(value: unknown): ViewMode {
   return VIEW_MODES.CARD
 }
 
-export function useFilters(models: PricingModel[]) {
+const EMPTY_CATALOG: PricingCatalogVendor[] = []
+
+export function useFilters(
+  models: PricingModel[],
+  catalog: PricingCatalogVendor[] = EMPTY_CATALOG
+) {
   const search = useSearch({ from: '/pricing/' })
   const [filterState, setFilterState] = useState<FilterState>(() => ({
     search: search.search,
@@ -71,6 +77,7 @@ export function useFilters(models: PricingModel[]) {
   const searchInput = filterState.search || ''
   const debouncedSearchInput = useDebounce(searchInput, 200)
   const sortBy = filterState.sort || SORT_OPTIONS.NAME
+  const regionFilter = filterState.region || FILTER_ALL
   const vendorFilter = filterState.vendor || FILTER_ALL
   const groupFilter = filterState.group || FILTER_ALL
   const quotaTypeFilter = filterState.quotaType || QUOTA_TYPES.ALL
@@ -102,13 +109,52 @@ export function useFilters(models: PricingModel[]) {
       updateFilters({ sort: v === SORT_OPTIONS.NAME ? undefined : v }),
     [updateFilters]
   )
+  const setRegionFilter = useCallback(
+    (region: string) => {
+      const vendor = catalog.find((entry) => entry.name === vendorFilter)
+      const compatible =
+        region === FILTER_ALL || (vendor?.region ?? 'other') === region
+      updateFilters({
+        region: region === FILTER_ALL ? undefined : region,
+        vendor: compatible ? filterState.vendor : undefined,
+        group: compatible ? filterState.group : undefined,
+      })
+    },
+    [
+      catalog,
+      vendorFilter,
+      filterState.vendor,
+      filterState.group,
+      updateFilters,
+    ]
+  )
   const setVendorFilter = useCallback(
-    (v: string) => updateFilters({ vendor: v === FILTER_ALL ? undefined : v }),
-    [updateFilters]
+    (vendor: string) => {
+      const entry = catalog.find((item) => item.name === vendor)
+      updateFilters({
+        vendor: vendor === FILTER_ALL ? undefined : vendor,
+        region:
+          vendor === FILTER_ALL || catalog.length === 0
+            ? filterState.region
+            : (entry?.region ?? 'other'),
+        group: undefined,
+      })
+    },
+    [catalog, filterState.region, updateFilters]
   )
   const setGroupFilter = useCallback(
-    (v: string) => updateFilters({ group: v === FILTER_ALL ? undefined : v }),
-    [updateFilters]
+    (group: string, vendor?: string) => {
+      const parent = catalog.find(
+        (entry) =>
+          entry.name === (vendor ?? vendorFilter) &&
+          entry.groups.some((item) => item.name === group)
+      )
+      updateFilters({
+        group: group === FILTER_ALL ? undefined : group,
+        ...(vendor ? { vendor, region: parent?.region ?? 'other' } : {}),
+      })
+    },
+    [catalog, vendorFilter, updateFilters]
   )
   const setQuotaTypeFilter = useCallback(
     (v: string) =>
@@ -149,7 +195,18 @@ export function useFilters(models: PricingModel[]) {
   const filteredModels = useMemo(() => {
     if (!models || models.length === 0) return []
 
-    return filterAndSortModels(models, {
+    const regionModels =
+      regionFilter === FILTER_ALL
+        ? models
+        : models.filter((model) => {
+            const vendor = catalog.find(
+              (entry) =>
+                entry.vendor_id === model.vendor_id ||
+                entry.name === model.vendor_name
+            )
+            return (vendor?.region ?? 'other') === regionFilter
+          })
+    return filterAndSortModels(regionModels, {
       search: debouncedSearchInput,
       vendor: vendorFilter,
       group: groupFilter,
@@ -160,6 +217,8 @@ export function useFilters(models: PricingModel[]) {
     })
   }, [
     models,
+    catalog,
+    regionFilter,
     debouncedSearchInput,
     vendorFilter,
     groupFilter,
@@ -171,26 +230,43 @@ export function useFilters(models: PricingModel[]) {
 
   const hasActiveFilters = useMemo(
     () =>
+      regionFilter !== FILTER_ALL ||
       vendorFilter !== FILTER_ALL ||
       groupFilter !== FILTER_ALL ||
       quotaTypeFilter !== QUOTA_TYPES.ALL ||
       endpointTypeFilter !== ENDPOINT_TYPES.ALL ||
       tagFilter !== FILTER_ALL,
-    [vendorFilter, groupFilter, quotaTypeFilter, endpointTypeFilter, tagFilter]
+    [
+      regionFilter,
+      vendorFilter,
+      groupFilter,
+      quotaTypeFilter,
+      endpointTypeFilter,
+      tagFilter,
+    ]
   )
 
   const activeFilterCount = useMemo(
     () =>
+      (regionFilter !== FILTER_ALL ? 1 : 0) +
       (vendorFilter !== FILTER_ALL ? 1 : 0) +
       (groupFilter !== FILTER_ALL ? 1 : 0) +
       (quotaTypeFilter !== QUOTA_TYPES.ALL ? 1 : 0) +
       (endpointTypeFilter !== ENDPOINT_TYPES.ALL ? 1 : 0) +
       (tagFilter !== FILTER_ALL ? 1 : 0),
-    [vendorFilter, groupFilter, quotaTypeFilter, endpointTypeFilter, tagFilter]
+    [
+      regionFilter,
+      vendorFilter,
+      groupFilter,
+      quotaTypeFilter,
+      endpointTypeFilter,
+      tagFilter,
+    ]
   )
 
   const clearFilters = useCallback(() => {
     updateFilters({
+      region: undefined,
       vendor: undefined,
       group: undefined,
       quotaType: undefined,
@@ -206,6 +282,7 @@ export function useFilters(models: PricingModel[]) {
   return {
     searchInput,
     sortBy,
+    regionFilter,
     vendorFilter,
     groupFilter,
     quotaTypeFilter,
@@ -216,6 +293,7 @@ export function useFilters(models: PricingModel[]) {
     showRechargePrice,
     setSearchInput,
     setSortBy,
+    setRegionFilter,
     setVendorFilter,
     setGroupFilter,
     setQuotaTypeFilter,

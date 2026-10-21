@@ -23,6 +23,7 @@ import { ClaudeSettingsCard } from './claude-settings-card'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
 import { GrokSettingsCard } from './grok-settings-card'
+import { MarketplaceSettingsSection } from './marketplace-settings-section'
 
 function formatJsonForEditor(value: string, fallback: string) {
   const raw = (value ?? '').toString().trim()
@@ -35,6 +36,16 @@ function formatJsonForEditor(value: string, fallback: string) {
 }
 
 const MODELS_SECTIONS = [
+  {
+    id: 'marketplace',
+    titleKey: 'Model Marketplace',
+    build: (settings: ModelSettings) => (
+      <MarketplaceSettingsSection
+        catalog={settings['marketplace_setting.catalog']}
+        groupRatio={settings.GroupRatio}
+      />
+    ),
+  },
   {
     id: 'global',
     titleKey: 'Global Model Configuration',

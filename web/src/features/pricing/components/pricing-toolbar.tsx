@@ -46,7 +46,12 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 
 import { getSortLabels, type SortOption, type ViewMode } from '../constants'
-import type { PricingModel, PricingVendor, TokenUnit } from '../types'
+import type {
+  PricingCatalogVendor,
+  PricingModel,
+  PricingVendor,
+  TokenUnit,
+} from '../types'
 import { PricingSidebar } from './pricing-sidebar'
 
 export interface PricingToolbarProps {
@@ -60,6 +65,9 @@ export interface PricingToolbarProps {
   onRechargePriceChange: (value: boolean) => void
   viewMode: ViewMode
   onViewModeChange: (value: ViewMode) => void
+  catalog?: PricingCatalogVendor[]
+  regionFilter?: string
+  onRegionChange?: (value: string) => void
   quotaTypeFilter: string
   endpointTypeFilter: string
   vendorFilter: string
@@ -68,7 +76,7 @@ export interface PricingToolbarProps {
   onQuotaTypeChange: (value: string) => void
   onEndpointTypeChange: (value: string) => void
   onVendorChange: (value: string) => void
-  onGroupChange: (value: string) => void
+  onGroupChange: (value: string, vendor?: string) => void
   onTagChange: (value: string) => void
   vendors: PricingVendor[]
   groups: string[]
@@ -204,6 +212,9 @@ export function PricingToolbar(props: PricingToolbarProps) {
           </SheetHeader>
           <div className={sideDrawerFormClassName('gap-0')}>
             <PricingSidebar
+              catalog={props.catalog}
+              regionFilter={props.regionFilter}
+              onRegionChange={props.onRegionChange}
               quotaTypeFilter={props.quotaTypeFilter}
               endpointTypeFilter={props.endpointTypeFilter}
               vendorFilter={props.vendorFilter}

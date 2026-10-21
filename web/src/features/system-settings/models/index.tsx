@@ -25,6 +25,7 @@ import {
 } from './section-registry.tsx'
 
 const defaultModelSettings: ModelSettings = {
+  'marketplace_setting.catalog': '{"version":1,"vendors":[]}',
   'global.pass_through_request_enabled': false,
   'global.thinking_model_blacklist': '[]',
   'global.chat_completions_to_responses_policy': '{}',
