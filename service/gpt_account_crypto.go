@@ -14,13 +14,14 @@ import (
 )
 
 type GPTAccountSecrets struct {
-	Password               string         `json:"password"`
-	TOTPSecret             string         `json:"totp_secret"`
-	TOTPProvider           string         `json:"totp_provider,omitempty"`
-	GatewayOAuth           *CodexOAuthKey `json:"gateway_oauth,omitempty"`
-	GatewayRemoteID        string         `json:"gateway_remote_id,omitempty"`
-	GatewayImportID        string         `json:"gateway_import_id,omitempty"`
-	GatewayImportAttempted bool           `json:"gateway_import_attempted,omitempty"`
+	Password                     string         `json:"password"`
+	TOTPSecret                   string         `json:"totp_secret"`
+	TOTPProvider                 string         `json:"totp_provider,omitempty"`
+	GatewayOAuth                 *CodexOAuthKey `json:"gateway_oauth,omitempty"`
+	GatewayRemoteID              string         `json:"gateway_remote_id,omitempty"`
+	GatewayImportID              string         `json:"gateway_import_id,omitempty"`
+	GatewayImportAttempted       bool           `json:"gateway_import_attempted,omitempty"`
+	GatewayCredentialReplacement bool           `json:"gateway_credential_replacement,omitempty"`
 }
 
 var ErrGPTAccountEncryption = errors.New("encryption_unavailable")

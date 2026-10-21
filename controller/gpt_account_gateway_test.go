@@ -1029,6 +1029,9 @@ type isolatedVM2APIFixture struct {
 	malformedDelete bool
 	ensures         int
 	imports         int
+	importStatus    int
+	importRejected  bool
+	credentials     map[string]map[string]any
 	packageImports  int
 	ensureHook      func()
 	importVMHook    func(map[string]any)
@@ -1037,7 +1040,7 @@ type isolatedVM2APIFixture struct {
 
 func isolatedVM2APIManagerFixture(t *testing.T) *isolatedVM2APIFixture {
 	t.Helper()
-	fixture := &isolatedVM2APIFixture{instances: map[string]string{}, states: map[string]string{}, slots: map[string]map[string]any{}}
+	fixture := &isolatedVM2APIFixture{instances: map[string]string{}, states: map[string]string{}, slots: map[string]map[string]any{}, credentials: map[string]map[string]any{}}
 	directory, err := os.MkdirTemp("/tmp", "vm2-test-")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.RemoveAll(directory) })
@@ -1133,14 +1136,25 @@ func isolatedVM2APIManagerFixture(t *testing.T) *isolatedVM2APIFixture {
 					fixture.imports++
 					var body map[string]any
 					require.NoError(t, common.DecodeJson(r.Body, &body))
+					assert.Equal(t, slotID, body["vm_id"])
 					var credential map[string]any
 					require.NoError(t, common.UnmarshalJsonStr(body["auth_json"].(string), &credential))
+					if fixture.importRejected {
+						w.WriteHeader(fixture.importStatus)
+						return
+					}
+					fixture.credentials[id] = credential
 					slot := fixture.slots[id]
 					slot["has_token"] = true
+					slot["has_refresh"] = true
 					slot["email"] = credential["email"]
-					slot["chatgpt_account_id"] = credential["chatgpt_account_id"]
+					slot["org_uuid"] = credential["chatgpt_account_id"]
 					if fixture.importVMHook != nil {
 						fixture.importVMHook(slot)
+					}
+					if fixture.importStatus != 0 {
+						w.WriteHeader(fixture.importStatus)
+						return
 					}
 					raw, _ := common.Marshal(map[string]any{"ok": true, "data": map[string]any{"vm": slot}})
 					_, _ = w.Write(raw)
@@ -1278,6 +1292,201 @@ func TestVM2APIInstanceRestoresOnlyInitialCredentialPause(t *testing.T) {
 				fixture.mu.Unlock()
 				require.NoError(t, model.DB.First(&channel, channel.Id).Error)
 				assert.Equal(t, common.ChannelStatusEnabled, channel.Status)
+			}
+		})
+	}
+}
+
+func TestVM2APIVerifiedCredentialsRecoverRejectedInitialImport(t *testing.T) {
+	identity := setupGPTAccountGatewayTest(t)
+	fixture := isolatedVM2APIManagerFixture(t)
+	template, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "template", Provider: "vm2api", ManagementURL: "https://shared.example", RelayURL: "https://shared.example", ManagementKey: "shared-management", RelayKey: "shared-relay", Group: "default", Models: "gpt-5"})
+	require.NoError(t, err)
+	snapshot, key := gatewayAccountFixture(t, identity, template, "initial-retry")
+	require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+	service.ReleaseGPTAccountJob(snapshot, "")
+	fixture.mu.Lock()
+	fixture.importStatus, fixture.importRejected = http.StatusBadRequest, true
+	fixture.mu.Unlock()
+	require.EqualError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID), "gateway_import_failed")
+	var instance model.GPTAccountVM2APIInstance
+	require.NoError(t, model.DB.First(&instance, "account_id = ?", snapshot.ID).Error)
+	fixture.mu.Lock()
+	assert.Equal(t, 1, fixture.imports)
+	assert.Equal(t, false, fixture.slots[instance.InstanceID]["has_token"])
+	fixture.importStatus, fixture.importRejected = 0, false
+	ensures := fixture.ensures
+	fixture.mu.Unlock()
+	key.AccessToken, key.RefreshToken, key.IDToken = "new-initial-access", "new-initial-refresh", "new-initial-id"
+	snapshot, err = service.AcquireGPTAccountJob(snapshot.ID, false)
+	require.NoError(t, err)
+	err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key)
+	service.ReleaseGPTAccountJob(snapshot, service.GPTAccountErrorCode(err))
+	require.NoError(t, err)
+	require.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+	fixture.mu.Lock()
+	assert.Equal(t, 2, fixture.imports)
+	assert.Equal(t, ensures, fixture.ensures)
+	assert.Equal(t, 1, fixture.guestStarts, "the first credential import must still recover initial scheduling")
+	assert.Equal(t, true, fixture.slots[instance.InstanceID]["schedulable"])
+	assert.Equal(t, key.RefreshToken, fixture.credentials[instance.InstanceID]["refresh_token"])
+	fixture.mu.Unlock()
+}
+
+func TestVM2APIReauthorizationReplacesOwnedCredentialsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		importStatus   int
+		importRejected bool
+		failedReadback bool
+		slotChanges    map[string]any
+		missingSlot    bool
+		channelPaused  bool
+		pauseOnImport  bool
+		expiredKey     bool
+		wantError      string
+		wantImports    int
+	}{
+		{name: "verified replacement", wantImports: 2},
+		{name: "manually enabled schedule", slotChanges: map[string]any{"schedulable": true, "schedule_manual": true}, wantImports: 2},
+		{name: "old credentials do not confirm failed replacement", importStatus: 503, importRejected: true, wantError: "gateway_import_uncertain", wantImports: 2},
+		{name: "lost replacement acknowledgement", importStatus: 503, wantError: "gateway_import_uncertain", wantImports: 2},
+		{name: "lost replacement readback", failedReadback: true, wantError: "gateway_import_uncertain", wantImports: 2},
+		{name: "completion checkpoint fails", pauseOnImport: true, wantError: "account_changed", wantImports: 2},
+		{name: "manual pause", slotChanges: map[string]any{"schedulable": false, "schedule_manual": true}, wantError: "instance_not_running", wantImports: 1},
+		{name: "manually stopped runtime", slotChanges: map[string]any{"status": "stopped", "schedulable": false, "schedule_manual": true}, wantError: "instance_not_running", wantImports: 1},
+		{name: "stopped runtime", slotChanges: map[string]any{"status": "stopped"}, wantError: "instance_not_running", wantImports: 1},
+		{name: "missing slot", missingSlot: true, wantError: "instance_not_ready", wantImports: 1},
+		{name: "foreign email", slotChanges: map[string]any{"email": "another@example.com"}, wantError: "gateway_remote_conflict", wantImports: 1},
+		{name: "foreign account", slotChanges: map[string]any{"org_uuid": "another-account"}, wantError: "gateway_remote_conflict", wantImports: 1},
+		{name: "foreign platform", slotChanges: map[string]any{"platform": "anthropic"}, wantError: "gateway_remote_conflict", wantImports: 1},
+		{name: "disabled channel", channelPaused: true, wantError: "instance_not_running", wantImports: 1},
+		{name: "expired verified key", expiredKey: true, wantError: "identity_mismatch", wantImports: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			identity := setupGPTAccountGatewayTest(t)
+			fixture := isolatedVM2APIManagerFixture(t)
+			template, err := service.SaveGPTAccountGateway(nil, service.GPTAccountGatewayInput{Name: "template", Provider: "vm2api", ManagementURL: "https://shared.example", RelayURL: "https://shared.example", ManagementKey: "shared-management", RelayKey: "shared-relay", Group: "default", Models: "gpt-5"})
+			require.NoError(t, err)
+			snapshot, key := gatewayAccountFixture(t, identity, template, "reauthorize")
+			require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+			service.ReleaseGPTAccountJob(snapshot, "")
+			require.NoError(t, service.EnsureGPTAccountVM2APIInstance(context.Background(), snapshot.ID))
+			var instance model.GPTAccountVM2APIInstance
+			require.NoError(t, model.DB.First(&instance, "account_id = ?", snapshot.ID).Error)
+			var gateway model.GPTAccountGateway
+			require.NoError(t, model.DB.First(&gateway, *instance.GatewayID).Error)
+			if tc.channelPaused {
+				require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", *gateway.ChannelID).Update("status", common.ChannelStatusManuallyDisabled).Error)
+			}
+			fixture.mu.Lock()
+			fixture.importStatus, fixture.importRejected = tc.importStatus, tc.importRejected
+			for field, value := range tc.slotChanges {
+				fixture.slots[instance.InstanceID][field] = value
+			}
+			if tc.missingSlot {
+				delete(fixture.slots, instance.InstanceID)
+			}
+			if tc.failedReadback {
+				fixture.importVMHook = func(map[string]any) { fixture.failNextVMRead = true }
+			}
+			if tc.pauseOnImport {
+				fixture.importVMHook = func(map[string]any) {
+					require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", *gateway.ChannelID).Update("status", common.ChannelStatusManuallyDisabled).Error)
+				}
+			}
+			ensures, starts := fixture.ensures, fixture.guestStarts
+			fixture.mu.Unlock()
+			key.AccessToken, key.RefreshToken, key.IDToken = "replacement-access", "replacement-refresh", "replacement-id"
+			if tc.expiredKey {
+				key.Expired = time.Now().Add(-time.Minute).Format(time.RFC3339)
+			}
+			snapshot, err = service.AcquireGPTAccountJob(snapshot.ID, false)
+			require.NoError(t, err)
+			err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key)
+			if tc.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.EqualError(t, err, tc.wantError)
+			}
+			service.ReleaseGPTAccountJob(snapshot, service.GPTAccountErrorCode(err))
+			fixture.mu.Lock()
+			assert.Equal(t, tc.wantImports, fixture.imports)
+			assert.Equal(t, ensures, fixture.ensures, "reauthorization must retain the existing runtime")
+			assert.Equal(t, starts, fixture.guestStarts, "reauthorization must not change power state")
+			for field, value := range tc.slotChanges {
+				assert.Equal(t, value, fixture.slots[instance.InstanceID][field])
+			}
+			if tc.missingSlot {
+				assert.Nil(t, fixture.slots[instance.InstanceID], "reauthorization must not recreate a missing slot")
+			}
+			fixture.importStatus, fixture.importRejected, fixture.importVMHook = 0, false, nil
+			fixture.mu.Unlock()
+			if tc.pauseOnImport {
+				require.NoError(t, model.DB.Model(&model.Channel{}).Where("id = ?", *gateway.ChannelID).Update("status", common.ChannelStatusEnabled).Error)
+			}
+			uncertain := tc.wantError == "gateway_import_uncertain" || tc.pauseOnImport
+			if uncertain {
+				require.EqualError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID), "gateway_import_uncertain")
+				var pending model.GPTAccount
+				require.NoError(t, model.DB.First(&pending, snapshot.ID).Error)
+				assert.Equal(t, "error", pending.GatewaySyncStatus)
+				secrets, err := service.DecryptGPTAccountSecrets(&pending)
+				require.NoError(t, err)
+				require.NotNil(t, secrets.GatewayOAuth)
+				assert.True(t, secrets.GatewayImportAttempted)
+				assert.True(t, secrets.GatewayCredentialReplacement)
+				fixture.mu.Lock()
+				assert.Equal(t, 2, fixture.imports, "ordinary sync must not replay an ambiguous replacement")
+				fixture.mu.Unlock()
+				changed := key
+				changed.AccessToken, changed.IDToken = "changed-access", "changed-id"
+				spaced := key
+				spaced.RefreshToken = " \t" + key.RefreshToken + "\r\n"
+				bom := key
+				bom.RefreshToken = "\ufeff" + key.RefreshToken + "\ufeff"
+				for _, duplicate := range []service.CodexOAuthKey{key, changed, spaced, bom} {
+					snapshot, err = service.AcquireGPTAccountJob(snapshot.ID, false)
+					require.NoError(t, err)
+					err = service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, duplicate)
+					require.EqualError(t, err, "gateway_import_uncertain", "the same pending refresh token must not reset an ambiguous write")
+					service.ReleaseGPTAccountJob(snapshot, service.GPTAccountErrorCode(err))
+				}
+				fixture.mu.Lock()
+				assert.Equal(t, 2, fixture.imports)
+				fixture.mu.Unlock()
+				// A new verified authorization is a distinct intent, not a retry of
+				// the old rotating refresh token whose write could have succeeded.
+				key.AccessToken, key.RefreshToken, key.IDToken = "new-authorization-access", "new-authorization-refresh", "new-authorization-id"
+				snapshot, err = service.AcquireGPTAccountJob(snapshot.ID, false)
+				require.NoError(t, err)
+				require.NoError(t, service.StoreVerifiedGPTAccountGatewayCredential(context.Background(), snapshot, key))
+				service.ReleaseGPTAccountJob(snapshot, "")
+			}
+			if tc.wantError == "" || uncertain {
+				require.NoError(t, service.SyncGPTAccountGateway(context.Background(), snapshot.ID))
+				fixture.mu.Lock()
+				wantImports := tc.wantImports
+				if tc.wantError != "" {
+					wantImports++
+				}
+				assert.Equal(t, wantImports, fixture.imports)
+				assert.Equal(t, key.AccessToken, fixture.credentials[instance.InstanceID]["access_token"])
+				assert.Equal(t, key.RefreshToken, fixture.credentials[instance.InstanceID]["refresh_token"])
+				fixture.mu.Unlock()
+				var account model.GPTAccount
+				require.NoError(t, model.DB.First(&account, snapshot.ID).Error)
+				assert.Equal(t, "synced", account.GatewaySyncStatus)
+				assert.Equal(t, instance.GatewayID, account.GatewayID)
+				secrets, err := service.DecryptGPTAccountSecrets(&account)
+				require.NoError(t, err)
+				assert.Nil(t, secrets.GatewayOAuth)
+				assert.False(t, secrets.GatewayImportAttempted)
+				assert.False(t, secrets.GatewayCredentialReplacement)
+				var retained model.GPTAccountVM2APIInstance
+				require.NoError(t, model.DB.First(&retained, "account_id = ?", account.ID).Error)
+				assert.Equal(t, instance.InstanceID, retained.InstanceID)
+				assert.Equal(t, instance.Port, retained.Port)
 			}
 		})
 	}
