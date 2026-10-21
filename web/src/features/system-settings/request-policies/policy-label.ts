@@ -9,6 +9,8 @@ export function policyLabel(t: TFunction, value: string): string {
       return t('Upstream request failed')
     case 'request_failed':
       return t('Request failed')
+    case 'request_canceled':
+      return t('Operation cancelled')
     case 'task_failed':
       return t('Task failed')
     case 'strict_session':
@@ -54,6 +56,8 @@ export function policyLabel(t: TFunction, value: string): string {
       return t('Channel selection')
     case 'upstream':
       return t('Upstream response')
+    case 'client':
+      return t('Client')
     case 'transport':
       return t('Upstream connection')
     case 'local':
