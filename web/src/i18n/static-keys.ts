@@ -45,6 +45,8 @@ export const STATIC_I18N_KEYS = [
   'Enter credentials only in these fields. Leave them blank to use browser sign-in.',
   'The authorization link is invalid or expired. Generate a new link.',
   'Paste the complete localhost callback URL containing code and state.',
+  'The adjusted price is outside the supported range.',
+  'This expression cannot be adjusted automatically. Keep the source price or edit it manually.',
   'Task usage metadata is unavailable. Pricing details cannot be displayed.',
   'This expression cannot be expanded into a price table. View the original expression below.',
   'This operation is only supported for vLLM or SGLang channels',
