@@ -219,7 +219,25 @@ export function ResponseModelDetails(props: {
   if (props.observation.declaration_source === 'upstream_header_and_body') {
     sourceLabel = t('Upstream response headers and body')
   }
-
+  const modelDetails = [
+    {
+      label: t('Request Model'),
+      value: props.observation.requested_model,
+      copyValue: props.observation.requested_model,
+    },
+    {
+      label: t('Upstream Model'),
+      value:
+        props.observation.upstream_model || props.observation.requested_model,
+      copyValue:
+        props.observation.upstream_model || props.observation.requested_model,
+    },
+    {
+      label: t('Response Model'),
+      value: props.observation.returned_model || t('Not reported'),
+      copyValue: props.observation.returned_model,
+    },
+  ]
   return (
     <div className='min-w-0 space-y-2'>
       <ResponseModelStatus observation={props.observation} />
@@ -234,23 +252,28 @@ export function ResponseModelDetails(props: {
           className='h-auto whitespace-normal'
         />
       )}
-      <DetailRow
-        label={t('Request Model')}
-        value={props.observation.requested_model}
-        mono
-      />
-      <DetailRow
-        label={t('Upstream Model')}
-        value={
-          props.observation.upstream_model || props.observation.requested_model
-        }
-        mono
-      />
-      <DetailRow
-        label={t('Response Model')}
-        value={props.observation.returned_model || t('Not reported')}
-        mono
-      />
+      {modelDetails.map((model) => (
+        <DetailRow
+          key={model.label}
+          label={model.label}
+          value={
+            <span className='inline-flex max-w-full items-start gap-1 align-top'>
+              <span className='min-w-0 leading-5 wrap-anywhere'>
+                {model.value}
+              </span>
+              {model.copyValue && (
+                <CopyButton
+                  value={model.copyValue}
+                  className='size-5'
+                  iconClassName='size-3'
+                  aria-label={t('Copy {{field}}', { field: model.label })}
+                />
+              )}
+            </span>
+          }
+          mono
+        />
+      ))}
       {props.observation.actual_model && (
         <DetailRow
           label={t('Upstream declared actual model')}
