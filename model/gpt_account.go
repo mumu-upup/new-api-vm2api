@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,11 +18,34 @@ import (
 var gptAccountDefaultModelPattern = regexp.MustCompile(`(?i)^gpt-([0-9]+)(?:\.([0-9]+))?(?:-[a-z0-9][a-z0-9.-]*)?$`)
 
 const (
+	GPTAccountProtocolCodex     = "codex"
+	GPTAccountProtocolExcelBPS  = "excel_bps"
 	GPTAccountDefaultGroupKey   = "GPTAccountDefaultGroup"
 	GPTAccountDefaultModelsKey  = "GPTAccountDefaultModels"
 	GPTAccountDefaultGatewayKey = "GPTAccountDefaultGateway"
 	GPTAccountDefaultModels     = "gpt-5.6"
 )
+
+func NormalizeGPTAccountProtocol(protocol string) string {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	if protocol == "" {
+		return GPTAccountProtocolCodex
+	}
+	return protocol
+}
+
+func ValidateGPTAccountProtocol(protocol string) error {
+	switch NormalizeGPTAccountProtocol(protocol) {
+	case GPTAccountProtocolCodex, GPTAccountProtocolExcelBPS:
+		return nil
+	default:
+		return errors.New("invalid_account")
+	}
+}
+
+func IsGPTAccountDirectChannelType(channelType int) bool {
+	return channelType == constant.ChannelTypeCodex || channelType == constant.ChannelTypeExcelBPS
+}
 
 func ValidateGPTAccountGroup(group string) error {
 	if strings.TrimSpace(group) == "" || len(group) > 64 || strings.ContainsAny(group, "\r\n\x00") {
@@ -172,6 +196,7 @@ type GPTAccount struct {
 	OwnerRole          int    `json:"-" gorm:"-"`
 	Name               string `json:"name" gorm:"type:varchar(128);not null"`
 	Email              string `json:"email" gorm:"type:varchar(254);not null;index"`
+	Protocol           string `json:"protocol" gorm:"type:varchar(32);not null;default:codex"`
 	ChannelID          *int   `json:"channel_id" gorm:"uniqueIndex"`
 	ChannelName        string `json:"channel_name" gorm:"-"`
 	GatewayID          *int   `json:"gateway_id" gorm:"index"`
@@ -227,6 +252,10 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 	if snapshot.GatewayID != nil {
 		return ErrGPTAccountStale
 	}
+	channelType := GPTAccountChannelType(snapshot.Protocol)
+	if channelType == 0 {
+		return ErrGPTAccountStale
+	}
 	return DB.Transaction(func(tx *gorm.DB) error {
 		var owner User
 		if err := lockForUpdate(tx).First(&owner, snapshot.OwnerID).Error; err != nil || owner.Status != common.UserStatusEnabled || owner.Role < common.RoleAdminUser {
@@ -236,7 +265,7 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 		if err := lockForUpdate(tx).First(&account, snapshot.ID).Error; err != nil {
 			return err
 		}
-		if account.GatewayID != nil || account.OwnerID != snapshot.OwnerID || account.Generation != snapshot.Generation || account.LeaseID != snapshot.LeaseID || account.LeaseUntil <= time.Now().Unix() || account.ChannelKeyHash != snapshot.ChannelKeyHash || (account.AccountID != "" && account.AccountID != externalAccountID) || (account.OAuthSubject != "" && account.OAuthSubject != snapshot.OAuthSubject) {
+		if NormalizeGPTAccountProtocol(account.Protocol) != NormalizeGPTAccountProtocol(snapshot.Protocol) || account.GatewayID != nil || account.OwnerID != snapshot.OwnerID || account.Generation != snapshot.Generation || account.LeaseID != snapshot.LeaseID || account.LeaseUntil <= time.Now().Unix() || account.ChannelKeyHash != snapshot.ChannelKeyHash || (account.AccountID != "" && account.AccountID != externalAccountID) || (account.OAuthSubject != "" && account.OAuthSubject != snapshot.OAuthSubject) {
 			return ErrGPTAccountStale
 		}
 		var channel Channel
@@ -244,7 +273,7 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 			if err := lockForUpdate(tx).First(&channel, *account.ChannelID).Error; err != nil {
 				return err
 			}
-			if channel.Type != constant.ChannelTypeCodex || channel.ChannelInfo.IsMultiKey || channel.Status == common.ChannelStatusManuallyDisabled || GPTChannelKeyHash(channel.Key) != snapshot.ChannelKeyHash {
+			if channel.Type != channelType || channel.ChannelInfo.IsMultiKey || channel.Status == common.ChannelStatusManuallyDisabled || GPTChannelKeyHash(channel.Key) != snapshot.ChannelKeyHash {
 				return ErrGPTAccountStale
 			}
 			updates := map[string]any{"key": key}
@@ -262,7 +291,7 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 				return err
 			}
 		} else {
-			channel = Channel{Type: constant.ChannelTypeCodex, Key: key, Name: account.Name, Status: common.ChannelStatusEnabled, Group: account.Group, Models: account.Models, CreatedTime: time.Now().Unix()}
+			channel = Channel{Type: channelType, Key: key, Name: account.Name, Status: common.ChannelStatusEnabled, Group: account.Group, Models: account.Models, CreatedTime: time.Now().Unix()}
 			if err := tx.Create(&channel).Error; err != nil {
 				return err
 			}
@@ -274,12 +303,27 @@ func StoreGPTAccountCredential(snapshot *GPTAccount, key, externalAccountID stri
 	})
 }
 
+func GPTAccountChannelType(protocol string) int {
+	switch NormalizeGPTAccountProtocol(protocol) {
+	case GPTAccountProtocolCodex:
+		return constant.ChannelTypeCodex
+	case GPTAccountProtocolExcelBPS:
+		return constant.ChannelTypeExcelBPS
+	default:
+		return 0
+	}
+}
+
 // CreateGPTAccountCredential atomically creates a new account and its Codex
 // channel. The owner row serializes same-owner imports so duplicate email
 // submissions cannot create a second account between lookup and insert.
 // If a matching account already exists, it is returned with created=false for
 // the caller to process through the normal fenced update path.
 func CreateGPTAccountCredential(account *GPTAccount, key, externalAccountID string) (*GPTAccount, bool, error) {
+	account.Protocol = NormalizeGPTAccountProtocol(account.Protocol)
+	if ValidateGPTAccountProtocol(account.Protocol) != nil || (account.Protocol == GPTAccountProtocolExcelBPS && account.GatewayID != nil) {
+		return nil, false, errors.New("invalid_account")
+	}
 	var result GPTAccount
 	created := false
 	var err error
@@ -295,6 +339,9 @@ func CreateGPTAccountCredential(account *GPTAccount, key, externalAccountID stri
 			if err := lockForUpdate(tx).Where("owner_id = ? AND email = ?", account.OwnerID, account.Email).Order("id ASC").Find(&matches).Error; err != nil {
 				return err
 			}
+			matches = slices.DeleteFunc(matches, func(match GPTAccount) bool {
+				return NormalizeGPTAccountProtocol(match.Protocol) != account.Protocol
+			})
 			for _, match := range matches {
 				if (match.AccountID != "" && match.AccountID == externalAccountID) || (match.OAuthSubject != "" && match.OAuthSubject == account.OAuthSubject) {
 					result = match
@@ -326,7 +373,7 @@ func CreateGPTAccountCredential(account *GPTAccount, key, externalAccountID stri
 				created = true
 				return nil
 			}
-			channel := Channel{Type: constant.ChannelTypeCodex, Key: key, Name: account.Name, Status: common.ChannelStatusEnabled, Group: account.Group, Models: account.Models, CreatedTime: time.Now().Unix()}
+			channel := Channel{Type: GPTAccountChannelType(account.Protocol), Key: key, Name: account.Name, Status: common.ChannelStatusEnabled, Group: account.Group, Models: account.Models, CreatedTime: time.Now().Unix()}
 			if err := tx.Create(&channel).Error; err != nil {
 				return err
 			}
@@ -378,7 +425,7 @@ func PauseGPTAccountChannel(snapshot *GPTAccount) error {
 			return err
 		}
 		ownPause := channel.Status == common.ChannelStatusAutoDisabled && channel.GetOtherInfo()["status_reason"] == GPTAccountRecoveryReason
-		if channel.Type != constant.ChannelTypeCodex || channel.ChannelInfo.IsMultiKey || (channel.Status != common.ChannelStatusEnabled && !ownPause) || GPTChannelKeyHash(channel.Key) != snapshot.ChannelKeyHash {
+		if channel.Type != GPTAccountChannelType(account.Protocol) || channel.ChannelInfo.IsMultiKey || (channel.Status != common.ChannelStatusEnabled && !ownPause) || GPTChannelKeyHash(channel.Key) != snapshot.ChannelKeyHash {
 			return ErrGPTAccountStale
 		}
 		channel.Status = common.ChannelStatusAutoDisabled

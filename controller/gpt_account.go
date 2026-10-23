@@ -22,6 +22,7 @@ import (
 type gptAccountInput struct {
 	Name         string  `json:"name"`
 	Email        string  `json:"email"`
+	Protocol     string  `json:"protocol"`
 	Password     string  `json:"password"`
 	TOTPSecret   string  `json:"totp_secret"`
 	TOTPProvider *string `json:"totp_provider"`
@@ -304,12 +305,23 @@ func normalizeGPTAccountInput(c *gin.Context, existing *model.GPTAccount) (*gptA
 	}
 	input.Name, input.Email, input.Group, input.Models = strings.TrimSpace(input.Name), strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Group), strings.TrimSpace(input.Models)
 	if existing != nil {
+		if strings.TrimSpace(input.Protocol) == "" {
+			input.Protocol = existing.Protocol
+		}
 		if input.Group == "" {
 			input.Group = existing.Group
 		}
 		if input.Models == "" {
 			input.Models = existing.Models
 		}
+	}
+	if input.GatewayID != nil && *input.GatewayID == 0 {
+		input.GatewayID = nil
+	}
+	input.Protocol = model.NormalizeGPTAccountProtocol(input.Protocol)
+	if model.ValidateGPTAccountProtocol(input.Protocol) != nil || (input.Protocol == model.GPTAccountProtocolExcelBPS && input.GatewayID != nil) {
+		gptAccountError(c, http.StatusBadRequest, "invalid_account")
+		return nil, false
 	}
 	var err error
 	input.Group, err = model.ResolveGPTAccountGroup(input.Group)
@@ -434,6 +446,10 @@ func RevealGPTAccountTOTP(c *gin.Context) {
 }
 
 func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptAccountInput) bool {
+	if account.ID > 0 && model.NormalizeGPTAccountProtocol(account.Protocol) != input.Protocol {
+		gptAccountError(c, http.StatusBadRequest, "protocol_immutable")
+		return false
+	}
 	if account.ChannelID != nil && (input.Group != account.Group || input.Models != account.Models) {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return false
@@ -448,7 +464,7 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 			return false
 		}
 		channel, err := model.GetChannelById(*input.ChannelID, true)
-		if err != nil || channel.Type != constant.ChannelTypeCodex || channel.ChannelInfo.IsMultiKey {
+		if err != nil || channel.Type != constant.ChannelTypeCodex || channel.ChannelInfo.IsMultiKey || input.Protocol != model.GPTAccountProtocolCodex {
 			gptAccountError(c, http.StatusBadRequest, "invalid_channel")
 			return false
 		}
@@ -489,9 +505,16 @@ func applyGPTAccountInput(c *gin.Context, account *model.GPTAccount, input *gptA
 		return false
 	}
 	account.Name, account.Email, account.Group, account.Models = input.Name, input.Email, input.Group, input.Models
-	if err := service.ApplyGPTAccountGateway(account, input.GatewayID); err != nil {
-		gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
+	account.Protocol = input.Protocol
+	if input.Protocol == model.GPTAccountProtocolExcelBPS && account.GatewayID != nil {
+		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return false
+	}
+	if input.Protocol == model.GPTAccountProtocolCodex {
+		if err := service.ApplyGPTAccountGateway(account, input.GatewayID); err != nil {
+			gptAccountError(c, http.StatusBadRequest, service.GPTAccountErrorCode(err))
+			return false
+		}
 	}
 	if input.AutoRelogin != nil {
 		account.AutoRelogin = *input.AutoRelogin
@@ -541,7 +564,7 @@ func UpdateGPTAccount(c *gin.Context) {
 	if !applyGPTAccountInput(c, account, input) {
 		return
 	}
-	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ? AND lease_until <= ?", account.ID, account.Generation, time.Now().Unix()).Updates(map[string]any{"name": account.Name, "email": account.Email, "account_group": account.Group, "models": account.Models, "auto_relogin": account.AutoRelogin, "channel_id": account.ChannelID, "channel_key_hash": account.ChannelKeyHash, "account_id": account.AccountID, "secrets_ciphertext": account.SecretsCiphertext, "has_password": account.HasPassword, "has_totp": account.HasTOTP, "totp_version": account.TOTPVersion, "totp_updated_at": account.TOTPUpdatedAt, "totp_status": account.TOTPStatus, "generation": account.Generation + 1, "lease_id": "", "lease_until": 0, "failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": time.Now().Unix()})
+	result := model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ? AND lease_until <= ?", account.ID, account.Generation, time.Now().Unix()).Updates(map[string]any{"name": account.Name, "email": account.Email, "protocol": account.Protocol, "account_group": account.Group, "models": account.Models, "auto_relogin": account.AutoRelogin, "channel_id": account.ChannelID, "channel_key_hash": account.ChannelKeyHash, "account_id": account.AccountID, "secrets_ciphertext": account.SecretsCiphertext, "has_password": account.HasPassword, "has_totp": account.HasTOTP, "totp_version": account.TOTPVersion, "totp_updated_at": account.TOTPUpdatedAt, "totp_status": account.TOTPStatus, "generation": account.Generation + 1, "lease_id": "", "lease_until": 0, "failure_count": 0, "next_retry_at": 0, "status": "pending", "last_error_code": "", "updated_at": time.Now().Unix()})
 	if result.Error != nil || result.RowsAffected != 1 {
 		gptAccountError(c, http.StatusConflict, "account_changed")
 		return

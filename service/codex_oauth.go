@@ -6,12 +6,15 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/coreos/go-oidc/v3/oidc"
 )
 
 const (
@@ -32,11 +35,19 @@ func RefreshCodexOAuthToken(ctx context.Context, refreshToken string) (*CodexOAu
 }
 
 func RefreshCodexOAuthTokenWithProxy(ctx context.Context, refreshToken string, proxyURL string) (*CodexOAuthTokenResult, error) {
+	return RefreshGPTAccountOAuthTokenWithProxy(ctx, model.GPTAccountProtocolCodex, refreshToken, proxyURL)
+}
+
+func RefreshGPTAccountOAuthTokenWithProxy(ctx context.Context, protocol, refreshToken, proxyURL string) (*CodexOAuthTokenResult, error) {
+	profile, err := oauthProfileForGPTAccountProtocol(protocol)
+	if err != nil {
+		return nil, err
+	}
 	client, err := getCodexOAuthHTTPClient(proxyURL)
 	if err != nil {
 		return nil, err
 	}
-	return refreshCodexOAuthToken(ctx, client, codexOAuthTokenURL, codexOAuthClientID, refreshToken)
+	return refreshCodexOAuthToken(ctx, client, profile.TokenURL, profile.ClientID, refreshToken)
 }
 
 func refreshCodexOAuthToken(
@@ -75,15 +86,19 @@ func refreshCodexOAuthToken(
 		ExpiresIn    int    `json:"expires_in"`
 	}
 
-	if err := common.DecodeJson(resp.Body, &payload); err != nil {
+	if err := common.DecodeJson(io.LimitReader(resp.Body, 128<<10), &payload); err != nil {
 		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("codex oauth refresh failed: status=%d", resp.StatusCode)
 	}
 
-	if strings.TrimSpace(payload.AccessToken) == "" || strings.TrimSpace(payload.RefreshToken) == "" || payload.ExpiresIn <= 0 {
+	if strings.TrimSpace(payload.AccessToken) == "" || payload.ExpiresIn <= 0 || payload.ExpiresIn > 366*24*3600 {
 		return nil, errors.New("codex oauth refresh response missing fields")
+	}
+
+	if strings.TrimSpace(payload.RefreshToken) == "" {
+		payload.RefreshToken = rt
 	}
 
 	return &CodexOAuthTokenResult{
@@ -185,4 +200,51 @@ func decodeJWTClaims(token string) (map[string]any, bool) {
 		return nil, false
 	}
 	return claims, true
+}
+
+// Excel identity claims are trusted only after issuer-key signature, API
+// audience, expiry and client binding verification, never after JWT decoding.
+type excelAccessIdentity struct {
+	AccountID string
+	Email     string
+	Subject   string
+}
+
+func verifyExcelAccessToken(ctx context.Context, client *http.Client, provider *oidc.Provider, token, subject string) (*excelAccessIdentity, error) {
+	var err error
+	oauthCtx := oidc.ClientContext(ctx, client)
+	if provider == nil {
+		provider, err = oidc.NewProvider(oauthCtx, "https://auth.openai.com")
+		if err != nil {
+			return nil, errors.New("identity_verification_failed")
+		}
+	}
+	verified, err := provider.Verifier(&oidc.Config{ClientID: "https://api.openai.com/v1", SupportedSigningAlgs: []string{oidc.RS256, oidc.ES256}}).Verify(oauthCtx, token)
+	if err != nil || verified.Subject == "" || len(verified.Subject) > 255 || (subject != "" && verified.Subject != subject) {
+		return nil, errors.New("identity_verification_failed")
+	}
+	var claims struct {
+		ClientID        string `json:"client_id"`
+		AuthorizedParty string `json:"azp"`
+		NotBefore       int64  `json:"nbf"`
+		Email           string `json:"email"`
+		EmailVerified   bool   `json:"email_verified"`
+		Auth            struct {
+			AccountID string `json:"chatgpt_account_id"`
+		} `json:"https://api.openai.com/auth"`
+		Profile struct {
+			Email         string `json:"email"`
+			EmailVerified bool   `json:"email_verified"`
+		} `json:"https://api.openai.com/profile"`
+	}
+	if verified.Claims(&claims) != nil || claims.NotBefore > time.Now().Unix() || (claims.ClientID == "" && claims.AuthorizedParty == "") || (claims.ClientID != "" && claims.ClientID != excelOAuthClientID) || (claims.AuthorizedParty != "" && claims.AuthorizedParty != excelOAuthClientID) {
+		return nil, errors.New("identity_verification_failed")
+	}
+	if claims.Email == "" {
+		claims.Email, claims.EmailVerified = claims.Profile.Email, claims.Profile.EmailVerified
+	}
+	if !claims.EmailVerified || strings.TrimSpace(claims.Email) == "" || strings.TrimSpace(claims.Auth.AccountID) == "" {
+		return nil, errors.New("identity_mismatch")
+	}
+	return &excelAccessIdentity{AccountID: claims.Auth.AccountID, Email: strings.TrimSpace(claims.Email), Subject: verified.Subject}, nil
 }

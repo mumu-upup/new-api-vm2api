@@ -42,3 +42,12 @@ describe('channel type options for task plugin bind', () => {
     ).toBe(true)
   })
 })
+
+test('identifies the Excel / BPS channel separately from Codex', () => {
+  expect(
+    CHANNEL_TYPE_OPTIONS.find((option) => option.value === 64)?.label
+  ).toBe('ChatGPT Subscription (Excel / BPS)')
+  expect(
+    CHANNEL_TYPE_OPTIONS.find((option) => option.value === 57)?.label
+  ).toBe('ChatGPT Subscription (Codex)')
+})

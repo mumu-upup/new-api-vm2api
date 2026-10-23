@@ -22,6 +22,7 @@ interface AccountLoginDialogProps {
 export function AccountLoginDialog(props: AccountLoginDialogProps) {
   const { t } = useTranslation()
   const operation = useAccountOperation()
+  const excelBps = props.account.protocol === 'excel_bps'
   const [authorization, setAuthorization] =
     useState<GptAccountAuthorization | null>(null)
   const [redirectUrl, setRedirectUrl] = useState('')
@@ -70,9 +71,14 @@ export function AccountLoginDialog(props: AccountLoginDialogProps) {
       const expectedState = new URL(
         authorization.authorization_url
       ).searchParams.get('state')
+      const callback = new URL(
+        excelBps
+          ? 'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback'
+          : 'http://localhost:1455/auth/callback'
+      )
       if (
-        url.origin !== 'http://localhost:1455' ||
-        url.pathname !== '/auth/callback' ||
+        url.origin !== callback.origin ||
+        url.pathname !== callback.pathname ||
         url.username ||
         url.password ||
         url.hash ||
@@ -86,7 +92,9 @@ export function AccountLoginDialog(props: AccountLoginDialogProps) {
       }
     } catch {
       setValidation(
-        'Paste the complete localhost callback URL containing code and state.'
+        excelBps
+          ? 'Paste the complete Excel / BPS callback URL containing code and state.'
+          : 'Paste the complete localhost callback URL containing code and state.'
       )
       return
     }
@@ -122,7 +130,9 @@ export function AccountLoginDialog(props: AccountLoginDialogProps) {
       <div className='space-y-4'>
         <p className='text-muted-foreground text-sm'>
           {t(
-            'Open the official sign-in page, complete any email verification, CAPTCHA or consent, then paste the final localhost URL here. Do not share it.'
+            excelBps
+              ? 'Open the official sign-in page, then paste the final Excel / BPS callback URL here. Do not share it.'
+              : 'Open the official sign-in page, complete any email verification, CAPTCHA or consent, then paste the final localhost URL here. Do not share it.'
           )}
         </p>
         {(validation || operation.error) && (

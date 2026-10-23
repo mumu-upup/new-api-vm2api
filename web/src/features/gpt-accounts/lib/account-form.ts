@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { accountGroupSchema } from './group-form'
 
 export const accountFormSchema = z.object({
+  protocol: z.enum(['codex', 'excel_bps']).optional(),
   name: z.string().trim().min(1, 'Name is required').max(128),
   email: z.email('Please enter a valid email address').trim().toLowerCase(),
   password: z

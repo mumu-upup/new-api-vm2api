@@ -912,7 +912,7 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 				require.NoError(t, db.AutoMigrate(&gptAccountBeforeTOTP{}))
 				legacy.ChannelID = &channel.Id
 				legacy.ChannelKeyHash = model.GPTChannelKeyHash(channel.Key)
-				require.NoError(t, db.Omit("totp_version", "totp_updated_at", "totp_status", "gateway_id", "gateway_sync_status", "gateway_error_code", "gateway_synced_at").Create(&legacy).Error)
+				require.NoError(t, db.Omit("protocol", "totp_version", "totp_updated_at", "totp_status", "gateway_id", "gateway_sync_status", "gateway_error_code", "gateway_synced_at").Create(&legacy).Error)
 			}
 			for range 2 {
 				require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.AuthFlow{}, &model.GPTAccount{}))
@@ -927,6 +927,7 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 				assert.Equal(t, "gpt-5", abilities[0].Model)
 				var migrated model.GPTAccount
 				require.NoError(t, db.First(&migrated, legacy.ID).Error)
+				legacy.Protocol = model.GPTAccountProtocolCodex
 				assert.Equal(t, legacy, migrated)
 				secrets, err := service.DecryptGPTAccountSecrets(&migrated)
 				require.NoError(t, err)
@@ -934,13 +935,14 @@ func TestGPTAccountSchemaFreshAndReleasedUpgrade(t *testing.T) {
 				assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
 			}
 			channelID := 123
-			account := model.GPTAccount{OwnerID: 1, Name: "Preserved account", SecretID: "cipher-binding", SecretsCiphertext: "persisted-ciphertext", Generation: 7, ChannelID: &channelID}
+			account := model.GPTAccount{OwnerID: 1, Name: "Preserved account", Protocol: model.GPTAccountProtocolExcelBPS, SecretID: "cipher-binding", SecretsCiphertext: "persisted-ciphertext", Generation: 7, ChannelID: &channelID}
 			require.NoError(t, db.Create(&account).Error)
 			for range 2 {
 				require.NoError(t, db.AutoMigrate(&model.GPTAccount{}))
 			}
 			var stored model.GPTAccount
 			require.NoError(t, db.First(&stored, account.ID).Error)
+			assert.Equal(t, model.GPTAccountProtocolExcelBPS, stored.Protocol)
 			assert.Equal(t, account.SecretsCiphertext, stored.SecretsCiphertext)
 			assert.Equal(t, account.Generation, stored.Generation)
 			assert.Equal(t, account.ChannelID, stored.ChannelID)
@@ -1353,6 +1355,30 @@ func TestGPTAccountOwnershipProofAndExpiredFlow(t *testing.T) {
 	var channelCount int64
 	require.NoError(t, model.DB.Model(&model.Channel{}).Count(&channelCount).Error)
 	assert.Zero(t, channelCount)
+}
+
+func TestGPTAccountExcelBPSAuthorizationUsesDedicatedOAuthProfile(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{
+		OwnerID:    identity.UserID,
+		Name:       "Excel account",
+		Email:      "excel@example.com",
+		Protocol:   model.GPTAccountProtocolExcelBPS,
+		SecretID:   "excel-profile",
+		Generation: 1,
+		Status:     "pending",
+	}
+	require.NoError(t, model.DB.Create(&account).Error)
+
+	authorization, err := service.StartGPTAccountAuthorization(account.ID, identity)
+	require.NoError(t, err)
+	u, err := url.Parse(authorization.AuthorizationURL)
+	require.NoError(t, err)
+	assert.Equal(t, "https", u.Scheme)
+	assert.Equal(t, "auth.openai.com", u.Host)
+	assert.Equal(t, "/api/accounts/authorize", u.Path)
+	assert.Equal(t, "app_fnr0pYvVwwFDocDumLG3H2Bp", u.Query().Get("client_id"))
+	assert.Equal(t, "https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback", u.Query().Get("redirect_uri"))
 }
 
 func gptAccountRequest(t *testing.T, identity service.AuthIdentity, role int, id int, method, body string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
@@ -1914,4 +1940,180 @@ func TestGPTAccountMutationsRejectInvalidDashboardSessions(t *testing.T) {
 	secrets, err := service.DecryptGPTAccountSecrets(&account)
 	require.NoError(t, err)
 	assert.Equal(t, "JBSWY3DPEHPK3PXP", secrets.TOTPSecret)
+}
+
+func TestGPTAccountExcelBPSInputAndRefresh(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	for _, gateway := range []string{"", `,"gateway_id":0`} {
+		body := `{"name":"Excel","email":"excel@example.com","protocol":"excel_bps","models":"gpt-5","group":"default"` + gateway + `}`
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		c.Request.Header.Set("Content-Type", "application/json")
+		input, ok := normalizeGPTAccountInput(c, nil)
+		require.True(t, ok, recorder.Body.String())
+		assert.Equal(t, model.GPTAccountProtocolExcelBPS, input.Protocol)
+		assert.Nil(t, input.GatewayID)
+	}
+	for _, body := range []string{
+		`{"name":"Excel","email":"excel@example.com","protocol":"excel_bps","gateway_id":1}`,
+	} {
+		response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, body, CreateGPTAccount)
+		assert.Equal(t, http.StatusBadRequest, response.Code)
+	}
+	client, err := service.GetHttpClientWithProxy("")
+	require.NoError(t, err)
+	previous := client.Transport
+	t.Cleanup(func() { client.Transport = previous })
+	client.Transport = gptOAuthTransport{roundTrip: func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path != "/oauth/token" {
+			return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		}
+		require.NoError(t, request.ParseForm())
+		assert.Equal(t, "app_fnr0pYvVwwFDocDumLG3H2Bp", request.Form.Get("client_id"))
+		assert.Equal(t, "true", request.URL.Query().Get("unified"))
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"access_token":"new-access","expires_in":3600}`))}, nil
+	}}
+	key := service.CodexOAuthKey{AccessToken: "old", RefreshToken: "keep-refresh", AccountID: "excel-account", Email: "excel@example.com", Type: "excel_bps"}
+	encoded, err := common.Marshal(key)
+	require.NoError(t, err)
+	channel := model.Channel{Type: model.GPTAccountChannelType(model.GPTAccountProtocolExcelBPS), Key: string(encoded), Name: "Excel", Status: common.ChannelStatusEnabled, Models: "gpt-5", Group: "default"}
+	require.NoError(t, model.DB.Create(&channel).Error)
+	// A malformed refreshed token must not be accepted as a verified Excel identity.
+	_, _, err = service.RefreshCodexChannelCredential(context.Background(), channel.Id, service.CodexCredentialRefreshOptions{})
+	require.Error(t, err)
+	require.NoError(t, model.DB.First(&channel, channel.Id).Error)
+	assert.Equal(t, string(encoded), channel.Key)
+}
+
+func TestGPTAccountExcelBPSVerifiedIdentityAndRefresh(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	response := gptAccountRequest(t, identity, common.RoleRootUser, 0, http.MethodPost, `{"name":"Excel","email":"excel@example.com","protocol":"excel_bps","gateway_id":0,"models":"gpt-5","group":"default"}`, CreateGPTAccount)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	var account model.GPTAccount
+	require.NoError(t, model.DB.First(&account).Error)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	client, err := service.GetHttpClientWithProxy("")
+	require.NoError(t, err)
+	previous := client.Transport
+	t.Cleanup(func() { client.Transport = previous })
+	var signedID, signedAccess string
+	var refresh bool
+	client.Transport = gptOAuthTransport{roundTrip: func(request *http.Request) (*http.Response, error) {
+		var payload any
+		switch request.URL.Path {
+		case "/oauth/token":
+			require.Equal(t, "true", request.URL.Query().Get("unified"))
+			require.NoError(t, request.ParseForm())
+			assert.Equal(t, "app_fnr0pYvVwwFDocDumLG3H2Bp", request.Form.Get("client_id"))
+			if refresh {
+				payload = map[string]any{"access_token": signedAccess, "expires_in": 3600}
+			} else {
+				payload = map[string]any{"id_token": signedID, "access_token": signedAccess, "refresh_token": "keep-refresh", "expires_in": 3600}
+			}
+		case "/.well-known/openid-configuration":
+			payload = map[string]any{"issuer": "https://auth.openai.com", "authorization_endpoint": "https://auth.openai.com/api/accounts/authorize", "token_endpoint": "https://auth.openai.com/oauth/token", "jwks_uri": "https://auth.openai.com/jwks", "id_token_signing_alg_values_supported": []string{"RS256"}}
+		case "/jwks":
+			payload = map[string]any{"keys": []any{map[string]any{"kty": "RSA", "kid": "excel-key", "use": "sig", "alg": "RS256", "n": base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(privateKey.E)).Bytes())}}}
+		default:
+			t.Fatalf("unexpected OAuth request path %s", request.URL.Path)
+		}
+		body, err := common.Marshal(payload)
+		require.NoError(t, err)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	}}
+	for _, scenario := range []string{"valid", "bad_signature", "bad_audience", "bad_client", "bad_subject", "expired", "future", "unverified_email", "wrong_account", "wrong_email"} {
+		t.Run(scenario, func(t *testing.T) {
+			authorization, err := service.StartGPTAccountAuthorization(account.ID, identity)
+			require.NoError(t, err)
+			authURL, err := url.Parse(authorization.AuthorizationURL)
+			require.NoError(t, err)
+			idClaims := jwt.MapClaims{"iss": "https://auth.openai.com", "aud": "app_fnr0pYvVwwFDocDumLG3H2Bp", "sub": "excel-user", "exp": time.Now().Add(time.Hour).Unix(), "nonce": authURL.Query().Get("nonce")}
+			idToken := jwt.NewWithClaims(jwt.SigningMethodRS256, idClaims)
+			idToken.Header["kid"] = "excel-key"
+			signedID, err = idToken.SignedString(privateKey)
+			require.NoError(t, err)
+			accessClaims := jwt.MapClaims{"iss": "https://auth.openai.com", "aud": "https://api.openai.com/v1", "client_id": "app_fnr0pYvVwwFDocDumLG3H2Bp", "sub": "excel-user", "exp": time.Now().Add(time.Hour).Unix(), "https://api.openai.com/auth": map[string]any{"chatgpt_account_id": "excel-account"}, "https://api.openai.com/profile": map[string]any{"email": "excel@example.com", "email_verified": true}}
+			switch scenario {
+			case "bad_audience":
+				accessClaims["aud"] = "other"
+			case "bad_client":
+				accessClaims["client_id"] = "other"
+			case "bad_subject":
+				accessClaims["sub"] = "other"
+			case "expired":
+				accessClaims["exp"] = time.Now().Add(-time.Hour).Unix()
+			case "future":
+				accessClaims["nbf"] = time.Now().Add(time.Hour).Unix()
+			case "unverified_email":
+				accessClaims["https://api.openai.com/profile"] = map[string]any{"email": "excel@example.com", "email_verified": false}
+			case "wrong_email":
+				accessClaims["https://api.openai.com/profile"] = map[string]any{"email": "other@example.com", "email_verified": true}
+			case "wrong_account":
+				accessClaims["https://api.openai.com/auth"] = map[string]any{"chatgpt_account_id": "other"}
+			}
+			accessToken := jwt.NewWithClaims(jwt.SigningMethodRS256, accessClaims)
+			accessToken.Header["kid"] = "excel-key"
+			signedAccess, err = accessToken.SignedString(privateKey)
+			require.NoError(t, err)
+			if scenario == "bad_signature" {
+				parts := strings.Split(signedAccess, ".")
+				parts[2] = "AAAA"
+				signedAccess = strings.Join(parts, ".")
+			}
+			callback := "https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback?" + url.Values{"state": {authURL.Query().Get("state")}, "code": {"fixture-code"}}.Encode()
+			err = service.FinishGPTAccountAuthorization(context.Background(), account.ID, identity, callback)
+			if scenario != "valid" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Error(t, service.FinishGPTAccountAuthorization(context.Background(), account.ID, identity, callback))
+			require.NoError(t, model.DB.First(&account, account.ID).Error)
+			require.NotNil(t, account.ChannelID)
+			var channel model.Channel
+			require.NoError(t, model.DB.First(&channel, *account.ChannelID).Error)
+			assert.Equal(t, model.GPTAccountChannelType("excel_bps"), channel.Type)
+			refresh = true
+			key, _, err := service.RefreshManagedGPTAccount(context.Background(), account.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "keep-refresh", key.RefreshToken)
+			assert.Equal(t, "excel_bps", key.Type)
+			refresh = false
+		})
+	}
+}
+
+func TestGPTAccountProtocolFencingAndImportIsolation(t *testing.T) {
+	identity := setupGPTAccountTest(t)
+	account := model.GPTAccount{OwnerID: identity.UserID, Name: "Excel", Email: "shared@example.com", Protocol: "excel_bps", SecretID: "excel-isolated", Generation: 1, Group: "default", Models: "gpt-5", Status: "pending"}
+	require.NoError(t, model.DB.Create(&account).Error)
+	job, err := service.AcquireGPTAccountJob(account.ID, false)
+	require.NoError(t, err)
+	require.NoError(t, model.DB.Model(&account).Update("protocol", "codex").Error)
+	assert.ErrorIs(t, model.StoreGPTAccountCredential(job, `{"type":"excel_bps","access_token":"never-store","account_id":"excel-account"}`, "excel-account"), model.ErrGPTAccountStale)
+	require.NoError(t, model.DB.Model(&account).Updates(map[string]any{"protocol": "excel_bps", "lease_id": "", "lease_until": 0, "status": "pending"}).Error)
+	raw := fmt.Sprintf(`{"access_token":"fixture-access","refresh_token":"fixture-refresh","id_token":%q,"account_id":"codex-account","email":"shared@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}`, testCodexOAuthIDToken("shared@example.com", "codex-account", "codex-subject"))
+	_, err = service.ImportGPTAccountOAuth(context.Background(), identity.UserID, account.ID, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	require.Error(t, err, "an explicit Codex import must reject an Excel account")
+	imported, err := service.ImportGPTAccountOAuth(context.Background(), identity.UserID, 0, service.GPTAccountOAuthImportInput{OAuthJSON: raw})
+	require.NoError(t, err)
+	assert.NotEqual(t, account.ID, imported.ID)
+	assert.Equal(t, model.GPTAccountProtocolCodex, model.NormalizeGPTAccountProtocol(imported.Protocol))
+	require.NoError(t, model.DB.First(&account, account.ID).Error)
+	assert.Nil(t, account.ChannelID)
+	assert.Equal(t, model.GPTAccountProtocolExcelBPS, account.Protocol)
+	for _, protocol := range []string{"unknown", "excel_bps"} {
+		invalid := model.GPTAccount{OwnerID: identity.UserID, Name: "Invalid", Email: "invalid@example.com", Protocol: protocol, SecretID: "invalid", Generation: 1, Group: "default", Models: "gpt-5"}
+		if protocol == "excel_bps" {
+			gateway := 123
+			invalid.GatewayID = &gateway
+		}
+		_, _, err := model.CreateGPTAccountCredential(&invalid, `{"type":"codex","access_token":"never-store"}`, "account")
+		assert.Error(t, err)
+	}
+	response := gptAccountRequest(t, identity, common.RoleRootUser, account.ID, http.MethodPut, `{"name":"Changed","email":"shared@example.com","protocol":"codex","group":"default","models":"gpt-5"}`, UpdateGPTAccount)
+	assert.Equal(t, http.StatusBadRequest, response.Code)
+	assert.Contains(t, response.Body.String(), "protocol_immutable")
 }

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service/authz"
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -25,8 +24,13 @@ import (
 	"gorm.io/gorm"
 )
 
-const gptOAuthRedirect = "http://localhost:1455/auth/callback"
 const gptOAuthPurpose = "gpt_account_oauth"
+const (
+	codexOAuthRedirect = "http://localhost:1455/auth/callback"
+	excelOAuthClientID = "app_fnr0pYvVwwFDocDumLG3H2Bp"
+	excelOAuthRedirect = "https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback"
+	gptOAuthRedirect   = codexOAuthRedirect
+)
 const gptAccountJobLeaseSeconds = 240
 const gptAccountBrowserLeaseSeconds = 600
 const gptAccountRetryCooldownSeconds = 900
@@ -44,6 +48,38 @@ type gptAccountOAuthFlow struct {
 	Identity       AuthIdentity `json:"identity"`
 	Verifier       string       `json:"verifier"`
 	Nonce          string       `json:"nonce"`
+	Protocol       string       `json:"protocol"`
+}
+
+type gptAccountOAuthProfile struct {
+	ClientID     string
+	RedirectURI  string
+	AuthorizeURL string
+	TokenURL     string
+	Scope        string
+}
+
+func oauthProfileForGPTAccountProtocol(protocol string) (gptAccountOAuthProfile, error) {
+	switch model.NormalizeGPTAccountProtocol(protocol) {
+	case model.GPTAccountProtocolCodex:
+		return gptAccountOAuthProfile{
+			ClientID:     codexOAuthClientID,
+			RedirectURI:  codexOAuthRedirect,
+			AuthorizeURL: "https://auth.openai.com/oauth/authorize",
+			TokenURL:     codexOAuthTokenURL,
+			Scope:        "openid profile email offline_access",
+		}, nil
+	case model.GPTAccountProtocolExcelBPS:
+		return gptAccountOAuthProfile{
+			ClientID:     excelOAuthClientID,
+			RedirectURI:  excelOAuthRedirect,
+			AuthorizeURL: "https://auth.openai.com/api/accounts/authorize",
+			TokenURL:     "https://auth.openai.com/oauth/token?unified=true",
+			Scope:        "openid offline_access email profile organization.read",
+		}, nil
+	default:
+		return gptAccountOAuthProfile{}, errors.New("invalid_account")
+	}
 }
 
 func gptWorkerConfiguration() (string, string, error) {
@@ -144,6 +180,10 @@ func releaseGPTAccountJob(account *model.GPTAccount, code string, countFailure b
 }
 
 func newGPTAccountOAuth(account *model.GPTAccount, identity AuthIdentity) (*GPTAccountAuthorization, error) {
+	profile, err := oauthProfileForGPTAccountProtocol(account.Protocol)
+	if err != nil {
+		return nil, err
+	}
 	verifierBytes := make([]byte, 32)
 	if _, err := rand.Read(verifierBytes); err != nil {
 		return nil, errors.New("authorization_failed")
@@ -154,7 +194,7 @@ func newGPTAccountOAuth(account *model.GPTAccount, identity AuthIdentity) (*GPTA
 	if err != nil {
 		return nil, err
 	}
-	flow := gptAccountOAuthFlow{AccountID: account.ID, Generation: account.Generation, LeaseID: account.LeaseID, ChannelKeyHash: account.ChannelKeyHash, Identity: identity, Verifier: sealed, Nonce: uuid.NewString()}
+	flow := gptAccountOAuthFlow{AccountID: account.ID, Generation: account.Generation, LeaseID: account.LeaseID, ChannelKeyHash: account.ChannelKeyHash, Identity: identity, Verifier: sealed, Nonce: uuid.NewString(), Protocol: model.NormalizeGPTAccountProtocol(account.Protocol)}
 	payload, err := common.Marshal(flow)
 	if err != nil {
 		return nil, errors.New("authorization_failed")
@@ -164,8 +204,20 @@ func newGPTAccountOAuth(account *model.GPTAccount, identity AuthIdentity) (*GPTA
 	if err != nil {
 		return nil, errors.New("authorization_failed")
 	}
-	params := url.Values{"response_type": {"code"}, "client_id": {codexOAuthClientID}, "redirect_uri": {gptOAuthRedirect}, "scope": {"openid profile email offline_access"}, "state": {state}, "nonce": {flow.Nonce}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}, "id_token_add_organizations": {"true"}, "codex_cli_simplified_flow": {"true"}, "originator": {"codex_cli_rs"}, "login_hint": {account.Email}}
-	return &GPTAccountAuthorization{AuthorizationURL: "https://auth.openai.com/oauth/authorize?" + params.Encode(), ExpiresAt: expires.Unix()}, nil
+	externalState := state
+	if model.NormalizeGPTAccountProtocol(account.Protocol) == model.GPTAccountProtocolExcelBPS {
+		externalState = "bps." + state + ".PC"
+	}
+	params := url.Values{"response_type": {"code"}, "client_id": {profile.ClientID}, "redirect_uri": {profile.RedirectURI}, "scope": {profile.Scope}, "state": {externalState}, "nonce": {flow.Nonce}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"}, "login_hint": {account.Email}}
+	if model.NormalizeGPTAccountProtocol(account.Protocol) == model.GPTAccountProtocolExcelBPS {
+		params.Set("audience", "https://api.openai.com/v1")
+		params.Set("platform", "PC")
+	} else {
+		params.Set("id_token_add_organizations", "true")
+		params.Set("codex_cli_simplified_flow", "true")
+		params.Set("originator", "codex_cli_rs")
+	}
+	return &GPTAccountAuthorization{AuthorizationURL: profile.AuthorizeURL + "?" + params.Encode(), ExpiresAt: expires.Unix()}, nil
 }
 
 func StartGPTAccountAuthorization(accountID int, identity AuthIdentity) (*GPTAccountAuthorization, error) {
@@ -181,8 +233,17 @@ func StartGPTAccountAuthorization(accountID int, identity AuthIdentity) (*GPTAcc
 }
 
 func FinishGPTAccountAuthorization(ctx context.Context, accountID int, identity AuthIdentity, redirectURL string) error {
+	var account model.GPTAccount
+	if model.DB.First(&account, accountID).Error != nil {
+		return errors.New("account_not_found")
+	}
+	profile, err := oauthProfileForGPTAccountProtocol(account.Protocol)
+	if err != nil {
+		return err
+	}
 	u, err := url.Parse(redirectURL)
-	if err != nil || u.Scheme != "http" || u.Host != "localhost:1455" || u.Path != "/auth/callback" || u.User != nil || u.Fragment != "" {
+	expected, expectedErr := url.Parse(profile.RedirectURI)
+	if err != nil || expectedErr != nil || u.Scheme != expected.Scheme || u.Host != expected.Host || u.Path != expected.Path || u.User != nil || u.Fragment != "" || u.RawQuery == "" {
 		return errors.New("authorization_invalid")
 	}
 	query := u.Query()
@@ -193,16 +254,33 @@ func FinishGPTAccountAuthorization(ctx context.Context, accountID int, identity 
 }
 
 func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIdentity, state, code string) (resultErr error) {
-	flow, err := model.ConsumeAuthFlow(state, model.AuthFlowMatch{Purpose: gptOAuthPurpose, UserId: identity.UserID, SessionId: identity.SessionID})
+	var account model.GPTAccount
+	if model.DB.First(&account, accountID).Error != nil {
+		return errors.New("account_not_found")
+	}
+	stateToken := state
+	if model.NormalizeGPTAccountProtocol(account.Protocol) == model.GPTAccountProtocolExcelBPS {
+		var ok bool
+		stateToken, ok = strings.CutPrefix(stateToken, "bps.")
+		if !ok {
+			return errors.New("authorization_invalid")
+		}
+		stateToken, ok = strings.CutSuffix(stateToken, ".PC")
+		if !ok || stateToken == "" {
+			return errors.New("authorization_invalid")
+		}
+	} else if strings.HasPrefix(stateToken, "bps.") {
+		return errors.New("authorization_invalid")
+	}
+	flow, err := model.ConsumeAuthFlow(stateToken, model.AuthFlowMatch{Purpose: gptOAuthPurpose, UserId: identity.UserID, SessionId: identity.SessionID})
 	if err != nil {
 		return errors.New("authorization_invalid")
 	}
 	var payload gptAccountOAuthFlow
-	if common.UnmarshalJsonStr(flow.Payload, &payload) != nil || payload.AccountID != accountID || payload.Identity != identity {
+	if common.UnmarshalJsonStr(flow.Payload, &payload) != nil || payload.AccountID != accountID || payload.Identity != identity || (payload.Protocol != "" && model.NormalizeGPTAccountProtocol(payload.Protocol) != model.NormalizeGPTAccountProtocol(account.Protocol)) {
 		return errors.New("authorization_invalid")
 	}
-	var account model.GPTAccount
-	if model.DB.First(&account, accountID).Error != nil || account.Generation != payload.Generation || account.LeaseID != payload.LeaseID || account.LeaseUntil <= time.Now().Unix() {
+	if account.Generation != payload.Generation || account.LeaseID != payload.LeaseID || account.LeaseUntil <= time.Now().Unix() {
 		return errors.New("account_changed")
 	}
 	defer func() {
@@ -234,8 +312,12 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 		return errors.New("authorization_failed")
 	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {codexOAuthClientID}, "code": {code}, "redirect_uri": {gptOAuthRedirect}, "code_verifier": {verifier}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, codexOAuthTokenURL, strings.NewReader(form.Encode()))
+	profile, err := oauthProfileForGPTAccountProtocol(account.Protocol)
+	if err != nil {
+		return err
+	}
+	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {profile.ClientID}, "code": {code}, "redirect_uri": {profile.RedirectURI}, "code_verifier": {verifier}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, profile.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return errors.New("authorization_failed")
 	}
@@ -259,7 +341,7 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 	if err != nil {
 		return errors.New("identity_verification_failed")
 	}
-	verified, err := provider.Verifier(&oidc.Config{ClientID: codexOAuthClientID, SupportedSigningAlgs: []string{oidc.RS256, oidc.ES256}}).Verify(oidc.ClientContext(ctx, client), tokens.IDToken)
+	verified, err := provider.Verifier(&oidc.Config{ClientID: profile.ClientID, SupportedSigningAlgs: []string{oidc.RS256, oidc.ES256}}).Verify(oidc.ClientContext(ctx, client), tokens.IDToken)
 	if err != nil || verified.Nonce != payload.Nonce || verified.Subject == "" || len(verified.Subject) > 255 {
 		return errors.New("identity_verification_failed")
 	}
@@ -270,7 +352,23 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 			AccountID string `json:"chatgpt_account_id"`
 		} `json:"https://api.openai.com/auth"`
 	}
-	if verified.Claims(&claims) != nil || !claims.EmailVerified || !strings.EqualFold(strings.TrimSpace(claims.Email), account.Email) || claims.Auth.AccountID == "" {
+	if verified.Claims(&claims) != nil {
+		return errors.New("identity_verification_failed")
+	}
+	if model.NormalizeGPTAccountProtocol(account.Protocol) == model.GPTAccountProtocolExcelBPS {
+		accessIdentity, err := verifyExcelAccessToken(ctx, client, provider, tokens.AccessToken, verified.Subject)
+		if err != nil {
+			return err
+		}
+		if claims.Auth.AccountID != "" && claims.Auth.AccountID != accessIdentity.AccountID {
+			return errors.New("identity_mismatch")
+		}
+		if claims.Email != "" && (!claims.EmailVerified || !strings.EqualFold(claims.Email, accessIdentity.Email)) {
+			return errors.New("identity_mismatch")
+		}
+		claims.Auth.AccountID, claims.Email, claims.EmailVerified = accessIdentity.AccountID, accessIdentity.Email, true
+	}
+	if !claims.EmailVerified || !strings.EqualFold(strings.TrimSpace(claims.Email), account.Email) || claims.Auth.AccountID == "" {
 		return errors.New("identity_mismatch")
 	}
 	if account.AccountID != "" && account.AccountID != claims.Auth.AccountID {
@@ -285,7 +383,7 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 			return errors.New("account_changed")
 		}
 		existing, err := parseCodexOAuthKey(channel.Key)
-		if err != nil || existing.AccountID != claims.Auth.AccountID || (existing.Email != "" && !strings.EqualFold(existing.Email, account.Email)) {
+		if err != nil || model.NormalizeGPTAccountProtocol(existing.Type) != model.NormalizeGPTAccountProtocol(account.Protocol) || channel.Type != model.GPTAccountChannelType(account.Protocol) || existing.AccountID != claims.Auth.AccountID || (existing.Email != "" && !strings.EqualFold(existing.Email, account.Email)) {
 			return errors.New("identity_mismatch")
 		}
 	}
@@ -295,7 +393,8 @@ func finishGPTAccountOAuth(ctx context.Context, accountID int, identity AuthIden
 	if !gptAccountOwnerActive(&account) {
 		return errors.New("authorization_forbidden")
 	}
-	key := CodexOAuthKey{IDToken: tokens.IDToken, AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken, AccountID: claims.Auth.AccountID, Email: account.Email, Type: "codex", LastRefresh: time.Now().Format(time.RFC3339), Expired: time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)}
+	keyType := model.NormalizeGPTAccountProtocol(account.Protocol)
+	key := CodexOAuthKey{IDToken: tokens.IDToken, AccessToken: tokens.AccessToken, RefreshToken: tokens.RefreshToken, AccountID: claims.Auth.AccountID, Email: account.Email, Type: keyType, LastRefresh: time.Now().Format(time.RFC3339), Expired: time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).Format(time.RFC3339)}
 	if account.GatewayID != nil {
 		account.OAuthSubject = verified.Subject
 		return StoreVerifiedGPTAccountGatewayCredential(ctx, &account, key)
@@ -439,7 +538,7 @@ func ScheduleGPTAccountRecovery(channelID int, failedKey string) bool {
 		return false
 	}
 	channel, err := model.GetChannelById(channelID, true)
-	if err != nil || channel.Status == common.ChannelStatusManuallyDisabled || channel.Type != constant.ChannelTypeCodex || channel.ChannelInfo.IsMultiKey {
+	if err != nil || channel.Status == common.ChannelStatusManuallyDisabled || channel.Type != model.GPTAccountChannelType(account.Protocol) || channel.ChannelInfo.IsMultiKey {
 		return false
 	}
 	if model.GPTChannelKeyHash(failedKey) != model.GPTChannelKeyHash(channel.Key) {
@@ -489,18 +588,27 @@ func refreshManagedGPTAccountCredential(ctx context.Context, account *model.GPTA
 		return nil, nil, errors.New("channel_required")
 	}
 	channel, err := model.GetChannelById(*account.ChannelID, true)
-	if err != nil || channel.Type != constant.ChannelTypeCodex || channel.ChannelInfo.IsMultiKey || channel.Status == common.ChannelStatusManuallyDisabled || model.GPTChannelKeyHash(channel.Key) != account.ChannelKeyHash {
+	if err != nil || channel.Type != model.GPTAccountChannelType(account.Protocol) || channel.ChannelInfo.IsMultiKey || channel.Status == common.ChannelStatusManuallyDisabled || model.GPTChannelKeyHash(channel.Key) != account.ChannelKeyHash {
 		return nil, nil, model.ErrGPTAccountStale
 	}
 	key, err := parseCodexOAuthKey(channel.Key)
-	if err != nil || key.RefreshToken == "" {
+	if err != nil || key.RefreshToken == "" || model.NormalizeGPTAccountProtocol(key.Type) != model.NormalizeGPTAccountProtocol(account.Protocol) {
 		return nil, nil, errors.New("refresh_failed")
 	}
-	result, err := RefreshCodexOAuthTokenWithProxy(ctx, key.RefreshToken, channel.GetSetting().Proxy)
+	result, err := RefreshGPTAccountOAuthTokenWithProxy(ctx, account.Protocol, key.RefreshToken, channel.GetSetting().Proxy)
 	if err != nil {
 		return nil, nil, errors.New("refresh_failed")
 	}
-	if id, ok := ExtractCodexAccountIDFromJWT(result.AccessToken); !ok || id != key.AccountID {
+	if model.NormalizeGPTAccountProtocol(account.Protocol) == model.GPTAccountProtocolExcelBPS {
+		client, err := getCodexOAuthHTTPClient(channel.GetSetting().Proxy)
+		if err != nil {
+			return nil, nil, errors.New("refresh_failed")
+		}
+		identity, err := verifyExcelAccessToken(ctx, client, nil, result.AccessToken, account.OAuthSubject)
+		if err != nil || identity.AccountID != key.AccountID || !strings.EqualFold(identity.Email, account.Email) {
+			return nil, nil, errors.New("identity_mismatch")
+		}
+	} else if id, ok := ExtractCodexAccountIDFromJWT(result.AccessToken); !ok || id != key.AccountID {
 		return nil, nil, errors.New("identity_mismatch")
 	}
 	key.AccessToken, key.RefreshToken, key.LastRefresh, key.Expired = result.AccessToken, result.RefreshToken, time.Now().Format(time.RFC3339), result.ExpiresAt.Format(time.RFC3339)

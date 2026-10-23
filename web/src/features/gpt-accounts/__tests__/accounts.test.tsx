@@ -780,7 +780,7 @@ it.each(['user', 'role', 'session'] as const)(
   }
 )
 
-async function startBrowserAuthorization() {
+async function startBrowserAuthorization(state = 'expected') {
   const originalGet = vi.mocked(api.get).getMockImplementation()
   if (!originalGet) throw new Error('GET fixture is unavailable')
   vi.mocked(api.get).mockImplementation(async (url, config) => {
@@ -789,8 +789,7 @@ async function startBrowserAuthorization() {
         data: {
           success: true,
           data: {
-            authorization_url:
-              'https://auth.openai.com/oauth/authorize?state=expected',
+            authorization_url: `https://auth.openai.com/oauth/authorize?state=${state}`,
             expires_at: Date.now() / 1000 + 600,
           },
         },
@@ -1579,6 +1578,7 @@ it('submits a masked account line in one step with normalized credentials and th
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts',
       {
+        protocol: 'codex',
         name: 'mixedcase@example.com',
         email: 'mixedcase@example.com',
         password,
@@ -2355,3 +2355,116 @@ it('does not retry a failed operation or retain its credential-bearing error in 
   ).toBe(true)
   unsubscribe()
 })
+
+it('creates Excel / BPS directly with its protocol and explains limited support', async () => {
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  const destination = screen.getByRole('combobox', {
+    name: 'Account destination',
+  })
+  await userEvent.selectOptions(destination, '5')
+  await userEvent.selectOptions(destination, 'excel_bps')
+  expect(
+    screen.getByText(
+      'Excel / BPS supports text-only streaming /v1/responses requests. Tools and images are not supported.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.queryByLabelText('Existing Codex channel ID')
+  ).not.toBeInTheDocument()
+  await userEvent.type(
+    screen.getByLabelText('Account line'),
+    'excel@example.com----password----JBSWY3DPEHPK3PXP'
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({
+        protocol: 'excel_bps',
+        gateway_id: 0,
+        channel_id: undefined,
+      }),
+      expect.anything()
+    )
+  )
+})
+
+it('preserves the immutable Excel / BPS destination while editing', async () => {
+  items = [{ ...account, protocol: 'excel_bps' }]
+  vi.spyOn(api, 'put').mockResolvedValue({
+    data: { success: true, data: items[0] },
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Edit Work account' })
+  )
+  const destination = screen.getByRole('combobox', {
+    name: 'Account destination',
+  })
+  expect(destination).toBeDisabled()
+  expect(destination).toHaveValue('excel_bps')
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(api.put).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1',
+      expect.objectContaining({ protocol: 'excel_bps', gateway_id: 0 }),
+      expect.anything()
+    )
+  )
+})
+
+it.each([
+  [
+    'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback?code=test&state=bps.expected.PC',
+    true,
+  ],
+  [
+    'http://localhost:1455/auth/callback?code=test&state=bps.expected.PC',
+    false,
+  ],
+  [
+    'https://bps.openai.com/basispoints/extension/other/auth/callback?code=test&state=bps.expected.PC',
+    false,
+  ],
+  [
+    'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback?code=test&state=expected',
+    false,
+  ],
+  [
+    'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback?code=test&state=bps.expected.PC&state=bps.expected.PC',
+    false,
+  ],
+  [
+    'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback?code=test&state=bps.unrelated.PC',
+    false,
+  ],
+])(
+  'validates Excel / BPS callback %s (accepted: %s)',
+  async (callback, accepted) => {
+    items = [{ ...account, protocol: 'excel_bps' }]
+    await startBrowserAuthorization('bps.expected.PC')
+    fireEvent.change(screen.getByLabelText('Callback URL'), {
+      target: { value: callback },
+    })
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Complete authorization' })
+    )
+    if (accepted) {
+      await waitFor(() =>
+        expect(api.post).toHaveBeenCalledWith(
+          '/api/gpt-accounts/1/callback',
+          { redirect_url: callback },
+          expect.anything()
+        )
+      )
+    } else {
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Paste the complete Excel / BPS callback URL containing code and state.'
+      )
+      expect(api.post).not.toHaveBeenCalled()
+    }
+  }
+)

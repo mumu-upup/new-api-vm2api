@@ -277,6 +277,9 @@ func ImportGPTAccountOAuth(ctx context.Context, ownerID, accountID int, input GP
 			return &account, nil
 		}
 	}
+	if model.NormalizeGPTAccountProtocol(account.Protocol) != model.GPTAccountProtocolCodex {
+		return nil, errors.New("identity_mismatch")
+	}
 	if account.Email != key.Email || (account.AccountID != "" && account.AccountID != key.AccountID) || (account.OAuthSubject != "" && account.OAuthSubject != subject) {
 		if created {
 			_ = model.DB.Delete(&account).Error

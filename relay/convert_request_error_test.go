@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,30 @@ import (
 
 type imageReservation struct {
 	held, limit int
+}
+
+func TestExcelBPSAlwaysConvertsResponsesWithBodyPassthroughEnabled(t *testing.T) {
+	for _, global := range []bool{false, true} {
+		t.Run(fmt.Sprint(global), func(t *testing.T) {
+			settings := model_setting.GetGlobalSettings()
+			previous := settings.PassThroughRequestEnabled
+			settings.PassThroughRequestEnabled = global
+			t.Cleanup(func() { settings.PassThroughRequestEnabled = previous })
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.6","input":"hello","stream":true}`))
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeExcelBPS)
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: !global})
+			request := &dto.OpenAIResponsesRequest{Model: "gpt-5.6", Input: []byte(`"hello"`), Stream: common.GetPointer(true)}
+			info := &relaycommon.RelayInfo{Request: request, OriginModelName: request.Model, RelayMode: relayconstant.RelayModeResponses, IsStream: true}
+			_, body, closer, apiErr := PrepareResponsesRequest(c, info, request)
+			require.Nil(t, apiErr)
+			defer closer.Close()
+			raw, err := io.ReadAll(body)
+			require.NoError(t, err)
+			assert.Equal(t, "explicit", gjson.GetBytes(raw, "model_selection").String())
+			assert.True(t, gjson.GetBytes(raw, "input").IsArray())
+		})
+	}
 }
 
 func (s *imageReservation) Reserve(quota int) error {

@@ -262,7 +262,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			func() {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
-				ExtendWriteDeadline(c)
 				info.ObserveModelDiagnostics(data)
 				dataHandler(data, sr)
 			}()

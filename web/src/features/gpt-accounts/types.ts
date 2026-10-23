@@ -7,6 +7,7 @@ export type GptAccountStatus =
 
 export interface GptAccount {
   id: number
+  protocol?: '' | 'codex' | 'excel_bps'
   name: string
   email: string
   channel_id?: number
@@ -39,6 +40,7 @@ export interface GptAccount {
 }
 
 export interface GptAccountInput {
+  protocol?: 'codex' | 'excel_bps'
   name: string
   email: string
   password: string

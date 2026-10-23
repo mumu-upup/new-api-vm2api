@@ -57,6 +57,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
   const form = useForm<AccountFormValues>({
     resolver: zodResolver(accountFormSchema),
     defaultValues: {
+      protocol: props.account?.protocol || 'codex',
       name: props.account?.name ?? '',
       email: props.account?.email ?? '',
       password: '',
@@ -72,6 +73,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
     },
   })
   const gatewayId = form.watch('gateway_id')
+  const excelBps = form.watch('protocol') === 'excel_bps'
   const submit = async (values: AccountFormValues) => {
     setAccountLine('')
     form.resetField('password')
@@ -81,7 +83,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
         props.account?.id,
         {
           ...values,
-          ...(root && !values.gateway_id
+          ...(root && values.protocol !== 'excel_bps' && !values.gateway_id
             ? { channel_id: values.channel_id || undefined }
             : { channel_id: undefined }),
         },
@@ -195,7 +197,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
       }}
       title={t(props.account ? 'Edit GPT account' : 'Add GPT account')}
       description={t(
-        'Store account credentials securely and authorize a Codex channel.'
+        'Store account credentials securely and authorize an account channel.'
       )}
       footer={
         <>
@@ -232,10 +234,13 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                 <FormLabel>{t('Account destination')}</FormLabel>
                 <FormControl>
                   <NativeSelect
-                    value={field.value}
-                    onChange={(event) =>
-                      field.onChange(Number(event.target.value))
-                    }
+                    value={excelBps ? 'excel_bps' : field.value}
+                    onChange={(event) => {
+                      const excel = event.target.value === 'excel_bps'
+                      form.setValue('protocol', excel ? 'excel_bps' : 'codex')
+                      field.onChange(excel ? 0 : Number(event.target.value))
+                      if (excel) form.setValue('channel_id', 0)
+                    }}
                     disabled={
                       Boolean(props.account) ||
                       operation.pending ||
@@ -247,14 +252,19 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                     <NativeSelectOption value={0}>
                       {t('Direct Codex channel')}
                     </NativeSelectOption>
+                    <NativeSelectOption value='excel_bps'>
+                      {t('Excel / BPS')}
+                    </NativeSelectOption>
                     {props.gateways.map((gateway) => (
                       <NativeSelectOption key={gateway.id} value={gateway.id}>
                         {gateway.name} ·{' '}
-                        {gateway.provider === 'cpa'
-                          ? 'CPA'
-                          : gateway.provider === 'sub2api'
-                            ? 'Sub2API'
-                            : t('VM2API')}
+                        {
+                          {
+                            cpa: 'CPA',
+                            sub2api: 'Sub2API',
+                            vm2api: t('VM2API'),
+                          }[gateway.provider]
+                        }
                       </NativeSelectOption>
                     ))}
                     {props.account?.gateway_id &&
@@ -278,6 +288,13 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                     >
                       {t('Retry')}
                     </Button>
+                  </p>
+                )}
+                {excelBps && (
+                  <p className='text-muted-foreground text-sm'>
+                    {t(
+                      'Excel / BPS supports text-only streaming /v1/responses requests. Tools and images are not supported.'
+                    )}
                   </p>
                 )}
                 {gatewayId > 0 && (
@@ -501,7 +518,7 @@ export function AccountFormDialog(props: AccountFormDialogProps) {
                       'Separate model names with commas. Leave blank to use the global default models.'
                     )}
               </p>
-              {root && (
+              {root && !excelBps && (
                 <FormField
                   control={form.control}
                   name='channel_id'

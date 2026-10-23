@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"gorm.io/gorm"
 )
@@ -65,13 +64,16 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 	if ch == nil {
 		return nil, nil, fmt.Errorf("channel not found")
 	}
-	if ch.Type != constant.ChannelTypeCodex {
+	if !model.IsGPTAccountDirectChannelType(ch.Type) {
 		return nil, nil, fmt.Errorf("channel type is not Codex")
 	}
 
 	oauthKey, err := parseCodexOAuthKey(strings.TrimSpace(ch.Key))
 	if err != nil {
 		return nil, nil, err
+	}
+	if model.GPTAccountChannelType(oauthKey.Type) != ch.Type {
+		return nil, nil, errors.New("channel credential protocol mismatch")
 	}
 	if strings.TrimSpace(oauthKey.RefreshToken) == "" {
 		return nil, nil, fmt.Errorf("codex channel: refresh_token is required to refresh credential")
@@ -80,11 +82,25 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	res, err := RefreshCodexOAuthTokenWithProxy(refreshCtx, oauthKey.RefreshToken, ch.GetSetting().Proxy)
+	res, err := RefreshGPTAccountOAuthTokenWithProxy(refreshCtx, oauthKey.Type, oauthKey.RefreshToken, ch.GetSetting().Proxy)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	if model.NormalizeGPTAccountProtocol(oauthKey.Type) == model.GPTAccountProtocolExcelBPS {
+		client, err := getCodexOAuthHTTPClient(ch.GetSetting().Proxy)
+		if err != nil {
+			return nil, nil, errors.New("refresh_failed")
+		}
+		identity, err := verifyExcelAccessToken(refreshCtx, client, nil, res.AccessToken, "")
+		if err != nil {
+			return nil, nil, err
+		}
+		if oauthKey.AccountID == "" || identity.AccountID != oauthKey.AccountID || (oauthKey.Email != "" && !strings.EqualFold(identity.Email, oauthKey.Email)) {
+			return nil, nil, errors.New("identity_mismatch")
+		}
+		oauthKey.Email = identity.Email
+	}
 	oauthKey.AccessToken = res.AccessToken
 	oauthKey.RefreshToken = res.RefreshToken
 	oauthKey.LastRefresh = time.Now().Format(time.RFC3339)

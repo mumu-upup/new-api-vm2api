@@ -6,6 +6,8 @@ export function getAccountErrorMessage(
   fallback?: string
 ): string {
   switch (code) {
+    case 'protocol_immutable':
+      return t('The account protocol cannot be changed after creation.')
     case 'job_active':
       return t(
         'An account check is already running. Cancel it or wait for it to finish.'

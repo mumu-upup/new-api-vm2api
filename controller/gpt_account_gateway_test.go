@@ -696,7 +696,7 @@ func TestGPTAccountGatewaySchemaFreshAndReleasedUpgrade(t *testing.T) {
 				require.NoError(t, db.Create(&channel).Error)
 				require.NoError(t, channel.AddAbilities(db))
 				original.ChannelID, original.ChannelKeyHash = &channel.Id, model.GPTChannelKeyHash(channel.Key)
-				require.NoError(t, db.Omit("gateway_id", "gateway_sync_status", "gateway_error_code", "gateway_synced_at").Create(&original).Error)
+				require.NoError(t, db.Omit("protocol", "gateway_id", "gateway_sync_status", "gateway_error_code", "gateway_synced_at").Create(&original).Error)
 				require.NoError(t, db.First(&original, original.ID).Error)
 			}
 			for range 2 {
@@ -705,6 +705,7 @@ func TestGPTAccountGatewaySchemaFreshAndReleasedUpgrade(t *testing.T) {
 			if upgrade {
 				var migrated model.GPTAccount
 				require.NoError(t, db.First(&migrated, original.ID).Error)
+				original.Protocol = model.GPTAccountProtocolCodex
 				assert.Equal(t, original, migrated)
 				secrets, err := service.DecryptGPTAccountSecrets(&migrated)
 				require.NoError(t, err)
