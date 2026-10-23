@@ -64,6 +64,12 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(_ *gin.Context, info *relaycommo
 	if info != nil && info.RelayMode != relayconstant.RelayModeResponses {
 		return nil, errors.New("excel/bps channel supports only Responses requests")
 	}
+	if info != nil && info.ChannelMeta != nil && len(info.ParamOverride) > 0 {
+		return nil, errors.New("excel/bps channel does not support parameter overrides")
+	}
+	if request.MaxOutputTokens != nil {
+		return nil, errors.New("excel/bps channel does not support max_output_tokens")
+	}
 	if strings.TrimSpace(request.Model) == "" {
 		return nil, errors.New("excel/bps channel requires a model")
 	}

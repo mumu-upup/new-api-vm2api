@@ -7,12 +7,27 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExcelBPSChannelTestsUseStreamingResponses(t *testing.T) {
+	channel := &model.Channel{Type: constant.ChannelTypeExcelBPS}
+	endpoint := normalizeChannelTestEndpoint(channel, "")
+	require.Equal(t, string(constant.EndpointTypeOpenAIResponse), endpoint)
+	require.True(t, shouldUseStreamForAutomaticChannelTest(channel))
+	for _, prompt := range []string{"", "return a monitor artifact"} {
+		request, ok := buildTestRequestWithPrompt("gpt-5.6", endpoint, channel, false, prompt).(*dto.OpenAIResponsesRequest)
+		require.True(t, ok)
+		require.NotNil(t, request.Stream)
+		assert.True(t, *request.Stream)
+		assert.Nil(t, request.MaxOutputTokens, "BPS does not support output caps")
+	}
+}
 
 func TestMonitorPreservesArtworkAcrossLargeSSEEnvelopes(t *testing.T) {
 	content := `<html><svg aria-label="pelican bicycle">` + strings.Repeat(" ", 2048) + `</svg></html>`

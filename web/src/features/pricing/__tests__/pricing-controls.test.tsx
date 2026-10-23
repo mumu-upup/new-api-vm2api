@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { render, screen, within } from '@testing-library/react'
+import { act, render, renderHook, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -25,7 +25,10 @@ import {
   PricingToolbar,
   type PricingToolbarProps,
 } from '../components/pricing-toolbar'
-import type { PricingModel } from '../types'
+import { useFilters } from '../hooks/use-filters'
+import type { PricingCatalogVendor, PricingModel } from '../types'
+
+vi.mock('@tanstack/react-router', () => ({ useSearch: () => ({}) }))
 
 function toolbarProps(): PricingToolbarProps {
   return {
@@ -61,6 +64,220 @@ function toolbarProps(): PricingToolbarProps {
 }
 
 describe('pricing controls', () => {
+  it('selects group parents atomically and resets incompatible descendants on region and vendor changes', () => {
+    const catalog: PricingCatalogVendor[] = [
+      {
+        vendor_id: 1,
+        name: 'Domestic vendor',
+        region: 'domestic',
+        groups: [
+          { name: 'pending', description: '', ratio: 1, model_count: 0 },
+        ],
+      },
+      {
+        vendor_id: 2,
+        name: 'International vendor',
+        region: 'international',
+        groups: [
+          { name: 'other-group', description: '', ratio: 2, model_count: 0 },
+        ],
+      },
+    ]
+    const { result } = renderHook(() => useFilters([], catalog))
+    act(() => result.current.setGroupFilter('pending', 'Domestic vendor'))
+    expect(result.current.vendorFilter).toBe('Domestic vendor')
+    expect(result.current.regionFilter).toBe('domestic')
+    expect(result.current.groupFilter).toBe('pending')
+    act(() => result.current.setVendorFilter('International vendor'))
+    expect(result.current.regionFilter).toBe('international')
+    expect(result.current.groupFilter).toBe('all')
+    act(() =>
+      result.current.setGroupFilter('other-group', 'International vendor')
+    )
+    act(() => result.current.setRegionFilter('domestic'))
+    expect(result.current.vendorFilter).toBe('all')
+    expect(result.current.groupFilter).toBe('all')
+    expect(result.current.hasActiveFilters).toBe(true)
+    act(() => result.current.clearFilters())
+    expect(result.current.regionFilter).toBe('all')
+  })
+
+  it('keeps legacy vendor filtering region-neutral when no catalog is configured', () => {
+    const { result } = renderHook(() => useFilters([]))
+    act(() => result.current.setVendorFilter('Legacy vendor'))
+    expect(result.current.regionFilter).toBe('all')
+    expect(result.current.activeFilterCount).toBe(1)
+  })
+
+  it('filters real models by region while keeping uncataloged models in Other', () => {
+    const base: PricingModel = {
+      id: 1,
+      model_name: 'domestic',
+      vendor_name: 'Domestic vendor',
+      vendor_id: 1,
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 1,
+      enable_groups: ['default'],
+    }
+    const models = [
+      base,
+      {
+        ...base,
+        id: 2,
+        model_name: 'legacy',
+        vendor_id: 2,
+        vendor_name: 'Legacy vendor',
+      },
+    ]
+    const catalog: PricingCatalogVendor[] = [
+      { vendor_id: 1, name: 'Domestic vendor', region: 'domestic', groups: [] },
+    ]
+    const { result } = renderHook(() => useFilters(models, catalog))
+    act(() => result.current.setRegionFilter('domestic'))
+    expect(
+      result.current.filteredModels.map((model) => model.model_name)
+    ).toEqual(['domestic'])
+    act(() => result.current.setRegionFilter('other'))
+    expect(
+      result.current.filteredModels.map((model) => model.model_name)
+    ).toEqual(['legacy'])
+    act(() => result.current.setRegionFilter('international'))
+    expect(result.current.filteredModels).toEqual([])
+  })
+
+  it('exposes pending catalog groups in the shared mobile filter drawer with keyboard selection', async () => {
+    const props = toolbarProps()
+    const user = userEvent.setup()
+    render(
+      <PricingToolbar
+        {...props}
+        regionFilter='domestic'
+        onRegionChange={vi.fn()}
+        catalog={[
+          {
+            vendor_id: 1,
+            name: 'Pending vendor',
+            region: 'domestic',
+            groups: [
+              { name: 'pending', description: '', ratio: 1, model_count: 0 },
+            ],
+          },
+        ]}
+      />
+    )
+    await user.click(screen.getByRole('button', { name: 'Filter' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Filter' })
+    const group = within(dialog).getByRole('button', {
+      name: /pending.*1x.*Pending connection/i,
+    })
+    expect(
+      within(dialog).getByRole('button', { name: 'Domestic' })
+    ).toHaveAttribute('aria-pressed', 'true')
+    group.focus()
+    await user.keyboard('{Enter}')
+    expect(props.onGroupChange).toHaveBeenCalledWith(
+      'pending',
+      'Pending vendor'
+    )
+  })
+
+  it('shows pending catalog vendors and groups and selects the group with its parent', async () => {
+    const props = toolbarProps()
+    const onRegionChange = vi.fn()
+    const user = userEvent.setup()
+    render(
+      <PricingSidebar
+        {...props}
+        regionFilter='all'
+        onRegionChange={onRegionChange}
+        catalog={[
+          {
+            vendor_id: 1,
+            name: 'Pending vendor',
+            region: 'domestic',
+            groups: [
+              { name: 'pending', description: '', ratio: 1.5, model_count: 0 },
+            ],
+          },
+        ]}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: /^Pending vendor\s*0$/ })
+    ).toBeVisible()
+    const group = screen.getByRole('button', {
+      name: /pending.*1.5x.*Pending connection/i,
+    })
+    await user.click(group)
+    expect(props.onGroupChange).toHaveBeenCalledWith(
+      'pending',
+      'Pending vendor'
+    )
+    await user.click(screen.getByRole('button', { name: 'Domestic' }))
+    expect(onRegionChange).toHaveBeenCalledWith('domestic')
+  })
+
+  it('retains uncataloged active vendors under Other when filtering regions', async () => {
+    const props = toolbarProps()
+    const model: PricingModel = {
+      id: 1,
+      model_name: 'legacy',
+      vendor_name: 'Legacy vendor',
+      vendor_id: 2,
+      quota_type: 0,
+      model_ratio: 1,
+      completion_ratio: 1,
+      enable_groups: ['default'],
+    }
+    const { rerender } = render(
+      <PricingSidebar
+        {...props}
+        regionFilter='other'
+        onRegionChange={vi.fn()}
+        vendors={[{ id: 2, name: 'Legacy vendor' }]}
+        models={[model]}
+        catalog={[
+          {
+            vendor_id: 1,
+            name: 'Pending vendor',
+            region: 'domestic',
+            groups: [],
+          },
+        ]}
+      />
+    )
+    expect(
+      screen.getByRole('button', { name: /^Legacy vendor\s*1$/ })
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: /^Pending vendor\s*0$/ })
+    ).toBeNull()
+    rerender(
+      <PricingSidebar
+        {...props}
+        regionFilter='domestic'
+        onRegionChange={vi.fn()}
+        vendors={[{ id: 2, name: 'Legacy vendor' }]}
+        models={[model]}
+        catalog={[
+          {
+            vendor_id: 1,
+            name: 'Pending vendor',
+            region: 'domestic',
+            groups: [],
+          },
+        ]}
+      />
+    )
+    expect(
+      screen.queryByRole('button', { name: /^Legacy vendor\s*1$/ })
+    ).toBeNull()
+    expect(
+      screen.getByRole('button', { name: /^Pending vendor\s*0$/ })
+    ).toBeVisible()
+  })
+
   it('counts each model once per filter and updates counts when the catalog changes', () => {
     const props = toolbarProps()
     const base: PricingModel = {

@@ -14,12 +14,30 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
-import { render } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
+import { EmptyState } from '../components/empty-state'
 import { PricingScrollContainer } from '../components/pricing-scroll-container'
 
 describe('pricing page layout', () => {
+  it('shows a deliberate pending state for an empty catalog group', () => {
+    render(
+      <EmptyState
+        pendingConnection
+        hasActiveFilters
+        onClearFilters={() => {}}
+      />
+    )
+    expect(screen.getByText('Pending connection')).toBeVisible()
+    expect(
+      screen.getByText(
+        'This group is configured but has no connected models yet.'
+      )
+    ).toBeVisible()
+    expect(screen.queryByText('No models found')).toBeNull()
+  })
+
   it('provides a bounded vertical scroll container for long model lists', () => {
     const { container } = render(
       <PricingScrollContainer>

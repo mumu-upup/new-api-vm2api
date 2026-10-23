@@ -45,6 +45,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/models":                     accessTokenScopeRule("profile:read"),
 	"GET /api/status/test":                accessTokenScopeRule("log:read"),
 	"GET /api/channel-monitor":            accessTokenScopeRule("ops:read"),
+	"GET /api/channel-monitor/config":     accessTokenScopeRule("ops:read"),
+	"PUT /api/channel-monitor/config":     accessTokenScopeRule("ops:write"),
 	"POST /api/channel-monitor/run":       accessTokenScopeRule("ops:write"),
 	"GET /api/pricing":                    accessTokenAnyRule,
 	"GET /api/perf-metrics/summary":       accessTokenAnyRule,

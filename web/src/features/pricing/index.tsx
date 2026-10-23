@@ -46,6 +46,7 @@ export function Pricing() {
   const {
     models,
     vendors,
+    catalog,
     groupRatio,
     usableGroup,
     endpointMap,
@@ -58,6 +59,7 @@ export function Pricing() {
   const {
     searchInput,
     sortBy,
+    regionFilter,
     vendorFilter,
     groupFilter,
     quotaTypeFilter,
@@ -68,6 +70,7 @@ export function Pricing() {
     showRechargePrice,
     setSearchInput,
     setSortBy,
+    setRegionFilter,
     setVendorFilter,
     setGroupFilter,
     setQuotaTypeFilter,
@@ -82,7 +85,7 @@ export function Pricing() {
     availableTags,
     clearFilters,
     clearSearch,
-  } = useFilters(models || [])
+  } = useFilters(models || [], catalog)
 
   const handleModelClick = useCallback((modelName: string) => {
     setSelectedModelName(modelName)
@@ -115,6 +118,13 @@ export function Pricing() {
     if (filteredModels.length === 0) {
       return (
         <EmptyState
+          pendingConnection={catalog.some(
+            (vendor) =>
+              vendor.name === vendorFilter &&
+              vendor.groups.some(
+                (group) => group.name === groupFilter && group.model_count === 0
+              )
+          )}
           searchQuery={searchInput}
           hasActiveFilters={hasActiveFilters}
           onClearFilters={handleClearAll}
@@ -208,6 +218,9 @@ export function Pricing() {
 
           <div className='grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)]'>
             <PricingSidebar
+              catalog={catalog}
+              regionFilter={regionFilter}
+              onRegionChange={setRegionFilter}
               quotaTypeFilter={quotaTypeFilter}
               endpointTypeFilter={endpointTypeFilter}
               vendorFilter={vendorFilter}
@@ -230,6 +243,9 @@ export function Pricing() {
 
             <main className='min-w-0 space-y-4'>
               <PricingToolbar
+                catalog={catalog}
+                regionFilter={regionFilter}
+                onRegionChange={setRegionFilter}
                 filteredCount={filteredModels.length}
                 totalCount={models?.length}
                 sortBy={sortBy}

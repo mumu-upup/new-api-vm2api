@@ -249,6 +249,7 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		return
 	}
 	updates := make(map[string]string, 3)
+	defaultGatewayCleared := false
 	if input.DefaultGroup != nil {
 		group := strings.TrimSpace(*input.DefaultGroup)
 		if model.ValidateGPTAccountGroup(group) != nil || !ratio_setting.ContainsGroupRatio(group) {
@@ -272,19 +273,20 @@ func UpdateGPTAccountsConfig(c *gin.Context) {
 		}
 		if *input.DefaultGatewayID > 0 {
 			var gateway model.GPTAccountGateway
-			if model.DB.Where("id = ? AND provider = ?", *input.DefaultGatewayID, "vm2api").First(&gateway).Error != nil {
+			if model.DB.Where("id = ? AND provider = ? AND managed_account_id IS NULL", *input.DefaultGatewayID, "vm2api").First(&gateway).Error != nil {
 				gptAccountError(c, http.StatusBadRequest, "gateway_not_found")
 				return
 			}
 			updates[model.GPTAccountDefaultGatewayKey] = strconv.Itoa(*input.DefaultGatewayID)
 		} else {
-			if err := model.DB.Where("key = ?", model.GPTAccountDefaultGatewayKey).Delete(&model.Option{}).Error; err != nil {
+			if err := model.DB.Where(&model.Option{Key: model.GPTAccountDefaultGatewayKey}).Delete(&model.Option{}).Error; err != nil {
 				gptAccountError(c, http.StatusInternalServerError, "operation_failed")
 				return
 			}
+			defaultGatewayCleared = true
 		}
 	}
-	if len(updates) == 0 {
+	if len(updates) == 0 && !defaultGatewayCleared {
 		gptAccountError(c, http.StatusBadRequest, "invalid_account")
 		return
 	}
@@ -414,6 +416,34 @@ func UpdateGPTAccountTOTP(c *gin.Context) {
 	}
 	recordManageAudit(c, "gpt_account.totp.update", map[string]any{"account_id": account.ID, "totp_version": account.TOTPVersion + 1})
 	gptAccountResponse(c, account.ID)
+}
+
+// ChangeGPTAccountTOTP performs an administrator-triggered rotation. The
+// worker returns only the outcome; the replacement secret is never sent to the
+// browser or written to an audit record.
+func ChangeGPTAccountTOTP(c *gin.Context) {
+	identity, ok := gptAccountIdentity(c, true)
+	if !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	result, err := service.ChangeGPTAccountTOTP(c.Request.Context(), account.ID, identity)
+	if err != nil {
+		code := service.GPTAccountErrorCode(err)
+		status := http.StatusConflict
+		if code == "credentials_required" || code == "invalid_totp_secret" {
+			status = http.StatusBadRequest
+		} else if code == "encryption_unavailable" || code == "automation_unavailable" {
+			status = http.StatusServiceUnavailable
+		}
+		gptAccountError(c, status, code)
+		return
+	}
+	recordManageAudit(c, "gpt_account.totp.change", map[string]any{"account_id": account.ID, "stage": result.Stage, "fallback_used": result.FallbackUsed})
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": result})
 }
 
 func RevealGPTAccountTOTP(c *gin.Context) {
@@ -587,8 +617,8 @@ func DeleteGPTAccount(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if model.DB.Delete(account).Error != nil {
-		gptAccountError(c, http.StatusInternalServerError, "operation_failed")
+	if err := service.DeleteGPTAccountWithInstance(c.Request.Context(), account.ID); err != nil {
+		gptAccountError(c, http.StatusConflict, service.GPTAccountErrorCode(err))
 		return
 	}
 	recordManageAudit(c, "gpt_account.delete", map[string]any{"account_id": account.ID})

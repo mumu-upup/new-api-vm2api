@@ -1,0 +1,479 @@
+From 9e5cd3cb2dbfa6930c99c5bc7c0b7bb248fcceb2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=88=98=E6=B4=A5=E6=9C=A8?=
+ <73867607+mumu-upup@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 02:32:23 +0800
+Subject: [PATCH] fix(codex): bound transient retries and respect upstream
+ backoff
+
+---
+ src/lib/protocol/handle-codex.mjs | 103 ++++++++++---
+ test/unit/handle-codex.test.mjs   | 246 ++++++++++++++++++++++++++++++
+ 2 files changed, 332 insertions(+), 17 deletions(-)
+
+diff --git a/src/lib/protocol/handle-codex.mjs b/src/lib/protocol/handle-codex.mjs
+index 7729649..9f4c21c 100644
+--- a/src/lib/protocol/handle-codex.mjs
++++ b/src/lib/protocol/handle-codex.mjs
+@@ -177,7 +177,9 @@ export function isRetryableSameCodexAccount(
+   if (status === 408) return true
+   if (status === 500 || status === 502 || status === 503 || status === 504) {
+     return (
+-      code === '' || /server_error|provider_error|upstream_error|overloaded_error|internal_error|transport/i.test(code)
++      code === '' ||
++      code === 'server_is_overloaded' ||
++      /server_error|provider_error|upstream_error|overloaded_error|internal_error|transport/i.test(code)
+     )
+   }
+   return false
+@@ -473,18 +475,60 @@ export function reasoningHistoryFallback(args, result) {
+   }
+ }
+ 
+-export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFallback } = {}) {
++function codexRetryAfter(result) {
++  const entry = Object.entries(result?.headers || {}).find(([name]) => name.toLowerCase() === 'retry-after')
++  const value = Array.isArray(entry?.[1]) ? entry[1][0] : entry?.[1]
++  return value == null ? null : String(value).trim()
++}
++
++// Respect upstream backoff without tying up a seat for an unbounded wait.
++async function waitForCodexRetry(result, delayMs, signal) {
++  if (signal?.aborted) return false
++  const retryAfter = codexRetryAfter(result)
++  if (retryAfter != null && String(retryAfter).trim() !== '') {
++    const seconds = Number(retryAfter)
++    if (!Number.isNaN(seconds) && seconds >= 0) delayMs = Math.max(delayMs, seconds * 1000)
++    else {
++      const retryAt = Date.parse(retryAfter)
++      if (Number.isFinite(retryAt)) delayMs = Math.max(delayMs, retryAt - Date.now())
++    }
++  }
++  if (delayMs > 10_000) return false
++  if (delayMs > 0) {
++    await new Promise((resolve) => {
++      const finish = () => {
++        clearTimeout(timer)
++        signal?.removeEventListener('abort', finish)
++        resolve()
++      }
++      const timer = setTimeout(finish, delayMs)
++      signal?.addEventListener('abort', finish, { once: true })
++      if (signal?.aborted) finish()
++    })
++  }
++  return !signal?.aborted
++}
++
++export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFallback, maxRetries = 1 } = {}) {
+   let emitted = false
+   const wrapped = async (line) => {
+     emitted = true
+     if (onEvent) await onEvent(line)
+   }
+   let result = await hop({ ...args, onEvent: wrapped })
+-  if (!result?.ok && !emitted && isRetryableCodexTransport(result)) {
++  if (
++    maxRetries > 0 &&
++    !result?.ok &&
++    !emitted &&
++    isRetryableCodexTransport(result) &&
++    (await waitForCodexRetry(result, 0, args.signal)) &&
++    !args.signal?.aborted
++  ) {
+     result = { ...(await hop({ ...args, onEvent: wrapped })), transport_retried: true }
+   }
+-  const fallback = !emitted && !result?.transport_retried ? reasoningHistoryFallback(args, result) : null
+-  if (fallback) {
++  const fallback =
++    maxRetries > 0 && !emitted && !result?.transport_retried ? reasoningHistoryFallback(args, result) : null
++  if (fallback && (await waitForCodexRetry(result, 0, args.signal))) {
+     if (onReasoningFallback)
+       await onReasoningFallback({ originalResult: result, body: fallback.args.body, ...fallback.info })
+     if (args.signal?.aborted) return result
+@@ -739,9 +783,15 @@ export async function handleCodexProtocol({
+         if (captureOutbound) logBag.outbound_body = outboundBody
+         logBag.outbound_headers = redactHeaders(outboundHeaders)
+         let hopEmitted = false
+-        const runHop = () =>
+-          runCodexKernelHop({
++        let sameAccountRetries = 0
++        const runHop = async () => {
++          const result = await runCodexKernelHop({
+             hop,
++            maxRetries: Math.min(
++              1,
++              failoverBudget.maxSameAccountRetries - sameAccountRetries,
++              failoverBudget.maxAttempts - attempts,
++            ),
+             args: {
+               exec: execFor(projectRoot, vm),
+               signal: gone.signal,
+@@ -792,11 +842,21 @@ export async function handleCodexProtocol({
+               if (named) res.write(named)
+             },
+           })
++          if (result?.transport_retried || result?.reasoning_history_retried) {
++            sameAccountRetries += 1
++            attempts += 1
++            hops += 1
++            logBag.attempt_count = hops
++          }
++          if (result?.transport_retried) logBag.transport_retried = true
++          if (result?.reasoning_history_retried) logBag.reasoning_history_retried = true
++          if (sameAccountRetries) logBag.codex_same_account_retried = sameAccountRetries
++          return result
++        }
+         let result = await runHop()
+         // A transient seat-local failure gets the same account up to N retries
+         // before the request spends a switch. 401/403/429 are never retried here:
+         // they are credential/account state and must move to another seat.
+-        let sameAccountRetries = result?.transport_retried || result?.reasoning_history_retried ? 1 : 0
+         while (
+           sameAccountRetries < failoverBudget.maxSameAccountRetries &&
+           attempts < failoverBudget.maxAttempts &&
+@@ -806,15 +866,18 @@ export async function handleCodexProtocol({
+             signal: gone.signal,
+           })
+         ) {
++          if (!(await waitForCodexRetry(result, sameRetryDelayMs, gone.signal)) || gone.signal.aborted) break
+           sameAccountRetries += 1
+           attempts += 1
+           hops += 1
+           logBag.attempt_count = hops
+           logBag.codex_same_account_retried = sameAccountRetries
+-          await new Promise((resolve) => setTimeout(resolve, sameRetryDelayMs))
+-          hopEmitted = false
+           result = await runHop()
+         }
++        if (gone.signal.aborted) {
++          logBag.final_state = 'cancelled'
++          return
++        }
+         // The log and total duration share ingress time; pool scoring keeps hop TTFT.
+         logBag.first_token_ms = Number.isFinite(result?.firstTokenAt)
+           ? Math.max(0, result.firstTokenAt - requestStartedAt)
+@@ -826,11 +889,6 @@ export async function handleCodexProtocol({
+           result.body = { error: conversionError }
+         }
+         ingestCodexHop(projectRoot, vm.id, result, Date.now(), normalizeCodexRouting(routing.codex).quota)
+-        if (result?.transport_retried) logBag.transport_retried = true
+-        if (result?.reasoning_history_retried) {
+-          logBag.attempt_count += 1
+-          logBag.reasoning_history_retried = true
+-        }
+         last = result
+         const hopUsage = result.usage || result.body?.usage || result.body?.response?.usage || null
+         const usage = preferUsage(hopUsage, streamedUsage)
+@@ -862,7 +920,7 @@ export async function handleCodexProtocol({
+           reportOpenAIAttempt(vm.id, 'succeeded', result.ttftMs ?? null)
+           logBag.final_state = result?.ok ? result.terminalState || 'verified' : 'verified'
+           logBag.upstream_model = converted.body.model
+-          if (hops > 1) logBag.codex_failed_over = true
++          if (switches > 0) logBag.codex_failed_over = true
+           if (!stream) {
+             let body
+             try {
+@@ -895,10 +953,19 @@ export async function handleCodexProtocol({
+           return res.end()
+         }
+         if (isCodexFailoverError(result)) {
++          if (switches >= failoverBudget.maxSwitches || attempts >= failoverBudget.maxAttempts) break
++          // A provider backoff also applies when retrying on another slot.
++          if (Number(result.status) >= 500) {
++            const retryReady = await waitForCodexRetry(result, 0, gone.signal)
++            if (gone.signal.aborted) {
++              logBag.final_state = 'cancelled'
++              return
++            }
++            if (!retryReady) break
++          }
+           pickOpts.excluded.add(vm.id)
+           leaveSticky()
+           switches += 1
+-          if (switches > failoverBudget.maxSwitches || attempts >= failoverBudget.maxAttempts) break
+           continue
+         }
+         break
+@@ -917,6 +984,8 @@ export async function handleCodexProtocol({
+   stats.errors++
+   logBag.error_code = last?.body?.error?.code || 'codex_upstream'
+   logBag.upstream_status = last?.status || 0
++  const retryAfter = codexRetryAfter(last)
++  if (retryAfter) res.setHeader?.('retry-after', retryAfter)
+   return json(res, last?.status || 502, last?.body || { error: { type: 'api_error', code: 'codex_upstream' } })
+ }
+ 
+diff --git a/test/unit/handle-codex.test.mjs b/test/unit/handle-codex.test.mjs
+index dc6fe90..64c68ec 100644
+--- a/test/unit/handle-codex.test.mjs
++++ b/test/unit/handle-codex.test.mjs
+@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
+ import fs from 'node:fs'
+ import os from 'node:os'
+ import path from 'node:path'
++import { EventEmitter } from 'node:events'
+ import {
+   isRetryableCodexTransport,
+   runCodexKernelHop,
+@@ -71,6 +72,20 @@ test('runCodexKernelHop does not retry after SSE has started', async () => {
+   assert.equal(result.transport_retried, undefined)
+ })
+ 
++test('runCodexKernelHop rechecks cancellation after retry admission resolves', async () => {
++  const controller = new AbortController()
++  let calls = 0
++  await runCodexKernelHop({
++    args: { signal: controller.signal },
++    hop: async () => {
++      calls += 1
++      queueMicrotask(() => queueMicrotask(() => controller.abort()))
++      return { ok: false, status: 502, committed: false, body: { error: { code: 'upstream_transport' } } }
++    },
++  })
++  assert.equal(calls, 1)
++})
++
+ function writeGptVm(root, id) {
+   const dir = path.join(root, 'vms')
+   fs.mkdirSync(path.join(dir, id), { recursive: true })
+@@ -858,6 +873,237 @@ test('transient GPT failures retry the same account three times before switching
+   fs.rmSync(root, { recursive: true, force: true })
+ })
+ 
++for (const scenario of [
++  { name: '500 overload', statuses: [500], codes: ['server_is_overloaded'], calls: 2, status: 200 },
++  { name: '503 overload', statuses: [503], codes: ['server_is_overloaded'], calls: 2, status: 200 },
++  {
++    name: 'transient then transport',
++    statuses: [503, 502],
++    codes: ['server_error', 'upstream_transport'],
++    calls: 2,
++    status: 502,
++  },
++  {
++    name: 'transport budget',
++    statuses: [502, 502],
++    codes: ['upstream_transport', 'upstream_transport'],
++    calls: 2,
++    status: 502,
++  },
++  { name: 'one total attempt', statuses: [502], codes: ['upstream_transport'], total: 1, calls: 1, status: 502 },
++  { name: 'retries disabled', statuses: [502], codes: ['upstream_transport'], retries: 0, calls: 1, status: 502 },
++  {
++    name: 'committed overload',
++    statuses: [503],
++    codes: ['server_is_overloaded'],
++    committed: true,
++    calls: 1,
++    status: 503,
++  },
++]) {
++  test(`Codex bounded retries preserve the request and count every call: ${scenario.name}`, async (t) => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-bounded-'))
++    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
++    writeGptVm(root, 'vm-gpt-a')
++    const calls = []
++    const logBag = {}
++    const args = codexArgs(
++      root,
++      {
++        ensureCodexKernel: async () => ({ ok: true }),
++        streamCodexKernel: async (call) => {
++          calls.push({ vm: call.exec.vmId, body: structuredClone(call.body), envelope: structuredClone(call.envelope) })
++          const index = calls.length - 1
++          if (scenario.statuses[index])
++            return {
++              ok: false,
++              status: scenario.statuses[index],
++              committed: scenario.committed === true,
++              body: { error: { code: scenario.codes[index], message: 'busy' } },
++            }
++          return { ok: true, status: 200, terminalState: 'verified' }
++        },
++      },
++      {
++        logBag,
++        body: { model: 'gpt-5.5', input: 'Keep this exact text', reasoning: { effort: 'high' }, stream: false },
++        routing: {
++          failover: {
++            max_total_attempts: scenario.total ?? 2,
++            max_account_switches: 0,
++            max_same_account_retries: scenario.retries ?? 1,
++            same_account_retry_delay_ms: 0,
++          },
++        },
++      },
++    )
++    const out = await handleCodexProtocol(args)
++    assert.equal(out.status, scenario.status)
++    assert.equal(calls.length, scenario.calls)
++    assert.equal(logBag.attempt_count, scenario.calls)
++    for (const call of calls) assert.deepEqual(call, calls[0])
++    assert.notEqual(logBag.codex_failed_over, true)
++  })
++}
++
++for (const [name, retryAfter, expectedWait, headerName = 'retry-after'] of [
++  ['seconds', '2', 2000],
++  ['date', new Date(1_700_000_002_000).toUTCString(), 2000],
++  ['too long', '11', null],
++  ['overflow', '9'.repeat(309), null],
++  ['header casing', '2', 2000, 'Retry-After'],
++  ['invalid', 'invalid', 500],
++]) {
++  test(`Codex respects Retry-After ${name} without unbounded waiting`, async (t) => {
++    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_700_000_000_000 })
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-retry-after-'))
++    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
++    writeGptVm(root, 'vm-gpt-a')
++    if (expectedWait == null) writeGptVm(root, 'vm-gpt-b')
++    let calls = 0
++    const headers = {}
++    const args = codexArgs(
++      root,
++      {
++        ensureCodexKernel: async () => ({ ok: true }),
++        streamCodexKernel: async () => {
++          calls += 1
++          return {
++            ok: false,
++            status: 503,
++            committed: false,
++            headers: { [headerName]: retryAfter },
++            body: { error: { code: 'server_error' } },
++          }
++        },
++      },
++      {
++        routing: {
++          failover: {
++            max_total_attempts: 2,
++            max_account_switches: 1,
++            max_same_account_retries: 1,
++            same_account_retry_delay_ms: 500,
++          },
++        },
++      },
++    )
++    args.res.setHeader = (name, value) => {
++      headers[name] = value
++    }
++    const pending = handleCodexProtocol(args)
++    await new Promise(setImmediate)
++    assert.equal(calls, 1)
++    if (expectedWait != null) {
++      t.mock.timers.tick(expectedWait - 1)
++      await new Promise(setImmediate)
++      assert.equal(calls, 1)
++      t.mock.timers.tick(1)
++    } else {
++      t.mock.timers.tick(10_000)
++    }
++    const out = await pending
++    assert.equal(out.status, 503)
++    assert.equal(calls, expectedWait == null ? 1 : 2)
++    assert.equal(headers['retry-after'], retryAfter)
++  })
++}
++
++for (const [total, retries, expectedCalls] of [
++  [1, 1, 1],
++  [2, 0, 1],
++  [2, 1, 2],
++]) {
++  test(`Codex reasoning fallback shares attempt budgets ${total}/${retries}`, async (t) => {
++    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-fallback-budget-'))
++    t.after(() => fs.rmSync(root, { recursive: true, force: true }))
++    writeGptVm(root, 'vm-gpt-a')
++    const calls = []
++    const args = codexArgs(
++      root,
++      {
++        ensureCodexKernel: async () => ({ ok: true }),
++        streamCodexKernel: async (call) => {
++          calls.push(structuredClone(call.body))
++          return {
++            ok: false,
++            status: calls.length === 1 ? 500 : 502,
++            committed: false,
++            body: { error: { code: calls.length === 1 ? 'server_error' : 'upstream_transport' } },
++          }
++        },
++      },
++      {
++        headers: { 'x-openai-internal-codex-responses-lite': 'true' },
++        body: {
++          model: 'gpt-6-astra',
++          stream: false,
++          reasoning: { context: 'all_turns', effort: 'high' },
++          input: [
++            { type: 'reasoning', encrypted_content: 'a'.repeat(100000) },
++            { type: 'reasoning', encrypted_content: 'b'.repeat(40000) },
++            { role: 'user', content: 'hi' },
++          ],
++        },
++        routing: {
++          failover: {
++            max_total_attempts: total,
++            max_same_account_retries: retries,
++            max_account_switches: 0,
++            same_account_retry_delay_ms: 0,
++          },
++        },
++      },
++    )
++    await handleCodexProtocol(args)
++    assert.equal(calls.length, expectedCalls)
++    assert.equal(args.logBag.attempt_count, expectedCalls)
++    assert.equal(args.logBag.reasoning_history_retried, expectedCalls === 2 ? true : undefined)
++    for (const call of calls) {
++      assert.equal(call.model, 'gpt-6-astra')
++      assert.deepEqual(call.reasoning, { context: 'all_turns', effort: 'high' })
++    }
++  })
++}
++
++test('Codex cancels retry backoff without another upstream call', async (t) => {
++  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_700_000_000_000 })
++  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-retry-abort-'))
++  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
++  writeGptVm(root, 'vm-gpt-a')
++  let calls = 0
++  const args = codexArgs(
++    root,
++    {
++      ensureCodexKernel: async () => ({ ok: true }),
++      streamCodexKernel: async () => {
++        calls += 1
++        return { ok: false, status: 503, committed: false, body: { error: { code: 'server_error' } } }
++      },
++    },
++    {
++      routing: {
++        failover: {
++          max_total_attempts: 2,
++          max_account_switches: 0,
++          max_same_account_retries: 1,
++          same_account_retry_delay_ms: 500,
++        },
++      },
++    },
++  )
++  args.req = Object.assign(new EventEmitter(), args.req)
++  const pending = handleCodexProtocol(args)
++  await new Promise(setImmediate)
++  args.req.emit('aborted')
++  await new Promise(setImmediate)
++  t.mock.timers.tick(500)
++  await pending
++  assert.equal(calls, 1)
++  assert.equal(args.logBag.attempt_count, 1)
++  assert.equal(args.logBag.final_state, 'cancelled')
++})
++
+ test('same-account retry never replays after the first SSE event', async () => {
+   const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+   rt.resetOpenAIAccountRuntime()
+-- 
+2.39.5 (Apple Git-154)
+

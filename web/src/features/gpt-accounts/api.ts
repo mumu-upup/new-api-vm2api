@@ -7,9 +7,12 @@ import type {
   GptAccountConfig,
   GptAccountInput,
   GptAccountTotpReveal,
+  GptAccountTotpChangeResult,
   GptAccountGateway,
   GptAccountGatewayInput,
   GptAccountVm2ApiLogs,
+  GptAccountVm2ApiInstance,
+  Vm2ApiInstanceAction,
   GptAccountVm2ApiStatus,
 } from './types'
 
@@ -75,7 +78,10 @@ export function getGptAccountConfig(signal?: AbortSignal) {
 
 export function updateGptAccountConfig(
   input: Partial<
-    Pick<GptAccountConfig, 'default_group' | 'default_models' | 'default_gateway_id'>
+    Pick<
+      GptAccountConfig,
+      'default_group' | 'default_models' | 'default_gateway_id'
+    >
   >
 ) {
   return authResult<GptAccountConfig>(
@@ -252,6 +258,44 @@ export function revealGptAccountTotp(id: number, signal: AbortSignal) {
         singleUseAuthorization: true,
         signal,
       }
+    )
+  )
+}
+
+export function changeGptAccountTotp(id: number, signal: AbortSignal) {
+  return authResult<GptAccountTotpChangeResult>(
+    api.post(
+      `/api/gpt-accounts/${id}/totp/change`,
+      {},
+      {
+        ...authRequestOptions,
+        singleUseAuthorization: true,
+        signal,
+      }
+    )
+  )
+}
+
+export function getGptAccountVm2ApiInstance(id: number, signal?: AbortSignal) {
+  return authResult<GptAccountVm2ApiInstance>(
+    api.get(`/api/gpt-accounts/${id}/vm2api/instance`, {
+      ...authRequestOptions,
+      signal,
+    })
+  )
+}
+
+export function runGptAccountVm2ApiInstanceAction(
+  id: number,
+  action: Vm2ApiInstanceAction,
+  signal?: AbortSignal
+) {
+  const suffix = action === 'provision' ? '' : `/${action}`
+  return authResult<GptAccountVm2ApiInstance>(
+    api.post(
+      `/api/gpt-accounts/${id}/vm2api/instance${suffix}`,
+      {},
+      { ...authRequestOptions, signal }
     )
   )
 }

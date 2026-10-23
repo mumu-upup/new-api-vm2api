@@ -384,6 +384,36 @@ it.each([false, true])(
   }
 )
 
+it('copies each response model detail from its own button', async () => {
+  const user = userEvent.setup()
+  const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+  render(
+    <ModelBadge
+      modelName='requested-model'
+      responseModel={{
+        requested_model: 'requested-model',
+        upstream_model: 'mapped-model',
+        returned_model: 'response-model',
+      }}
+    />
+  )
+
+  await user.click(
+    screen.getByRole('button', {
+      name: 'Model: requested-model, Response model: response-model',
+    })
+  )
+
+  await user.click(
+    await screen.findByRole('button', { name: 'Copy Request Model' })
+  )
+  expect(copy).toHaveBeenLastCalledWith('requested-model')
+  await user.click(screen.getByRole('button', { name: 'Copy Upstream Model' }))
+  expect(copy).toHaveBeenLastCalledWith('mapped-model')
+  await user.click(screen.getByRole('button', { name: 'Copy Response Model' }))
+  expect(copy).toHaveBeenLastCalledWith('response-model')
+})
+
 it('keeps mapped model details available when the response matches the upstream model', async () => {
   const user = userEvent.setup()
   render(

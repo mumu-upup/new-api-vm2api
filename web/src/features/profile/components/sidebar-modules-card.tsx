@@ -109,6 +109,11 @@ export function SidebarModulesCard() {
           title: t('Task Logs'),
           description: t('System task records'),
         },
+        {
+          key: 'channel_monitor',
+          title: t('Channel monitor'),
+          description: t('Success rate and response timing for the selected window.'),
+        },
       ],
     },
     {

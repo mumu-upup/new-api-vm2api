@@ -2,7 +2,7 @@ FROM mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b7
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-COPY login.mjs browser.mjs server.mjs session-cleanup.mjs ./
+COPY login.mjs browser.mjs server.mjs session-cleanup.mjs change-2fa.mjs change-2fa-browser.mjs ./
 ENV NODE_ENV=production HOST=127.0.0.1 PORT=8787
 USER pwuser
 # Run with the adjacent official Playwright seccomp profile; no host port is needed.

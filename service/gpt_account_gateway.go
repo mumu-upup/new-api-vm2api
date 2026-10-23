@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -260,6 +261,9 @@ func gptGatewayAddressAllowed(ip net.IP, allowLocal bool) bool {
 }
 
 func SaveGPTAccountGateway(existing *model.GPTAccountGateway, input GPTAccountGatewayInput) (*model.GPTAccountGateway, error) {
+	if existing != nil && existing.ManagedAccountID != nil {
+		return nil, errors.New("gateway_immutable")
+	}
 	input.Name, input.Group, input.Models = strings.TrimSpace(input.Name), strings.TrimSpace(input.Group), strings.TrimSpace(input.Models)
 	var groupErr error
 	input.Group, groupErr = model.ResolveGPTAccountGroup(input.Group)
@@ -369,6 +373,9 @@ func ApplyGPTAccountGateway(account *model.GPTAccount, gatewayID *int) error {
 	if model.DB.First(&gateway, *gatewayID).Error != nil || gateway.ChannelID == nil {
 		return errors.New("gateway_not_found")
 	}
+	if gateway.ManagedAccountID != nil && (account.ID == 0 || *gateway.ManagedAccountID != account.ID) {
+		return errors.New("gateway_immutable")
+	}
 	account.GatewayID = gatewayID
 	account.Group, account.Models = gateway.Group, gateway.Models
 	if account.GatewaySyncStatus == "" {
@@ -421,14 +428,20 @@ func PopulateGPTAccountGateways(accounts []model.GPTAccount) error {
 }
 
 type gptGatewayClient struct {
-	gateway       *model.GPTAccountGateway
-	account       *model.GPTAccount
-	client        *http.Client
-	managementKey string
+	gateway        *model.GPTAccountGateway
+	account        *model.GPTAccount
+	client         *http.Client
+	managementKey  string
+	readAccount    *model.GPTAccount
+	previousStatus string
 }
 
 func newGPTGatewayClient(gateway *model.GPTAccountGateway, account *model.GPTAccount) (*gptGatewayClient, error) {
-	if _, err := normalizeGPTGatewayURL(gateway.ManagementURL, gateway.AllowLocalHTTP); err != nil {
+	managed := managedVM2APIGatewayAllowed(gateway)
+	if gateway.ManagedAccountID != nil && !managed {
+		return nil, errors.New("invalid_gateway")
+	}
+	if _, err := normalizeGPTGatewayURL(gateway.ManagementURL, gateway.AllowLocalHTTP); err != nil && !managed {
 		return nil, err
 	}
 	secrets, err := DecryptGPTAccountGatewaySecrets(gateway)
@@ -447,7 +460,7 @@ func newGPTGatewayClient(gateway *model.GPTAccountGateway, account *model.GPTAcc
 			return nil, errors.New("gateway_unavailable")
 		}
 		for _, address := range addresses {
-			if !gptGatewayAddressAllowed(address.IP, gateway.AllowLocalHTTP) {
+			if !gptGatewayAddressAllowed(address.IP, gateway.AllowLocalHTTP) && !(managed && address.IP.Equal(net.ParseIP(host))) {
 				return nil, errors.New("gateway_unavailable")
 			}
 		}
@@ -470,7 +483,13 @@ func (client *gptGatewayClient) request(ctx context.Context, method, path string
 	}
 	if client.account != nil {
 		var current model.GPTAccount
-		if model.DB.First(&current, client.account.ID).Error != nil || current.Generation != client.account.Generation || current.LeaseID != client.account.LeaseID || current.LeaseUntil <= time.Now().Unix() || current.GatewayID == nil || *current.GatewayID != client.gateway.ID {
+		if model.DB.First(&current, client.account.ID).Error != nil || current.OwnerID != client.account.OwnerID || current.Generation != client.account.Generation || current.LeaseID != client.account.LeaseID || current.LeaseUntil <= time.Now().Unix() || current.GatewayID == nil || *current.GatewayID != client.gateway.ID {
+			return 0, model.ErrGPTAccountStale
+		}
+	}
+	if client.readAccount != nil {
+		var current model.GPTAccount
+		if !gptAccountOwnerActive(client.readAccount) || model.DB.First(&current, client.readAccount.ID).Error != nil || current.OwnerID != client.readAccount.OwnerID || current.Generation != client.readAccount.Generation || current.GatewayID == nil || *current.GatewayID != client.gateway.ID {
 			return 0, model.ErrGPTAccountStale
 		}
 	}
@@ -568,23 +587,46 @@ func StoreVerifiedGPTAccountGatewayCredential(ctx context.Context, snapshot *mod
 	if err != nil {
 		return err
 	}
-	// Reconcile any previous remote write before accepting a fresh OAuth bundle.
-	// VM2API has no import id to compare, so a slot without matching credentials
-	// remains uncertain and the new refresh token must not be replayed.
+	// Initial imports can be reconciled from an owned slot. Replacements cannot:
+	// VM2API exposes no import id, and the slot may still hold the old credentials.
 	if secrets.GatewayImportAttempted {
-		if err := client.sync(ctx, secrets); err != nil {
-			return err
+		if secrets.GatewayCredentialReplacement {
+			if secrets.GatewayOAuth == nil {
+				return errors.New("gateway_import_uncertain")
+			}
+			// Native VM2API trims token strings, including JavaScript's BOM
+			// whitespace. Padding must not turn the same token into a new intent.
+			tokenWhitespace := func(r rune) bool { return unicode.IsSpace(r) || r == '\ufeff' }
+			if strings.TrimFunc(secrets.GatewayOAuth.RefreshToken, tokenWhitespace) == strings.TrimFunc(key.RefreshToken, tokenWhitespace) {
+				return errors.New("gateway_import_uncertain")
+			}
+		} else {
+			if err := client.sync(ctx, secrets); err != nil {
+				return err
+			}
 		}
 	}
+	// A provisioned slot can still be awaiting its first credential import.
+	secrets.GatewayCredentialReplacement = gateway.Provider == "vm2api" && gateway.ManagedAccountID != nil && secrets.GatewayRemoteID != "" && (secrets.GatewayCredentialReplacement || secrets.GatewayOAuth == nil)
 	secrets.GatewayOAuth, secrets.GatewayImportID, secrets.GatewayImportAttempted = &key, uuid.NewString(), false
 	snapshot.AccountID = key.AccountID
 	if err := client.checkpoint(secrets, "pending", "", false); err != nil {
 		return err
 	}
+	if gateway.Provider == "vm2api" && gateway.ManagedAccountID == nil && GPTAccountVM2APIIsolationEnabled() && secrets.GatewayRemoteID == "" {
+		return model.RequestGPTAccountVM2APIInstance(snapshot, false)
+	}
 	return client.sync(ctx, secrets)
 }
 
 func SyncGPTAccountGateway(ctx context.Context, accountID int) (resultErr error) {
+	var instance model.GPTAccountVM2APIInstance
+	if model.DB.Where("account_id = ?", accountID).Limit(1).Find(&instance).Error != nil {
+		return errors.New("operation_failed")
+	}
+	if instance.AccountID != 0 && instance.Status != "ready" {
+		return EnsureGPTAccountVM2APIInstance(ctx, accountID)
+	}
 	snapshot, err := AcquireGPTAccountJob(accountID, false)
 	if err != nil {
 		return err
@@ -616,6 +658,12 @@ func syncGPTAccountGatewaySnapshot(ctx context.Context, snapshot *model.GPTAccou
 	secrets, err := DecryptGPTAccountSecrets(snapshot)
 	if err != nil {
 		return err
+	}
+	if gateway.Provider == "vm2api" && gateway.ManagedAccountID == nil && GPTAccountVM2APIIsolationEnabled() && secrets.GatewayRemoteID == "" && !secrets.GatewayImportAttempted {
+		if err := model.RequestGPTAccountVM2APIInstance(snapshot, false); err != nil {
+			return err
+		}
+		return errors.New("instance_not_ready")
 	}
 	if err := client.sync(ctx, secrets); err != nil {
 		return err
@@ -666,6 +714,25 @@ func (client *gptGatewayClient) sync(ctx context.Context, secrets *GPTAccountSec
 			_ = client.checkpoint(secrets, "error", code, false)
 		}
 	}()
+	var instance model.GPTAccountVM2APIInstance
+	if model.DB.Where("account_id = ?", client.account.ID).Limit(1).Find(&instance).Error != nil {
+		return errors.New("operation_failed")
+	}
+	if instance.AccountID != 0 && (instance.GatewayID == nil || *instance.GatewayID != client.gateway.ID || instance.Status == "pending_cleanup") {
+		return errors.New("instance_not_ready")
+	}
+	if secrets.GatewayCredentialReplacement {
+		if client.gateway.Provider != "vm2api" || client.gateway.ManagedAccountID == nil || *client.gateway.ManagedAccountID != client.account.ID || instance.AccountID == 0 || client.gateway.ChannelID == nil {
+			return errors.New("instance_not_ready")
+		}
+		var channel model.Channel
+		if model.DB.First(&channel, *client.gateway.ChannelID).Error != nil {
+			return errors.New("instance_not_ready")
+		}
+		if instance.Status == "stopped" || channel.Status == common.ChannelStatusManuallyDisabled {
+			return errors.New("instance_not_running")
+		}
+	}
 	if secrets.GatewayOAuth == nil && secrets.GatewayRemoteID == "" {
 		return errors.New("gateway_credentials_required")
 	}
@@ -682,9 +749,15 @@ func (client *gptGatewayClient) sync(ctx context.Context, secrets *GPTAccountSec
 	}
 	// The remote gateway now owns refreshes. Retain no obsolete local refresh
 	// token that a future sync could accidentally replay over rotated credentials.
-	secrets.GatewayOAuth = nil
-	secrets.GatewayImportAttempted = false
-	return client.checkpoint(secrets, "synced", "", true)
+	completed := *secrets
+	completed.GatewayOAuth = nil
+	completed.GatewayImportAttempted = false
+	completed.GatewayCredentialReplacement = false
+	if err := client.checkpoint(&completed, "synced", "", true); err != nil {
+		return err
+	}
+	*secrets = completed
+	return nil
 }
 
 func (client *gptGatewayClient) cpaPath() string {
@@ -709,10 +782,17 @@ func vm2apiRemoteID(account *model.GPTAccount, secrets *GPTAccountSecrets) strin
 	if secrets.GatewayRemoteID != "" {
 		return secrets.GatewayRemoteID
 	}
-	return "new-api-" + model.GPTChannelKeyHash(account.SecretID)[:32]
+	id := "new-api-" + model.GPTChannelKeyHash(account.SecretID)[:32]
+	if account.GatewayID != nil {
+		var gateway model.GPTAccountGateway
+		if model.DB.First(&gateway, *account.GatewayID).Error == nil && gateway.ManagedAccountID != nil && *gateway.ManagedAccountID == account.ID {
+			id += "-isolated"
+		}
+	}
+	return id
 }
 
-func loadGPTAccountVM2APIClient(accountID int) (*model.GPTAccount, *model.GPTAccountGateway, *GPTAccountSecrets, *gptGatewayClient, error) {
+func loadGPTAccountVM2APIClient(accountID int, mutation bool) (*model.GPTAccount, *model.GPTAccountGateway, *GPTAccountSecrets, *gptGatewayClient, error) {
 	var account model.GPTAccount
 	if model.DB.First(&account, accountID).Error != nil || account.GatewayID == nil {
 		return nil, nil, nil, nil, errors.New("account_not_found")
@@ -729,11 +809,37 @@ func loadGPTAccountVM2APIClient(accountID int) (*model.GPTAccount, *model.GPTAcc
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	client.readAccount = &account
+	if mutation {
+		snapshot, err := AcquireGPTAccountJob(accountID, false)
+		if err != nil {
+			client.client.CloseIdleConnections()
+			return nil, nil, nil, nil, err
+		}
+		client.previousStatus = account.Status
+		client.account = snapshot
+		client.readAccount = nil
+		var instance model.GPTAccountVM2APIInstance
+		result := model.DB.Where("account_id = ?", accountID).Limit(1).Find(&instance)
+		if result.Error != nil || (instance.AccountID != 0 && instance.Status != "ready") {
+			client.releaseMutation(nil)
+			client.client.CloseIdleConnections()
+			return nil, nil, nil, nil, errors.New("instance_not_ready")
+		}
+		account = *snapshot
+	}
 	return &account, &gateway, secrets, client, nil
 }
 
+func (client *gptGatewayClient) releaseMutation(err error) {
+	if err == nil {
+		model.DB.Model(&model.GPTAccount{}).Where("id = ? AND generation = ? AND lease_id = ?", client.account.ID, client.account.Generation, client.account.LeaseID).Update("status", client.previousStatus)
+	}
+	ReleaseGPTAccountJob(client.account, GPTAccountErrorCode(err))
+}
+
 func GetGPTAccountVM2APIStatus(ctx context.Context, accountID int) (*GPTAccountVM2APIStatus, error) {
-	account, gateway, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	account, gateway, secrets, client, err := loadGPTAccountVM2APIClient(accountID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -752,19 +858,45 @@ func GetGPTAccountVM2APIStatus(ctx context.Context, accountID int) (*GPTAccountV
 	if status == http.StatusNotFound || !response.OK {
 		return nil, errors.New("gateway_remote_missing")
 	}
-	result := &GPTAccountVM2APIStatus{AccountID: account.ID, VMID: vmID, GatewayID: gateway.ID, VM: response.Data.VM}
-	if quota, ok := response.Data.VM["quota"].(map[string]any); ok {
-		result.Quota = quota
+	if response.Data.VM["id"] != vmID {
+		return nil, errors.New("gateway_remote_conflict")
 	}
+	vm := vm2apiPublicFields(response.Data.VM, "id", "name", "status", "platform", "family", "email", "schedulable", "schedule_disabled_reason", "max_concurrency", "max_rpm", "max_sessions", "plan_type", "kernel", "runtime_type", "container", "has_token", "has_refresh", "expires_at", "refreshed_at", "created_at")
+	quotaSource := response.Data.VM
+	if usage, ok := response.Data.VM["codex_usage"].(map[string]any); ok {
+		if quota, ok := usage["quota"].(map[string]any); ok {
+			quotaSource = quota
+		}
+	}
+	if quota, ok := response.Data.VM["quota"].(map[string]any); ok {
+		quotaSource = quota
+	}
+	quota := vm2apiPublicFields(quotaSource, "utilization_5h", "utilization_7d", "reset_5h", "reset_7d", "status_5h", "status_7d", "updated_at")
+	result := &GPTAccountVM2APIStatus{AccountID: account.ID, VMID: vmID, GatewayID: gateway.ID, VM: vm, Quota: quota}
 	return result, nil
 }
 
-func UpdateGPTAccountVM2APIPolicy(ctx context.Context, accountID int, body map[string]any) error {
-	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+func UpdateGPTAccountVM2APIPolicy(ctx context.Context, accountID int, body map[string]any) (resultErr error) {
+	for key, value := range body {
+		switch key {
+		case "max_concurrency", "max_rpm", "max_sessions":
+			number, ok := value.(float64)
+			if !ok || number < 0 || number > 1000 || number != float64(int(number)) {
+				return errors.New("invalid_gateway")
+			}
+		default:
+			return errors.New("invalid_gateway")
+		}
+	}
+	if len(body) == 0 {
+		return errors.New("invalid_gateway")
+	}
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID, true)
 	if err != nil {
 		return err
 	}
 	defer client.client.CloseIdleConnections()
+	defer func() { client.releaseMutation(resultErr) }()
 	status, err := client.request(ctx, http.MethodPatch, "/api/panel/vms/"+url.PathEscape(vm2apiRemoteID(account, secrets)), body, nil)
 	if err != nil || status < 200 || status >= 300 {
 		return errors.New("gateway_import_failed")
@@ -772,12 +904,13 @@ func UpdateGPTAccountVM2APIPolicy(ctx context.Context, accountID int, body map[s
 	return nil
 }
 
-func SetGPTAccountVM2APISchedulable(ctx context.Context, accountID int, schedulable bool) error {
-	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+func SetGPTAccountVM2APISchedulable(ctx context.Context, accountID int, schedulable bool) (resultErr error) {
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID, true)
 	if err != nil {
 		return err
 	}
 	defer client.client.CloseIdleConnections()
+	defer func() { client.releaseMutation(resultErr) }()
 	status, err := client.request(ctx, http.MethodPost, "/api/panel/vms/"+url.PathEscape(vm2apiRemoteID(account, secrets))+"/schedulable", map[string]any{"schedulable": schedulable}, nil)
 	if err != nil || status < 200 || status >= 300 {
 		return errors.New("gateway_import_failed")
@@ -785,12 +918,13 @@ func SetGPTAccountVM2APISchedulable(ctx context.Context, accountID int, schedula
 	return nil
 }
 
-func RefreshGPTAccountVM2APIQuota(ctx context.Context, accountID int) error {
-	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+func RefreshGPTAccountVM2APIQuota(ctx context.Context, accountID int) (resultErr error) {
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID, true)
 	if err != nil {
 		return err
 	}
 	defer client.client.CloseIdleConnections()
+	defer func() { client.releaseMutation(resultErr) }()
 	status, err := client.request(ctx, http.MethodPost, "/api/panel/vms/"+url.PathEscape(vm2apiRemoteID(account, secrets))+"/openai-quota/refresh", nil, nil)
 	if err != nil || status < 200 || status >= 300 {
 		return errors.New("gateway_import_failed")
@@ -799,7 +933,7 @@ func RefreshGPTAccountVM2APIQuota(ctx context.Context, accountID int) error {
 }
 
 func ListGPTAccountVM2APILogs(ctx context.Context, accountID int, limit int) (map[string]any, error) {
-	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID)
+	account, _, secrets, client, err := loadGPTAccountVM2APIClient(accountID, false)
 	if err != nil {
 		return nil, err
 	}
@@ -813,7 +947,34 @@ func ListGPTAccountVM2APILogs(ctx context.Context, accountID int, limit int) (ma
 	if err != nil || status < 200 || status >= 300 {
 		return nil, errors.New("gateway_import_failed")
 	}
-	return response, nil
+	items := make([]map[string]any, 0)
+	if rows, ok := response["items"].([]any); ok {
+		for _, row := range rows {
+			item, ok := row.(map[string]any)
+			if !ok || item["vm_id"] != vm2apiRemoteID(account, secrets) {
+				continue
+			}
+			items = append(items, vm2apiPublicFields(item, "id", "request_id", "vm_id", "created_at", "model", "requested_model", "upstream_model", "status", "protocol", "stream", "first_token_ms", "duration_ms", "input_tokens", "output_tokens", "error_code", "error_class", "attempt_count", "final_state", "stop_reason"))
+		}
+	}
+	return map[string]any{"items": items, "total": len(items), "limit": limit}, nil
+}
+
+// Public monitoring fields never contain nested provider documents or freeform
+// errors; those can embed OAuth credentials, proxy passwords or request bodies.
+func vm2apiPublicFields(source map[string]any, keys ...string) map[string]any {
+	result := make(map[string]any)
+	for _, key := range keys {
+		switch value := source[key].(type) {
+		case nil, bool, float64:
+			result[key] = value
+		case string:
+			if len(value) <= 512 {
+				result[key] = value
+			}
+		}
+	}
+	return result
 }
 
 type gptCPACredential struct {
@@ -987,14 +1148,18 @@ func (client *gptGatewayClient) syncSub2API(ctx context.Context, secrets *GPTAcc
 }
 
 type gptVM2APIVM struct {
-	ID               string `json:"id"`
-	Platform         string `json:"platform"`
-	Family           string `json:"family"`
-	HasToken         bool   `json:"has_token"`
-	HasRefresh       bool   `json:"has_refresh"`
-	Email            string `json:"email"`
-	OrgUUID          string `json:"org_uuid"`
-	ChatGPTAccountID string `json:"chatgpt_account_id"`
+	Status                 string `json:"status"`
+	Schedulable            bool   `json:"schedulable"`
+	ScheduleManual         bool   `json:"schedule_manual"`
+	ScheduleDisabledReason string `json:"schedule_disabled_reason"`
+	ID                     string `json:"id"`
+	Platform               string `json:"platform"`
+	Family                 string `json:"family"`
+	HasToken               bool   `json:"has_token"`
+	HasRefresh             bool   `json:"has_refresh"`
+	Email                  string `json:"email"`
+	OrgUUID                string `json:"org_uuid"`
+	ChatGPTAccountID       string `json:"chatgpt_account_id"`
 }
 
 type gptVM2APIVMResponse struct {
@@ -1008,93 +1173,135 @@ func ownedVM2APISlot(vm gptVM2APIVM, vmID string) bool {
 	return vm.ID == vmID && vm.Platform == "openai" && vm.Family == "codex"
 }
 
+// VM2API creates slots paused for missing credentials, but Codex import leaves
+// that initial pause behind. Start again only for this state; the start API
+// restores scheduling without creating the manual lock of /schedulable.
+func (client *gptGatewayClient) recoverVM2APIInitialSchedule(ctx context.Context, vmID string, vm gptVM2APIVM) error {
+	if client.gateway.ManagedAccountID == nil || vm.Schedulable || vm.ScheduleManual || vm.ScheduleDisabledReason != "no_credential" {
+		return nil
+	}
+	if !ownedVM2APIIdentity(vm, vmID, client.account) {
+		return errors.New("gateway_remote_conflict")
+	}
+	verified, err := client.startVM2APISlot(ctx, vmID)
+	if err != nil {
+		return err
+	}
+	if !ownedVM2APIIdentity(verified.Data.VM, vmID, client.account) {
+		return errors.New("gateway_remote_conflict")
+	}
+	if !verified.Data.VM.Schedulable || !verified.Data.VM.HasToken {
+		return errors.New("instance_not_running")
+	}
+	return nil
+}
+
 func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAccountSecrets) error {
-	vmID := "new-api-" + model.GPTChannelKeyHash(client.account.SecretID)[:32]
+	vmID := vm2apiRemoteID(client.account, &GPTAccountSecrets{})
 	if secrets.GatewayRemoteID != "" && secrets.GatewayRemoteID != vmID {
 		return errors.New("gateway_remote_conflict")
+	}
+	if secrets.GatewayCredentialReplacement && secrets.GatewayImportAttempted {
+		return errors.New("gateway_import_uncertain")
 	}
 	var existing gptVM2APIVMResponse
 	status, err := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &existing)
 	if err != nil {
 		return err
 	}
-	if status != http.StatusNotFound {
-		if !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
-			return errors.New("gateway_remote_conflict")
+	if status == http.StatusNotFound {
+		if secrets.GatewayCredentialReplacement {
+			return errors.New("instance_not_ready")
 		}
+		if secrets.GatewayImportAttempted {
+			return errors.New("gateway_import_uncertain")
+		}
+		if secrets.GatewayOAuth == nil {
+			return errors.New("gateway_credentials_required")
+		}
+		// Slot provisioning carries no OAuth credentials. A slow image pull or
+		// startup must not consume the one-time credential import attempt.
 		secrets.GatewayRemoteID = vmID
-		if existing.Data.VM.HasToken || existing.Data.VM.HasRefresh {
-			remoteAccountID := existing.Data.VM.ChatGPTAccountID
-			if remoteAccountID == "" {
-				remoteAccountID = existing.Data.VM.OrgUUID
-			}
-			if existing.Data.VM.Email == "" && remoteAccountID == "" {
-				return errors.New("gateway_remote_conflict")
-			}
-			if existing.Data.VM.Email != "" && !strings.EqualFold(existing.Data.VM.Email, client.account.Email) {
-				return errors.New("gateway_remote_conflict")
-			}
-			if remoteAccountID != "" && remoteAccountID != client.account.AccountID {
-				return errors.New("gateway_remote_conflict")
-			}
-			secrets.GatewayOAuth = nil
-			secrets.GatewayImportAttempted = false
-			return nil
-		}
-		if secrets.GatewayImportAttempted {
-			return errors.New("gateway_import_uncertain")
-		}
-		if secrets.GatewayOAuth == nil {
-			return errors.New("gateway_credentials_required")
-		}
-		secrets.GatewayImportAttempted = true
-		if err := client.checkpoint(secrets, "pending", "", false); err != nil {
-			return err
-		}
-	} else {
-		if secrets.GatewayImportAttempted {
-			return errors.New("gateway_import_uncertain")
-		}
-		if secrets.GatewayOAuth == nil {
-			return errors.New("gateway_credentials_required")
-		}
-		secrets.GatewayRemoteID, secrets.GatewayImportAttempted = vmID, true
 		if err := client.checkpoint(secrets, "pending", "", false); err != nil {
 			return err
 		}
 		createBody := map[string]any{
-			"id":                  vmID,
-			"name":                vmID,
-			"platform":            "openai",
-			"family":              "codex",
-			"start":               true,
-			"auto_allocate_proxy": true,
+			"id": vmID, "name": vmID, "platform": "openai", "family": "codex",
+			"start": true, "auto_allocate_proxy": true,
 		}
-		var createResponse gptVM2APIVMResponse
-		createStatus, createErr := client.request(ctx, http.MethodPost, "/api/panel/vms/create", createBody, &createResponse)
-		if createStatus != http.StatusCreated && createStatus != http.StatusOK && createStatus != http.StatusConflict {
-			if createStatus != http.StatusConflict && gptGatewayImportRejected(createStatus) {
-				secrets.GatewayRemoteID, secrets.GatewayImportAttempted = "", false
-				return errors.New("gateway_import_failed")
-			}
-			if createErr != nil || createStatus == http.StatusNotFound {
-				return errors.New("gateway_import_uncertain")
-			}
-			return errors.New("gateway_import_uncertain")
+		if client.gateway.ManagedAccountID != nil {
+			createBody["machine"] = map[string]any{"memory": "512m", "docker_cpus": 1}
+			createBody["kernel"] = "archlinux"
 		}
-		if createStatus != http.StatusConflict && (createErr != nil || !createResponse.OK || !ownedVM2APISlot(createResponse.Data.VM, vmID)) {
-			return errors.New("gateway_import_uncertain")
+		createStatus, createErr := client.request(ctx, http.MethodPost, "/api/panel/vms/create", createBody, &existing)
+		if gptGatewayImportRejected(createStatus) {
+			secrets.GatewayRemoteID = ""
+			return errors.New("gateway_import_failed")
 		}
-		if createStatus == http.StatusConflict {
-			var conflict gptVM2APIVMResponse
-			conflictStatus, conflictErr := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &conflict)
-			if conflictErr != nil || conflictStatus == http.StatusNotFound || !conflict.OK || !ownedVM2APISlot(conflict.Data.VM, vmID) {
-				return errors.New("gateway_import_uncertain")
+		if createErr != nil || !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
+			// VM2API persists the slot before waiting for its runtime to boot.
+			// Read it back after an ambiguous response; never blindly recreate it
+			// or assume that an existing slot is empty.
+			existing = gptVM2APIVMResponse{}
+			status, err = client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &existing)
+			if err != nil || status == http.StatusNotFound {
+				return errors.New("gateway_unavailable")
 			}
 		}
 	}
-	if secrets.GatewayOAuth == nil {
+	if !existing.OK || !ownedVM2APISlot(existing.Data.VM, vmID) {
+		return errors.New("gateway_remote_conflict")
+	}
+	if secrets.GatewayCredentialReplacement {
+		if !ownedVM2APIIdentity(existing.Data.VM, vmID, client.account) {
+			return errors.New("gateway_remote_conflict")
+		}
+		if existing.Data.VM.Status != "running" || (!existing.Data.VM.Schedulable && existing.Data.VM.ScheduleManual) {
+			return errors.New("instance_not_running")
+		}
+	}
+	if client.gateway.ManagedAccountID != nil && existing.Data.VM.Status != "running" {
+		if (existing.Data.VM.HasToken || existing.Data.VM.HasRefresh) && !ownedVM2APIIdentity(existing.Data.VM, vmID, client.account) {
+			return errors.New("gateway_remote_conflict")
+		}
+		if !existing.Data.VM.Schedulable && existing.Data.VM.ScheduleManual {
+			return errors.New("instance_not_running")
+		}
+		existing, err = client.startVM2APISlot(ctx, vmID)
+		if err != nil {
+			return err
+		}
+	}
+	secrets.GatewayRemoteID = vmID
+	if !secrets.GatewayCredentialReplacement && (existing.Data.VM.HasToken || existing.Data.VM.HasRefresh) {
+		if client.gateway.ManagedAccountID != nil && (!ownedVM2APIIdentity(existing.Data.VM, vmID, client.account) || existing.Data.VM.Status != "running") {
+			return errors.New("gateway_remote_conflict")
+		}
+		remoteAccountID := existing.Data.VM.ChatGPTAccountID
+		if remoteAccountID == "" {
+			remoteAccountID = existing.Data.VM.OrgUUID
+		}
+		if existing.Data.VM.Email == "" && remoteAccountID == "" {
+			return errors.New("gateway_remote_conflict")
+		}
+		if existing.Data.VM.Email != "" && !strings.EqualFold(existing.Data.VM.Email, client.account.Email) {
+			return errors.New("gateway_remote_conflict")
+		}
+		if remoteAccountID != "" && remoteAccountID != client.account.AccountID {
+			return errors.New("gateway_remote_conflict")
+		}
+		if err := client.recoverVM2APIInitialSchedule(ctx, vmID, existing.Data.VM); err != nil {
+			return err
+		}
+		secrets.GatewayOAuth = nil
+		secrets.GatewayImportAttempted = false
 		return nil
+	}
+	if secrets.GatewayImportAttempted {
+		return errors.New("gateway_import_uncertain")
+	}
+	if secrets.GatewayOAuth == nil {
+		return errors.New("gateway_credentials_required")
 	}
 	expires, expiryErr := time.Parse(time.RFC3339, secrets.GatewayOAuth.Expired)
 	if expiryErr != nil || !expires.After(time.Now()) {
@@ -1113,6 +1320,11 @@ func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAcco
 	if err != nil {
 		return errors.New("gateway_import_failed")
 	}
+	// Only the credential-bearing request needs conservative replay protection.
+	secrets.GatewayImportAttempted = true
+	if err := client.checkpoint(secrets, "pending", "", false); err != nil {
+		return err
+	}
 	var importResponse gptVM2APIVMResponse
 	importStatus, importErr := client.request(ctx, http.MethodPost, "/api/panel/vms/import", map[string]any{"vm_id": vmID, "auth_json": string(encoded)}, &importResponse)
 	if gptGatewayImportRejected(importStatus) {
@@ -1121,6 +1333,20 @@ func (client *gptGatewayClient) syncVM2API(ctx context.Context, secrets *GPTAcco
 	}
 	if importErr != nil || importStatus < 200 || importStatus >= 300 || !importResponse.OK || !ownedVM2APISlot(importResponse.Data.VM, vmID) {
 		return errors.New("gateway_import_uncertain")
+	}
+	if client.gateway.ManagedAccountID != nil {
+		var verified gptVM2APIVMResponse
+		status, err := client.request(ctx, http.MethodGet, "/api/panel/vms/"+url.PathEscape(vmID), nil, &verified)
+		if err != nil || status != 200 || !verified.OK || !ownedVM2APIIdentity(verified.Data.VM, vmID, client.account) || verified.Data.VM.Status != "running" {
+			return errors.New("gateway_import_uncertain")
+		}
+		if secrets.GatewayCredentialReplacement {
+			if !verified.Data.VM.Schedulable && verified.Data.VM.ScheduleManual {
+				return errors.New("instance_not_running")
+			}
+			return nil
+		}
+		return client.recoverVM2APIInitialSchedule(ctx, vmID, verified.Data.VM)
 	}
 	return nil
 }

@@ -1,7 +1,19 @@
 import { createHmac } from 'node:crypto'
 
-const oauthClientID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-const callbackURL = 'http://localhost:1455/auth/callback'
+const oauthProfiles = [
+  { clientID: 'app_EMoamEEZ73f0CkXaXp7hrann', authorizePath: '/oauth/authorize',
+    callbackURL: 'http://localhost:1455/auth/callback', statePattern: /^[A-Za-z0-9_-]{24,128}$/ },
+  { clientID: 'app_fnr0pYvVwwFDocDumLG3H2Bp', authorizePath: '/api/accounts/authorize',
+    callbackURL: 'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback',
+    statePattern: /^bps\.[A-Za-z0-9_-]{24,128}\.PC$/ },
+]
+
+export function loginOAuthProfile(url) {
+  if (url.origin !== 'https://auth.openai.com' || url.username || url.password || url.hash) return undefined
+  return oauthProfiles.find(profile => url.pathname === profile.authorizePath &&
+    url.searchParams.get('client_id') === profile.clientID &&
+    url.searchParams.get('redirect_uri') === profile.callbackURL)
+}
 const errorCodes = new Set([
   'captcha_required', 'email_verification_required', 'consent_required',
   'additional_verification_required', 'invalid_credentials', 'account_disabled', 'account_unavailable',
@@ -134,18 +146,16 @@ export function validateLoginRequest(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('invalid_request')
   const { authorization_url, state, email, password, totp_secret = '', totp_provider = 'local', expected_account_id = '', workspace_preference = '' } = input
   if (typeof authorization_url !== 'string' || authorization_url.length > 4096 ||
-      typeof state !== 'string' || !/^[A-Za-z0-9_-]{24,128}$/.test(state) ||
+      typeof state !== 'string' || state.length > 135 ||
       typeof email !== 'string' || email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email) ||
       typeof password !== 'string' || !password || password.length > 1024 ||
       typeof totp_secret !== 'string' || !['', 'local', '2fa_cn'].includes(totp_provider) ||
       !['', 'team_then_personal'].includes(workspace_preference) ||
       typeof expected_account_id !== 'string' || expected_account_id.length > 128 || /[\x00-\x20\x7f]/.test(expected_account_id)) throw new Error('invalid_request')
   const url = new URL(authorization_url)
-  if (url.origin !== 'https://auth.openai.com' || url.pathname !== '/oauth/authorize' ||
-      url.username || url.password || url.hash ||
-      url.searchParams.get('client_id') !== oauthClientID ||
+  const profile = loginOAuthProfile(url)
+  if (!profile || !profile.statePattern.test(state) ||
       url.searchParams.get('response_type') !== 'code' ||
-      url.searchParams.get('redirect_uri') !== callbackURL ||
       url.searchParams.get('state') !== state ||
       url.searchParams.get('code_challenge_method') !== 'S256' ||
       !/^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get('code_challenge') || '')) throw new Error('invalid_request')

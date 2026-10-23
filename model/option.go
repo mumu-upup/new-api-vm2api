@@ -233,6 +233,12 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if strings.EqualFold(key, MarketplaceCatalogOption) && key != MarketplaceCatalogOption {
+		return common.NewMessage("Invalid marketplace catalog option key")
+	}
+	if key == MarketplaceCatalogOption {
+		return validateMarketplaceCatalog(DB, value)
+	}
 	if key == GPTAccountDefaultGroupKey {
 		return ValidateGPTAccountGroup(value)
 	}
@@ -288,6 +294,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if key == MarketplaceCatalogOption {
+		return updateMarketplaceCatalog(value)
+	}
 	if IsRequestPolicyOption(key) {
 		return UpdateRequestPolicyOptions(map[string]string{key: value})
 	}
@@ -322,6 +331,11 @@ func UpdateOption(key string, value string) error {
 // is touched — safe for callers that must commit a set of related options
 // atomically (e.g. payment gateway binding).
 func UpdateOptionsBulk(values map[string]string) error {
+	_, hasMarketplaceCatalog := values[MarketplaceCatalogOption]
+	if hasMarketplaceCatalog {
+		metadataMutationMu.Lock()
+		defer metadataMutationMu.Unlock()
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -357,6 +371,14 @@ func UpdateOptionsBulk(values map[string]string) error {
 	}
 
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		if hasMarketplaceCatalog {
+			if err := lockMetadataMutation(tx); err != nil {
+				return err
+			}
+			if err := validateMarketplaceCatalog(tx, values[MarketplaceCatalogOption]); err != nil {
+				return err
+			}
+		}
 		for k, v := range values {
 			option := Option{Key: k}
 			if err := tx.FirstOrCreate(&option, Option{Key: k}).Error; err != nil {

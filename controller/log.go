@@ -261,3 +261,16 @@ func GetLogsSelfStat(c *gin.Context) {
 	})
 	return
 }
+
+// GetResponseModelMismatchStats returns the admin degradation dashboard data
+// for the requested time range.
+func GetResponseModelMismatchStats(c *gin.Context) {
+	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
+	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
+	stats, err := service.GetResponseModelMismatchStats(startTimestamp, endTimestamp)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, stats)
+}

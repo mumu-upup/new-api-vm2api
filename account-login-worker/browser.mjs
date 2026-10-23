@@ -1,16 +1,16 @@
 import { setTimeout as delay } from 'node:timers/promises'
-import { getLoginTOTP, LoginClock } from './login.mjs'
+import { getLoginTOTP, LoginClock, loginOAuthProfile } from './login.mjs'
 import { cleanupActiveSessions } from './session-cleanup.mjs'
 
-const callbackOrigin = 'http://localhost:1455'
-const callbackPath = '/auth/callback'
+const codexCallbackURL = 'http://localhost:1455/auth/callback'
 const loginOrigin = 'https://auth.openai.com'
 const chatGPTOrigin = 'https://chatgpt.com'
 const codexConsentPath = '/sign-in-with-chatgpt/codex/consent'
 
-export function parseCallback(raw, state) {
+export function parseCallback(raw, state, callbackURL = codexCallbackURL) {
   const url = new URL(raw)
-  if (url.origin !== callbackOrigin || url.pathname !== callbackPath) return null
+  const expected = new URL(callbackURL)
+  if (url.origin !== expected.origin || url.pathname !== expected.pathname) return null
   if (url.username || url.password || url.hash || url.searchParams.getAll('state').length !== 1 ||
       url.searchParams.get('state') !== state || url.searchParams.getAll('code').length !== 1 ||
       !url.searchParams.get('code') || url.searchParams.has('error')) {
@@ -78,7 +78,7 @@ export async function handleLoginRequest(route, guard) {
   const resourceType = request.resourceType?.()
   const mainNavigation = request.isNavigationRequest() && request.frame() === guard.mainFrame
   for (let hop = 0; hop < 6; hop++) {
-    const callback = parseCallback(url.href, guard.state)
+    const callback = parseCallback(url.href, guard.state, guard.callbackURL)
     if (callback && mainNavigation && method === 'GET') {
       guard.setCallback(callback)
       await route.fulfill({ status: 200, contentType: 'text/plain', body: 'Authorization received.' })
@@ -117,7 +117,7 @@ export async function handleLoginRequest(route, guard) {
     if (!location) break
     const next = new URL(location, url)
     const nextMethod = status === 303 || ((status === 301 || status === 302) && method === 'POST') ? 'GET' : method
-    const nextCallback = parseCallback(next.href, guard.state)
+    const nextCallback = parseCallback(next.href, guard.state, guard.callbackURL)
     if (nextCallback && mainNavigation && nextMethod === 'GET') {
       guard.setCallback(nextCallback)
       await route.fulfill({ status: 200, contentType: 'text/plain', body: 'Authorization received.' })
@@ -151,6 +151,8 @@ function verifiedCredentialCallback(callback, submitted, requireChallenges) {
 }
 
 export async function completeLoginPage(page, input, signal, options = {}) {
+  const profile = input.authorization_url && loginOAuthProfile(new URL(input.authorization_url))
+  const callbackURL = profile?.callbackURL || codexCallbackURL
   const now = options.now || Date.now
   const wait = options.wait || (() => delay(300, undefined, { signal }).catch(() => {}))
   const deadline = options.deadline || now() + 150000
@@ -159,7 +161,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
   let lastScreen = ''
   for (let step = 0; step < 500 && now() < deadline; step++) {
     if (signal.aborted) break
-    const callback = parseCallback(page.url(), input.state)
+    const callback = parseCallback(page.url(), input.state, callbackURL)
     if (callback) return verifiedCredentialCallback(callback, submitted, options.checkOnly || options.probe)
     let screen
     try {
@@ -175,7 +177,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
     if (signal.aborted || now() >= deadline) break
     // Redirect interception can finish while the document is being inspected.
     // Revalidate it before checking the origin of that now-replaced page.
-    const completedCallback = parseCallback(page.url(), input.state)
+    const completedCallback = parseCallback(page.url(), input.state, callbackURL)
     if (completedCallback) return verifiedCredentialCallback(completedCallback, submitted, options.checkOnly || options.probe)
     const diagnosticKind = ['loading', 'navigation_error', 'captcha', 'email_code', 'consent',
       'additional', 'workspace', 'invalid_totp', 'disabled', 'unavailable', 'invalid', 'email', 'password', 'totp'].includes(screen.kind)
@@ -267,7 +269,7 @@ export async function completeLoginPage(page, input, signal, options = {}) {
         try {
           await page.fillAndContinue(screen.kind, value)
         } catch (error) {
-          const callback = parseCallback(page.url(), input.state)
+          const callback = parseCallback(page.url(), input.state, callbackURL)
           if (callback) return verifiedCredentialCallback(callback, submitted, options.checkOnly || options.probe)
           if (signal.aborted) break
           return { status: 'needs_attention', error_code: /untrusted_(?:login_origin|form_action)/.test(error?.message || '')
@@ -345,6 +347,7 @@ export async function createIsolatedLoginContext(browser) {
 // CAPTCHAs, email codes and security challenges require a human. Login and
 // explicit model probes may submit the observed official Codex consent form.
 export async function browserLogin(input, signal, options = {}) {
+  const callbackURL = loginOAuthProfile(new URL(input.authorization_url))?.callbackURL || codexCallbackURL
   const deadline = Date.now() + 150000
   const clock = new LoginClock(options.now || Date.now)
   const onDiagnostic = options.onDiagnostic || (event => console.info(JSON.stringify({ source: 'gpt_login', ...event })))
@@ -361,7 +364,7 @@ export async function browserLogin(input, signal, options = {}) {
     tab.setDefaultTimeout(5000)
     let callback, navigationError = '', pendingNavigations = 0
     const guard = {
-      state: input.state, mainFrame: tab.mainFrame(), deadline, redirects: 0, clock,
+      state: input.state, callbackURL, mainFrame: tab.mainFrame(), deadline, redirects: 0, clock,
       checkVerification: options.checkOnly ? { password: false, totp: false } : null,
       onDiagnostic,
       setCallback: result => { callback = result },
@@ -393,7 +396,7 @@ export async function browserLogin(input, signal, options = {}) {
     })
     const page = {
       credentialsVerified: () => guard.checkVerification?.password && guard.checkVerification?.totp,
-      url: () => callback ? `${callbackOrigin}${callbackPath}?${new URLSearchParams({ state: callback.state || '', code: callback.code || '' })}` : tab.url(),
+      url: () => callback ? `${callbackURL}?${new URLSearchParams({ state: callback.state || '', code: callback.code || '' })}` : tab.url(),
       screen: () => pendingNavigations && !navigationError ? { kind: 'loading' } : classifyLoginScreen(tab, navigationError),
       fillAndContinue: async (kind, value) => {
         if (new URL(tab.url()).origin !== loginOrigin) throw new Error('untrusted_login_origin')

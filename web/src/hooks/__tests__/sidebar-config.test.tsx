@@ -22,6 +22,7 @@ import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { checkIsActive } from '@/components/layout/lib/url-utils'
+import { DASHBOARD_SECTION_IDS } from '@/features/dashboard/section-registry'
 import {
   parseSidebarModulesAdmin,
   serializeSidebarModulesAdmin,
@@ -134,6 +135,50 @@ describe('security sidebar visibility', () => {
         .flatMap((group) => group.items)
         .some((item) => item.title === 'Security & Access')
     ).toBe(true)
+  })
+})
+
+describe('channel monitor sidebar entry', () => {
+  it('places Channel monitor immediately below Task Logs in General', () => {
+    const { result } = renderHook(useSidebarData)
+    const items =
+      result.current.navGroups.find((group) => group.id === 'general')?.items ??
+      []
+    const taskIndex = items.findIndex((item) => item.title === 'Task Logs')
+
+    expect(items[taskIndex + 1]).toMatchObject({
+      title: 'Channel monitor',
+      url: '/channel-monitor',
+    })
+    expect(items[taskIndex + 1]).toHaveProperty('requiredRole', 10)
+  })
+
+  it('does not include channel monitoring in dashboard tabs', () => {
+    expect(DASHBOARD_SECTION_IDS).not.toContain('channel-monitor')
+  })
+
+  it('keeps monitoring visible when dashboard is disabled in legacy settings', () => {
+    const { result } = sidebarFor(
+      { console: { enabled: true, detail: false } },
+      { console: { enabled: true, detail: false } }
+    )
+    const items = result.current.flatMap((group) => group.items)
+    expect(items.map((item) => item.title)).not.toContain('Dashboard')
+    expect(items.find((item) => item.title === 'Channel monitor')).toMatchObject({
+      url: '/channel-monitor',
+    })
+  })
+
+  it('persists an independent monitor visibility toggle', () => {
+    const config = parseSidebarModulesAdmin('{"console":{"enabled":true}}')
+    expect(config.console.channel_monitor).toBe(true)
+    config.console.channel_monitor = false
+    const { result } = sidebarFor(
+      parseSidebarModulesAdmin(serializeSidebarModulesAdmin(config))
+    )
+    const titles = result.current.flatMap((group) => group.items).map((item) => item.title)
+    expect(titles).not.toContain('Channel monitor')
+    expect(titles).toContain('Dashboard')
   })
 })
 

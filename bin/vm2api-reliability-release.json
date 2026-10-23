@@ -1,0 +1,21 @@
+{
+  "upstream": "https://github.com/dofastted/vm2api.git",
+  "baseline_branch": "main",
+  "baseline_commit": "819ee2a7c40b49fe81ebc3823e20373350a20545",
+  "source_commit": "9e5cd3cb2dbfa6930c99c5bc7c0b7bb248fcceb2",
+  "upstream_version": "1.3.199",
+  "patch": "bin/vm2api-codex-retry.patch",
+  "patch_sha256": "1e41387b4758b8c2aeb2004d24025ca85bf6499edac26b3a4daee76a7e40254d",
+  "image": "vm2api:reliability-9e5cd3c",
+  "image_id": "sha256:d2ef59e976e4c8065ca7af68e0defffc6b843d3047595c105d75f195b09ab9e0",
+  "platform": "linux/amd64",
+  "failover": {
+    "max_same_account_retries": 1,
+    "max_account_switches": 0,
+    "max_total_attempts": 2,
+    "same_account_retry_delay_ms": 500
+  },
+  "manager_unit_sha256": "7141c2398078bfa8158bb22bbc1392b93036429d0d4354a120b6ecc514ad3e61",
+  "new_api_application_image": "new-api:vm2-isolation-4d3bf7d41",
+  "archive_sha256": "b1a3753ce1fe7244e6caf05ca6489e0ba502aa7df128e9c586bc948f961ea9c5"
+}

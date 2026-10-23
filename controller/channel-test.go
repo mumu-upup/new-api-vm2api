@@ -50,7 +50,7 @@ func normalizeChannelTestEndpoint(channel *model.Channel, endpointType string) s
 	if normalized != "" {
 		return normalized
 	}
-	if channel != nil && channel.Type == constant.ChannelTypeCodex {
+	if channel != nil && model.IsGPTAccountDirectChannelType(channel.Type) {
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
 	return normalized
@@ -708,7 +708,7 @@ func validateTestResponseBody(respBody []byte, isStream, requireComplete bool) e
 }
 
 func shouldUseStreamForAutomaticChannelTest(channel *model.Channel) bool {
-	return channel != nil && channel.Type == constant.ChannelTypeCodex
+	return channel != nil && model.IsGPTAccountDirectChannelType(channel.Type)
 }
 
 func detectErrorMessageFromJSONBytes(jsonBytes []byte) string {
@@ -772,6 +772,11 @@ func buildTestRequestWithPrompt(model string, endpointType string, channel *mode
 		if encoded, err := common.Marshal([]map[string]string{{"role": "user", "content": prompt}}); err == nil {
 			testResponsesInput = json.RawMessage(encoded)
 		}
+	}
+	if channel != nil && channel.Type == constant.ChannelTypeExcelBPS && (endpointType == "" || endpointType == string(constant.EndpointTypeOpenAIResponse)) {
+		// The BPS connectivity/monitor probe uses the same streaming text protocol
+		// as normal BPS requests; the provider does not implement an output cap.
+		return &dto.OpenAIResponsesRequest{Model: model, Input: testResponsesInput, Stream: lo.ToPtr(true)}
 	}
 
 	// 根据端点类型构建不同的测试请求

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -86,6 +87,7 @@ func TestConvertOpenAIResponsesRequestRejectsUnsupportedBPSFeatures(t *testing.T
 		{"image input", dto.OpenAIResponsesRequest{Input: []byte(`[{"role":"user","content":[{"type":"input_image","image_url":"https://example.com/image.png"}]}]`)}},
 		{"tool history", dto.OpenAIResponsesRequest{Input: []byte(`[{"type":"function_call_output","call_id":"call_1","output":"done"}]`)}},
 		{"structured output", dto.OpenAIResponsesRequest{Text: []byte(`{"format":{"type":"json_schema","schema":{"type":"object"}}}`)}},
+		{"output cap", dto.OpenAIResponsesRequest{MaxOutputTokens: common.GetPointer(uint(1))}},
 		{"reasoning mode", dto.OpenAIResponsesRequest{Reasoning: &dto.Reasoning{Mode: []byte(`"heavy"`)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -97,6 +99,12 @@ func TestConvertOpenAIResponsesRequestRejectsUnsupportedBPSFeatures(t *testing.T
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestConvertOpenAIResponsesRequestRejectsBPSParameterOverrides(t *testing.T) {
+	info := &relaycommon.RelayInfo{RelayMode: relayconstant.RelayModeResponses, ChannelMeta: &relaycommon.ChannelMeta{ParamOverride: map[string]any{"stream": false}}}
+	_, err := (&Adaptor{}).ConvertOpenAIResponsesRequest(nil, info, dto.OpenAIResponsesRequest{Model: "gpt-5.6", Input: []byte(`"hello"`), Stream: boolPtr(true)})
+	require.Error(t, err)
 }
 
 func TestConvertOpenAIResponsesRequestRejectsNonStreamingRequests(t *testing.T) {

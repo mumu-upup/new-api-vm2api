@@ -105,6 +105,7 @@ func TestRecordResponseModelMismatchStoresOnlySubstitutedModels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			require.NoError(t, model.DB.Where("1 = 1").Delete(&model.ResponseModelMismatch{}).Error)
 			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			ctx.Set(common.RequestIdKey, "req-1")
 			ctx.Set("username", "alice")
 			relayInfo := &relaycommon.RelayInfo{UserId: 7, ResponseModel: tt.observation}

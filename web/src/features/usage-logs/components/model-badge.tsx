@@ -219,7 +219,25 @@ export function ResponseModelDetails(props: {
   if (props.observation.declaration_source === 'upstream_header_and_body') {
     sourceLabel = t('Upstream response headers and body')
   }
-
+  const modelDetails = [
+    {
+      label: t('Request Model'),
+      value: props.observation.requested_model,
+      copyValue: props.observation.requested_model,
+    },
+    {
+      label: t('Upstream Model'),
+      value:
+        props.observation.upstream_model || props.observation.requested_model,
+      copyValue:
+        props.observation.upstream_model || props.observation.requested_model,
+    },
+    {
+      label: t('Response Model'),
+      value: props.observation.returned_model || t('Not reported'),
+      copyValue: props.observation.returned_model,
+    },
+  ]
   return (
     <div className='min-w-0 space-y-2'>
       <ResponseModelStatus observation={props.observation} />
@@ -234,22 +252,7 @@ export function ResponseModelDetails(props: {
           className='h-auto whitespace-normal'
         />
       )}
-      {[
-        {
-          label: t('Request Model'),
-          value: props.observation.requested_model,
-        },
-        {
-          label: t('Upstream Model'),
-          value:
-            props.observation.upstream_model ||
-            props.observation.requested_model,
-        },
-        {
-          label: t('Response Model'),
-          value: props.observation.returned_model,
-        },
-      ].map((model) => (
+      {modelDetails.map((model) => (
         <DetailRow
           key={model.label}
           label={model.label}
@@ -258,12 +261,14 @@ export function ResponseModelDetails(props: {
               <span className='min-w-0 leading-5 wrap-anywhere'>
                 {model.value}
               </span>
-              <CopyButton
-            value={model.value || t('Not reported')}
-                className='size-5'
-                iconClassName='size-3'
-                aria-label={t('Copy {{field}}', { field: model.label })}
-              />
+              {model.copyValue && (
+                <CopyButton
+                  value={model.copyValue}
+                  className='size-5'
+                  iconClassName='size-3'
+                  aria-label={t('Copy {{field}}', { field: model.label })}
+                />
+              )}
             </span>
           }
           mono

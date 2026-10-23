@@ -24,11 +24,6 @@ func GetUserUsableGroupsForUser(userID int, userGroup string) (map[string]string
 	access := make(map[string]model.GroupAccess, len(metadata))
 	for _, item := range metadata {
 		access[item.Name] = item
-		if !item.Hidden && item.Enabled {
-			if _, ok := groups[item.Name]; !ok {
-				groups[item.Name] = item.Name
-			}
-		}
 	}
 	var grants []model.UserGroupGrant
 	if userID > 0 {
@@ -43,7 +38,7 @@ func GetUserUsableGroupsForUser(userID int, userGroup string) (map[string]string
 		}
 	}
 	for name, item := range access {
-		if item.Hidden {
+		if item.Hidden || !item.Enabled {
 			delete(groups, name)
 		}
 	}
@@ -52,6 +47,11 @@ func GetUserUsableGroupsForUser(userID int, userGroup string) (map[string]string
 		item, ok := access[grant.GroupName]
 		if ok && item.Hidden && item.Enabled && ratio_setting.ContainsGroupRatio(grant.GroupName) {
 			groups[grant.GroupName] = setting.GetUsableGroupDescription(grant.GroupName)
+		}
+	}
+	for name := range groups {
+		if !ratio_setting.ContainsGroupRatio(name) {
+			delete(groups, name)
 		}
 	}
 	return groups, nil

@@ -11,6 +11,7 @@ import (
 // GPTAccountGateway owns one shared pool channel; account membership is not a
 // guarantee that a relay request is served by any particular imported account.
 type GPTAccountGateway struct {
+	ManagedAccountID  *int   `json:"managed_account_id,omitempty" gorm:"uniqueIndex"`
 	ID                int    `json:"id" gorm:"primaryKey"`
 	Name              string `json:"name" gorm:"type:varchar(128);not null"`
 	Provider          string `json:"provider" gorm:"type:varchar(16);not null"`
@@ -42,7 +43,7 @@ func SaveGPTAccountGateway(gateway *GPTAccountGateway, relayKey string) error {
 			if err := lockForUpdate(tx).First(&current, gateway.ID).Error; err != nil {
 				return err
 			}
-			if current.Generation != gateway.Generation || current.ChannelID == nil {
+			if current.ManagedAccountID != nil || gateway.ManagedAccountID != nil || current.Generation != gateway.Generation || current.ChannelID == nil {
 				return ErrGPTAccountStale
 			}
 			if err := lockForUpdate(tx).First(&channel, *current.ChannelID).Error; err != nil {
@@ -109,6 +110,32 @@ func StoreGPTAccountGatewayCheckpoint(snapshot *GPTAccount, gateway *GPTAccountG
 			return ErrGPTAccountStale
 		}
 		values := map[string]any{"secrets_ciphertext": ciphertext, "account_id": snapshot.AccountID, "o_auth_subject": snapshot.OAuthSubject, "gateway_sync_status": status, "gateway_error_code": code, "updated_at": time.Now().Unix()}
+		if complete && currentGateway.ManagedAccountID != nil {
+			if *currentGateway.ManagedAccountID != account.ID || currentGateway.ChannelID == nil {
+				return ErrGPTAccountStale
+			}
+			var instance GPTAccountVM2APIInstance
+			if err := tx.First(&instance, "account_id = ? AND gateway_id = ?", account.ID, currentGateway.ID).Error; err != nil || instance.Status == "pending_cleanup" {
+				return ErrGPTAccountStale
+			}
+			var channel Channel
+			if err := lockForUpdate(tx).First(&channel, *currentGateway.ChannelID).Error; err != nil {
+				return err
+			}
+			if channel.Status == common.ChannelStatusManuallyDisabled {
+				return ErrGPTAccountStale
+			}
+			channel.Status = common.ChannelStatusEnabled
+			if err := tx.Model(&channel).Update("status", channel.Status).Error; err != nil {
+				return err
+			}
+			if err := channel.UpdateAbilities(tx); err != nil {
+				return err
+			}
+			if err := tx.Model(&instance).Updates(map[string]any{"status": "ready", "error_code": "", "package_ciphertext": ""}).Error; err != nil {
+				return err
+			}
+		}
 		if complete {
 			values["gateway_synced_at"], values["status"], values["last_error_code"], values["failure_count"] = time.Now().Unix(), "ready", "", 0
 			values["last_login_at"] = time.Now().Unix()

@@ -1,0 +1,26 @@
+[Unit]
+Description=New API per-account VM2API instance manager
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+RuntimeDirectory=new-api-vm2api
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 /opt/new-api-vm2api/vm2api-instance-manager.py --config /etc/new-api-vm2api/manager.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/new-api-vm2api/instances /run/new-api-vm2api
+ProtectHome=true
+LimitNOFILE=4096
+TasksMax=64
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target

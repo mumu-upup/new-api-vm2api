@@ -32,7 +32,7 @@ export interface GptAccount {
   has_totp: boolean
   totp_version: number
   totp_updated_at: number
-  totp_status: '' | 'saved' | 'operator_confirmed'
+  totp_status: '' | 'saved' | 'operator_confirmed' | 'automated'
   totp_provider?: '' | 'local' | '2fa_cn'
   can_manage: boolean
   group: string
@@ -115,3 +115,31 @@ export interface GptAccountTotpReveal {
   totp_secret: string
   expires_at: number
 }
+
+export interface GptAccountTotpChangeResult {
+  stage: 'primary' | 'fallback'
+  fallback_used: boolean
+}
+
+export interface GptAccountVm2ApiInstance {
+  account_id: number
+  isolation: 'shared' | 'dedicated'
+  instance_id?: string
+  gateway_id?: number
+  source_gateway_id?: number
+  status: string
+  runtime_status?: string
+  error_code?: string
+  container_name?: string
+  data_directory?: string
+  image?: string
+  port?: number
+  updated_at?: number
+  vm_id?: string
+}
+export type Vm2ApiInstanceAction =
+  | 'start'
+  | 'stop'
+  | 'restart'
+  | 'rebuild'
+  | 'provision'

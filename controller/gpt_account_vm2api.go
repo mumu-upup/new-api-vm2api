@@ -115,3 +115,55 @@ func ListGPTAccountVM2APILogs(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": logs})
 }
+
+func GetGPTAccountVM2APIInstance(c *gin.Context) {
+	if _, ok := gptAccountIdentity(c, false); !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	status, err := service.GetGPTAccountVM2APIInstance(c.Request.Context(), account.ID)
+	if err != nil {
+		gptAccountError(c, http.StatusBadGateway, service.GPTAccountErrorCode(err))
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": status})
+}
+
+func CreateGPTAccountVM2APIInstance(c *gin.Context) {
+	if _, ok := gptAccountIdentity(c, true); !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	if err := service.RequestGPTAccountVM2APIInstance(c.Request.Context(), account.ID); err != nil {
+		gptAccountError(c, http.StatusConflict, service.GPTAccountErrorCode(err))
+		return
+	}
+	service.StartGPTAccountVM2APIInstanceJob(account.ID)
+	recordManageAudit(c, "gpt_account.vm2api.instance.ensure", map[string]any{"account_id": account.ID})
+	c.JSON(http.StatusAccepted, gin.H{"success": true, "data": gin.H{"account_id": account.ID, "status": "pending"}})
+}
+
+func ManageGPTAccountVM2APIInstance(c *gin.Context) {
+	if _, ok := gptAccountIdentity(c, true); !ok {
+		return
+	}
+	account, ok := getManagedGPTAccount(c)
+	if !ok {
+		return
+	}
+	action := c.Param("action")
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 110*time.Second)
+	defer cancel()
+	if err := service.ManageGPTAccountVM2APIInstance(ctx, account.ID, action); err != nil {
+		gptAccountError(c, http.StatusConflict, service.GPTAccountErrorCode(err))
+		return
+	}
+	recordManageAudit(c, "gpt_account.vm2api.instance."+action, map[string]any{"account_id": account.ID})
+	GetGPTAccountVM2APIInstance(c)
+}

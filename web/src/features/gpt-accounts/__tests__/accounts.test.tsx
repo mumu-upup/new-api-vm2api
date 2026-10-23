@@ -122,6 +122,15 @@ function renderPage() {
   )
 }
 
+function mockUnavailableVm2Api() {
+  const fallback = vi.mocked(api.get).getMockImplementation()
+  if (!fallback) throw new Error('API fixture is missing')
+  vi.mocked(api.get).mockImplementation(async (url, options) => {
+    if (url.includes('/vm2api')) throw new Error('VM2API runtime unavailable')
+    return fallback(url, options)
+  })
+}
+
 it('shows a persistent global default and leaves new account group blank to inherit it', async () => {
   const originalGet = vi.mocked(api.get).getMockImplementation()
   if (!originalGet) throw new Error('Missing GET fixture')
@@ -323,9 +332,169 @@ it('sends an explicit OAuth import group directly', async () => {
       '/api/gpt-accounts/import-oauth',
       {
         oauth_json: '{"email":"import@example.com"}',
+        gateway_id: 0,
         group: 'premium',
         models: 'gpt-6-astra',
       },
+      expect.anything()
+    )
+  )
+})
+
+it('defaults new account creation to the configured VM2API gateway', async () => {
+  gateways = [
+    {
+      ...gateway,
+      id: 8,
+      name: 'VM2API pool',
+      provider: 'vm2api',
+    },
+  ]
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+            default_models: 'gpt-5.6',
+            default_gateway_id: 8,
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  const dialog = await screen.findByRole('dialog', { name: 'Add GPT account' })
+  expect(
+    within(dialog).getByRole('combobox', { name: 'Account destination' })
+  ).toHaveValue('8')
+  await userEvent.type(
+    within(dialog).getByLabelText('Account line'),
+    'vm2@example.com----password----JBSWY3DPEHPK3PXP'
+  )
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({ gateway_id: 8, channel_id: undefined }),
+      expect.anything()
+    )
+  )
+})
+
+it('defaults OAuth import to the configured VM2API gateway', async () => {
+  gateways = [
+    {
+      ...gateway,
+      id: 8,
+      name: 'VM2API pool',
+      provider: 'vm2api',
+    },
+  ]
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+            default_models: 'gpt-5.6',
+            default_gateway_id: 8,
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Import OAuth JSON' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Import Codex OAuth JSON',
+  })
+  expect(
+    within(dialog).getByRole('combobox', { name: 'Account destination' })
+  ).toHaveValue('8')
+  const oauth =
+    '{"access_token":"test-access","refresh_token":"test-refresh","id_token":"test-id","account_id":"test-account","email":"vm2@example.com","expired":"2099-01-02T03:04:05Z","type":"codex"}'
+  fireEvent.change(within(dialog).getByLabelText('OAuth JSON'), {
+    target: { value: oauth },
+  })
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Import OAuth JSON' })
+  )
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/import-oauth',
+      { oauth_json: oauth, gateway_id: 8 },
+      expect.anything()
+    )
+  )
+})
+
+it('keeps direct routing when an administrator overrides the VM2API default', async () => {
+  gateways = [
+    {
+      ...gateway,
+      id: 8,
+      name: 'VM2API pool',
+      provider: 'vm2api',
+    },
+  ]
+  const originalGet = vi.mocked(api.get).getMockImplementation()
+  if (!originalGet) throw new Error('Missing GET fixture')
+  vi.mocked(api.get).mockImplementation(async (url, config) => {
+    if (url === '/api/gpt-accounts/config') {
+      return {
+        data: {
+          success: true,
+          data: {
+            encryption_available: true,
+            automation_available: true,
+            default_group: 'default',
+            default_models: 'gpt-5.6',
+            default_gateway_id: 8,
+          },
+        },
+      }
+    }
+    return originalGet(url, config)
+  })
+  renderPage()
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Add GPT account' })
+  )
+  const dialog = await screen.findByRole('dialog', { name: 'Add GPT account' })
+  await userEvent.selectOptions(
+    within(dialog).getByRole('combobox', { name: 'Account destination' }),
+    '0'
+  )
+  await userEvent.type(
+    within(dialog).getByLabelText('Account line'),
+    'direct@example.com----password----JBSWY3DPEHPK3PXP'
+  )
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts',
+      expect.objectContaining({ gateway_id: 0, channel_id: undefined }),
       expect.anything()
     )
   )
@@ -433,7 +602,7 @@ it('imports Codex OAuth JSON directly', async () => {
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith(
       '/api/gpt-accounts/import-oauth',
-      { oauth_json: oauth },
+      { oauth_json: oauth, gateway_id: 0 },
       expect.objectContaining({
         singleUseAuthorization: true,
       })
@@ -574,8 +743,7 @@ it('generates an official browser link directly and submits callback only to the
         data: {
           success: true,
           data: {
-            authorization_url:
-              'https://auth.openai.com/oauth/authorize?state=expected',
+            authorization_url: 'https://auth.openai.com/oauth/authorize?state=expected',
             expires_at: Date.now() / 1000 + 600,
           },
         },
@@ -1696,7 +1864,7 @@ it.each(['cancel', 'identity'] as const)(
   }
 )
 
-it('opens the manual authenticator handoff from the main account row without mutating provider MFA', async () => {
+it('opens the automatic authenticator rotation from the main account row', async () => {
   const user = userEvent.setup()
   renderPage()
   const action = await screen.findByRole('button', {
@@ -1705,27 +1873,38 @@ it('opens the manual authenticator handoff from the main account row without mut
   expect(action).toHaveTextContent('Change 2FA')
   await user.click(action)
   const dialog = await screen.findByRole('dialog', {
-    name: 'Save replacement secret',
+    name: 'Change 2FA automatically',
   })
-  const link = within(dialog).getByRole('link', {
-    name: 'Open ChatGPT security settings',
-  })
-  expect(link).toHaveAttribute('href', 'https://chatgpt.com/#settings/Security')
-  expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   expect(
     within(dialog).getByText(
-      'On the official website, replace the authenticator yourself. After binding the new secret, return here to save it.'
+      'The gateway will verify the replacement before saving it. If the official flow fails, the configured Moyanovo fallback may be used once.'
     )
   ).toBeVisible()
   expect(
-    within(dialog).getByRole('button', { name: 'Save replacement secret' })
+    within(dialog).getByRole('button', { name: 'Start automatic 2FA change' })
   ).toBeVisible()
-  expect(
-    within(dialog).getByRole('checkbox', {
-      name: 'I completed binding this secret on the official OpenAI website.',
-    })
-  ).not.toBeChecked()
   expect(api.post).not.toHaveBeenCalled()
+})
+
+it('starts automatic authenticator rotation through the dedicated endpoint', async () => {
+  const user = userEvent.setup()
+  renderPage()
+  await user.click(
+    await screen.findByRole('button', { name: 'Change 2FA for Work account' })
+  )
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Change 2FA automatically',
+  })
+  await user.click(
+    within(dialog).getByRole('button', { name: 'Start automatic 2FA change' })
+  )
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/totp/change',
+      {},
+      expect.objectContaining({ singleUseAuthorization: true })
+    )
+  )
 })
 
 it.each([
@@ -1948,7 +2127,7 @@ it('shows gateway channel and sync status and retries import directly', async ()
   const user = userEvent.setup()
   renderPage()
   expect(await screen.findByText('Shared CPA channel')).toBeVisible()
-  expect(screen.getByText('Gateway synchronization failed')).toBeVisible()
+  expect(screen.getAllByText('Gateway synchronization failed')[0]).toBeVisible()
   await user.click(
     screen.getByRole('button', { name: 'Sync gateway for Work account' })
   )
@@ -2354,6 +2533,334 @@ it('does not retry a failed operation or retain its credential-bearing error in 
     )
   ).toBe(true)
   unsubscribe()
+})
+
+it('offers a dedicated VM2API tab and explains an empty account page', async () => {
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  expect(
+    await screen.findByText('No VM2API accounts on this page')
+  ).toBeInTheDocument()
+})
+
+it('keeps VM2API account switching available when the selected upstream is offline', async () => {
+  items = [1, 2].map((id) => ({
+    ...account,
+    id,
+    channel_id: undefined,
+    name: `VM account ${id}`,
+    gateway_id: id,
+    gateway_provider: 'vm2api',
+  }))
+  const fallback = vi.mocked(api.get).getMockImplementation()
+  if (!fallback) throw new Error('API fixture is missing')
+  vi.mocked(api.get).mockImplementation(async (url, options) => {
+    if (url.endsWith('/vm2api/instance')) {
+      return {
+        data: {
+          success: true,
+          data: {
+            isolation: 'dedicated',
+            status: 'running',
+            container_name: 'vm2api-account-example',
+          },
+        },
+      }
+    }
+    if (url.endsWith('/vm2api/logs')) {
+      return { data: { success: true, data: { items: [] } } }
+    }
+    if (url === '/api/gpt-accounts/1/vm2api') throw new Error('offline')
+    if (url === '/api/gpt-accounts/2/vm2api') {
+      return {
+        data: {
+          success: true,
+          data: { vm_id: 'second-isolated-slot', vm: { schedulable: false } },
+        },
+      }
+    }
+    return fallback(url, options)
+  })
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  await userEvent.selectOptions(
+    await screen.findByRole('combobox', { name: 'VM2API account' }),
+    '2'
+  )
+  expect(await screen.findByText('second-isolated-slot')).toBeInTheDocument()
+})
+
+it('shows VM2API latency values and withholds management actions for read-only accounts', async () => {
+  items = [
+    {
+      ...account,
+      channel_id: undefined,
+      gateway_id: 5,
+      gateway_provider: 'vm2api',
+      can_manage: false,
+    },
+  ]
+  const fallback = vi.mocked(api.get).getMockImplementation()
+  if (!fallback) throw new Error('API fixture is missing')
+  vi.mocked(api.get).mockImplementation(async (url, options) => {
+    if (url.endsWith('/vm2api/instance')) {
+      return {
+        data: {
+          success: true,
+          data: {
+            isolation: 'dedicated',
+            status: 'ready',
+            container_name: 'dedicated-container',
+            updated_at: 0,
+          },
+        },
+      }
+    }
+    if (url.endsWith('/vm2api/logs')) {
+      return {
+        data: {
+          success: true,
+          data: {
+            items: [
+              {
+                id: 'req1',
+                model: 'gpt-5.6',
+                first_token_ms: 20000,
+                duration_ms: 20500,
+                status: 200,
+              },
+            ],
+          },
+        },
+      }
+    }
+    if (url.endsWith('/vm2api')) {
+      return {
+        data: {
+          success: true,
+          data: { vm_id: 'isolated-slot', vm: { schedulable: true } },
+        },
+      }
+    }
+    return fallback(url, options)
+  })
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  expect(await screen.findByText('dedicated-container')).toBeInTheDocument()
+  expect(await screen.findByText('20 s')).toBeInTheDocument()
+  expect(screen.getByText('20.5 s')).toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Pause scheduling' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Restart instance' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Delete Work account' })
+  ).not.toBeInTheDocument()
+})
+
+it('deletes only the selected VM2API account after confirmation when its runtime is unavailable', async () => {
+  mockUnavailableVm2Api()
+  items = [1, 2].map((id) => ({
+    ...account,
+    id,
+    name: `VM account ${id}`,
+    gateway_id: id,
+    gateway_provider: 'vm2api',
+  }))
+  const remove = vi.spyOn(api, 'delete').mockImplementation(async () => {
+    items = items.filter((item) => item.id !== 2)
+    return { data: { success: true } }
+  })
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  await userEvent.selectOptions(
+    await screen.findByRole('combobox', { name: 'VM2API account' }),
+    '2'
+  )
+  expect(
+    await screen.findByText('Instance status could not be loaded.')
+  ).toBeVisible()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Delete VM account 2' })
+  )
+  const confirmation = screen.getByRole('alertdialog', {
+    name: 'Delete GPT account?',
+  })
+  expect(within(confirmation).getByText(/VM account 2/)).toHaveTextContent(
+    'any dedicated VM2API instance and its data. Direct channels are kept.'
+  )
+  expect(remove).not.toHaveBeenCalled()
+  await userEvent.click(
+    within(confirmation).getByRole('button', { name: 'Cancel' })
+  )
+  expect(remove).not.toHaveBeenCalled()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Delete VM account 2' })
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+  await waitFor(() => expect(remove).toHaveBeenCalledOnce())
+  expect(remove).toHaveBeenCalledWith(
+    '/api/gpt-accounts/2',
+    expect.objectContaining({
+      singleUseAuthorization: true,
+      signal: expect.any(AbortSignal),
+    })
+  )
+  await waitFor(() =>
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  )
+  await waitFor(() =>
+    expect(
+      screen.getByRole('combobox', { name: 'VM2API account' })
+    ).toHaveValue('1')
+  )
+})
+
+it('keeps VM2API deletion pending and retains its confirmation after cleanup fails', async () => {
+  mockUnavailableVm2Api()
+  items = [{ ...account, gateway_id: 5, gateway_provider: 'vm2api' }]
+  let finishDelete!: (value: unknown) => void
+  const remove = vi.spyOn(api, 'delete').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        finishDelete = resolve
+      })
+  )
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Delete Work account' })
+  )
+  const confirmation = screen.getByRole('alertdialog', {
+    name: 'Delete GPT account?',
+  })
+  await userEvent.click(
+    within(confirmation).getByRole('button', { name: 'Delete' })
+  )
+  await waitFor(() => expect(remove).toHaveBeenCalledOnce())
+  expect(
+    within(confirmation).getByRole('button', { name: 'Delete' })
+  ).toBeDisabled()
+  expect(
+    within(confirmation).getByRole('button', { name: 'Cancel' })
+  ).toBeDisabled()
+  await act(async () =>
+    finishDelete({ data: { success: false, code: 'instance_unavailable' } })
+  )
+  expect(await within(confirmation).findByRole('alert')).toHaveTextContent(
+    'The instance manager is unavailable. Try again later.'
+  )
+  expect(
+    within(confirmation).getByRole('button', { name: 'Delete' })
+  ).toBeEnabled()
+  expect(remove).toHaveBeenCalledOnce()
+  await userEvent.click(
+    within(confirmation).getByRole('button', { name: 'Cancel' })
+  )
+  expect(
+    screen.getByRole('button', { name: 'Delete Work account' })
+  ).toBeEnabled()
+})
+
+it('confirms provisioning for the selected VM2API account and submits only its id', async () => {
+  items = [
+    {
+      ...account,
+      channel_id: undefined,
+      gateway_id: 5,
+      gateway_provider: 'vm2api',
+    },
+  ]
+  const fallback = vi.mocked(api.get).getMockImplementation()
+  if (!fallback) throw new Error('API fixture is missing')
+  vi.mocked(api.get).mockImplementation(async (url, options) => {
+    if (url.endsWith('/vm2api/instance')) {
+      return {
+        data: {
+          success: true,
+          data: { account_id: 1, isolation: 'shared', status: 'shared' },
+        },
+      }
+    }
+    if (url.endsWith('/vm2api/logs')) {
+      return { data: { success: true, data: { items: [] } } }
+    }
+    if (url.endsWith('/vm2api')) {
+      return { data: { success: true, data: { vm_id: 'shared-slot', vm: {} } } }
+    }
+    return fallback(url, options)
+  })
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  await userEvent.click(
+    await screen.findByRole('button', { name: 'Create dedicated instance' })
+  )
+  const dialog = await screen.findByRole('alertdialog', {
+    name: 'Create dedicated instance',
+  })
+  expect(within(dialog).getByText(/Work account/)).toBeInTheDocument()
+  expect(api.post).not.toHaveBeenCalled()
+  await userEvent.click(
+    within(dialog).getByRole('button', { name: 'Continue' })
+  )
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/gpt-accounts/1/vm2api/instance',
+      {},
+      expect.anything()
+    )
+  )
+})
+
+it('shows synchronization as an in-progress state and explains an instance failure', async () => {
+  items = [
+    {
+      ...account,
+      channel_id: undefined,
+      gateway_id: 5,
+      gateway_provider: 'vm2api',
+    },
+  ]
+  const fallback = vi.mocked(api.get).getMockImplementation()
+  if (!fallback) throw new Error('API fixture is missing')
+  vi.mocked(api.get).mockImplementation(async (url, options) => {
+    if (url.endsWith('/vm2api/instance')) {
+      return {
+        data: {
+          success: true,
+          data: {
+            isolation: 'dedicated',
+            status: 'syncing',
+            error_code: 'instance_capacity_exhausted',
+          },
+        },
+      }
+    }
+    if (url.endsWith('/vm2api/logs')) {
+      return { data: { success: true, data: { items: [] } } }
+    }
+    if (url.endsWith('/vm2api')) {
+      return { data: { success: true, data: { vm_id: 'slot', vm: {} } } }
+    }
+    return fallback(url, options)
+  })
+  renderPage()
+  await userEvent.click(await screen.findByRole('tab', { name: 'VM2API' }))
+  expect(await screen.findByText('Synchronizing')).toBeInTheDocument()
+  expect(
+    screen.getByText(
+      'Instance capacity is full. Contact the administrator or try again later.'
+    )
+  ).toBeInTheDocument()
+  expect(
+    screen.queryByText('instance_capacity_exhausted')
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'Pause scheduling' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByText('Schedule').closest('tr')).toHaveTextContent('-')
 })
 
 it('creates Excel / BPS directly with its protocol and explains limited support', async () => {

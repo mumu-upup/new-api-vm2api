@@ -231,6 +231,9 @@ func applyVendorOperation(operation VendorOperation) (*VendorOperationResult, er
 			}
 		}
 		if operation.Action == "merge" || operation.Action == "delete" {
+			if err := rejectMarketplaceVendorRemoval(tx, operation.VendorIDs); err != nil {
+				return err
+			}
 			for _, vendor := range preview.Sources {
 				result.DeletedVendors = append(result.DeletedVendors, vendor.Id)
 			}

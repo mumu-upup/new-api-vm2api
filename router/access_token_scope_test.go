@@ -133,7 +133,7 @@ func TestChannelMonitorRoutesRequireAdministratorSession(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.Option{}, &model.AuditLog{}, &model.Channel{}, &model.ChannelMonitorArtifact{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.UserAccessToken{}, &model.Option{}, &model.AuditLog{}, &model.Channel{}, &model.ChannelMonitorArtifact{}))
 	model.DB, model.LOG_DB = db, db
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	common.RedisEnabled, common.SessionSecret = false, "channel-monitor-route-test-secret"
@@ -217,6 +217,37 @@ func TestChannelMonitorRoutesRequireAdministratorSession(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("scoped access tokens", func(t *testing.T) {
+		user := &model.User{Username: "monitor-token-root", AffCode: "monitor-token", Role: common.RoleRootUser, Status: common.UserStatusEnabled, AuthVersion: 1}
+		require.NoError(t, db.Create(user).Error)
+		for _, scope := range []string{"ops:read", "ops:write"} {
+			suffix, err := common.GenerateRandomCharsKey(43)
+			require.NoError(t, err)
+			raw := model.AccessTokenPrefix + suffix
+			token := &model.UserAccessToken{Name: scope, TokenHash: model.AccessTokenFingerprint(raw), TokenHint: model.AccessTokenHint(raw)}
+			require.NoError(t, token.SetScopes([]string{scope}))
+			require.NoError(t, model.CreateUserAccessToken(user.Id, token, service.AccessTokenMaxPerUser))
+			for _, method := range []string{http.MethodGet, http.MethodPut} {
+				t.Run(scope+" "+method, func(t *testing.T) {
+					request := httptest.NewRequest(method, "/api/channel-monitor/config", strings.NewReader("{"))
+					request.Header.Set("Authorization", "Bearer "+raw)
+					recorder := httptest.NewRecorder()
+					engine.ServeHTTP(recorder, request)
+					status := http.StatusForbidden
+					if method == http.MethodGet && scope == "ops:read" {
+						status = http.StatusOK
+					} else if method == http.MethodPut && scope == "ops:write" {
+						status = http.StatusBadRequest
+					}
+					require.Equal(t, status, recorder.Code, recorder.Body.String())
+					if status == http.StatusForbidden {
+						assert.Contains(t, recorder.Body.String(), "ACCESS_TOKEN_SCOPE_DENIED")
+					}
+				})
+			}
+		}
+	})
 }
 
 func TestGPTAccountPollingPreservesSensitiveOperationRateLimit(t *testing.T) {

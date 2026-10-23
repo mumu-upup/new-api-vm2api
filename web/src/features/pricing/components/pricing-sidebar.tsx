@@ -20,6 +20,7 @@ import { ChevronDown, RotateCcw } from 'lucide-react'
 import { memo, useMemo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
+import { GroupBadge } from '@/components/group-badge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -39,13 +40,18 @@ import {
 } from '../constants'
 import { hasTaskUsageSchema } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
-import type { PricingModel, PricingVendor } from '../types'
+import type {
+  PricingCatalogVendor,
+  PricingModel,
+  PricingVendor,
+} from '../types'
 
 type FilterOption = {
   value: string
   label: string
   count?: number
-  suffix?: string
+  suffix?: ReactNode
+  labelContent?: ReactNode
   icon?: ReactNode
 }
 
@@ -57,6 +63,9 @@ type FilterSectionProps = {
 }
 
 export interface PricingSidebarProps {
+  catalog?: PricingCatalogVendor[]
+  regionFilter?: string
+  onRegionChange?: (value: string) => void
   quotaTypeFilter: string
   endpointTypeFilter: string
   vendorFilter: string
@@ -65,7 +74,7 @@ export interface PricingSidebarProps {
   onQuotaTypeChange: (value: string) => void
   onEndpointTypeChange: (value: string) => void
   onVendorChange: (value: string) => void
-  onGroupChange: (value: string) => void
+  onGroupChange: (value: string, vendor?: string) => void
   onTagChange: (value: string) => void
   vendors: PricingVendor[]
   groups: string[]
@@ -103,7 +112,9 @@ function FilterChip(props: {
       {props.option.icon && (
         <span className='shrink-0'>{props.option.icon}</span>
       )}
-      <span className='truncate'>{props.option.label}</span>
+      <span className='min-w-0 truncate'>
+        {props.option.labelContent ?? props.option.label}
+      </span>
       {(props.option.suffix || props.option.count != null) && (
         <span
           className={cn(
@@ -185,20 +196,33 @@ export const PricingSidebar = memo(function PricingSidebar(
   const quotaTypeLabels = getQuotaTypeLabels(t)
   const endpointTypeLabels = getEndpointTypeLabels(t)
 
+  const catalog = props.catalog ?? []
+  const catalogIds = new Set(catalog.map((vendor) => vendor.vendor_id))
+  const catalogVendors = catalog.map((vendor) => ({
+    ...vendor,
+    id: vendor.vendor_id,
+  }))
+  const otherVendors = props.vendors.filter(
+    (vendor) =>
+      !catalogIds.has(vendor.id) && (counts.vendors.get(vendor.name) ?? 0) > 0
+  )
+  const visibleVendors = [...catalogVendors, ...otherVendors].filter(
+    (vendor) => {
+      if (!props.regionFilter || props.regionFilter === FILTER_ALL) return true
+      const region =
+        catalog.find((entry) => entry.vendor_id === vendor.id)?.region ??
+        'other'
+      return region === props.regionFilter
+    }
+  )
   const vendorOptions: FilterOption[] = [
-    {
-      value: FILTER_ALL,
-      label: t('All Vendors'),
-      count: props.models.length,
-    },
-    ...props.vendors
-      .map((vendor) => ({
-        value: vendor.name,
-        label: vendor.name,
-        count: counts.vendors.get(vendor.name) ?? 0,
-        icon: vendor.icon ? getLobeIcon(vendor.icon, 14) : undefined,
-      }))
-      .filter((vendor) => vendor.count > 0),
+    { value: FILTER_ALL, label: t('All Vendors'), count: props.models.length },
+    ...visibleVendors.map((vendor) => ({
+      value: vendor.name,
+      label: vendor.name,
+      count: counts.vendors.get(vendor.name) ?? 0,
+      icon: vendor.icon ? getLobeIcon(vendor.icon, 14) : undefined,
+    })),
   ]
 
   const groupOptions: FilterOption[] = [
@@ -293,18 +317,90 @@ export const PricingSidebar = memo(function PricingSidebar(
       )}
 
       <div className='space-y-1'>
-        <FilterSection
-          title={t('Groups')}
-          value={props.groupFilter}
-          options={groupOptions}
-          onChange={props.onGroupChange}
-        />
+        {catalog.length > 0 && (
+          <FilterSection
+            title={t('Region')}
+            value={props.regionFilter ?? FILTER_ALL}
+            options={[
+              { value: FILTER_ALL, label: t('All Regions') },
+              { value: 'domestic', label: t('Domestic') },
+              { value: 'international', label: t('International') },
+              { value: 'other', label: t('Other') },
+            ]}
+            onChange={(value) => props.onRegionChange?.(value)}
+          />
+        )}
         <FilterSection
           title={t('All Vendors')}
           value={props.vendorFilter}
           options={vendorOptions}
           onChange={props.onVendorChange}
         />
+        {catalog.length > 0 ? (
+          visibleVendors
+            .filter(
+              (vendor) =>
+                props.vendorFilter === FILTER_ALL ||
+                props.vendorFilter === vendor.name
+            )
+            .map((vendor) => {
+              const entry = catalog.find((item) => item.vendor_id === vendor.id)
+              const groups =
+                entry?.groups ??
+                props.groups
+                  .filter((group) =>
+                    props.models.some(
+                      (model) =>
+                        model.vendor_name === vendor.name &&
+                        model.enable_groups.includes(group)
+                    )
+                  )
+                  .map((name) => ({
+                    name,
+                    description: '',
+                    ratio: props.groupRatios?.[name],
+                    model_count: props.models.filter(
+                      (model) =>
+                        model.vendor_name === vendor.name &&
+                        model.enable_groups.includes(name)
+                    ).length,
+                  }))
+              return (
+                <FilterSection
+                  key={vendor.id}
+                  title={`${vendor.name} · ${t('Groups')}`}
+                  value={
+                    props.vendorFilter === vendor.name
+                      ? props.groupFilter
+                      : FILTER_ALL
+                  }
+                  options={groups.map((group) => ({
+                    value: group.name,
+                    label: group.name,
+                    labelContent: (
+                      <GroupBadge
+                        group={group.name}
+                        ratio={group.ratio}
+                        size='sm'
+                      />
+                    ),
+                    suffix:
+                      group.model_count === 0
+                        ? t('Pending connection')
+                        : group.model_count,
+                  }))}
+                  onChange={(group) => props.onGroupChange(group, vendor.name)}
+                />
+              )
+            })
+        ) : (
+          <FilterSection
+            title={t('Groups')}
+            value={props.groupFilter}
+            options={groupOptions}
+            onChange={props.onGroupChange}
+          />
+        )}
         <FilterSection
           title={t('Model Tags')}
           value={props.tagFilter}

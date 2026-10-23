@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -870,7 +871,7 @@ export function parseTaskResult() { return {}; }
 					require.True(t, exists)
 					before, err := model.GetModelPricingSnapshot([]string{name})
 					require.NoError(t, err)
-					require.Empty(t, before.Entries[0].Configured)
+					require.Equal(t, builtin, before.Entries[0].Effective["billing_setting.billing_expr"])
 					change = model.ModelPricingChange{ModelName: name, ExpectedVersion: before.Entries[0].Version, Pricing: model.PricingValues{"ModelPrice": float64(0)}}
 					require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{change}))
 					custom, err := model.GetModelPricingSnapshot([]string{name})
@@ -880,7 +881,7 @@ export function parseTaskResult() { return {}; }
 					require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{change}))
 					reset, err := model.GetModelPricingSnapshot([]string{name})
 					require.NoError(t, err)
-					assert.Empty(t, reset.Entries[0].Configured)
+					assert.Equal(t, before.Entries[0].Configured, reset.Entries[0].Configured)
 					assert.Equal(t, builtin, reset.Entries[0].Effective["billing_setting.billing_expr"])
 				}
 			})
@@ -1695,4 +1696,175 @@ export function parseTaskResult(){return {};}
 			assert.Equal(t, "{}", final.Options[billing_setting.PluginBillingExprOption])
 		})
 	}
+}
+
+func TestMarketplaceCatalogDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []struct{ kind, env string }{{"sqlite", ""}, {"mysql", "TEST_MYSQL_DSN"}, {"postgres", "TEST_POSTGRES_DSN"}} {
+		t.Run(dialect.kind, func(t *testing.T) {
+			if dialect.env != "" && os.Getenv(dialect.env) == "" {
+				t.Skip("set " + dialect.env)
+			}
+			db := modelManagementDB(t, dialect.kind, os.Getenv(dialect.env))
+			require.NoError(t, db.AutoMigrate(&model.GroupAccess{}, &model.UserGroupGrant{}))
+			previous := ratio_setting.GroupRatio2JSONString()
+			t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previous)) })
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"public":1,"pending":1,"secret":2,"disabled":3}`))
+			vendor := model.Vendor{Name: "Marketplace vendor"}
+			require.NoError(t, vendor.Insert())
+			valid := fmt.Sprintf(`{"version":1,"vendors":[{"vendor_id":%d,"region":"domestic","groups":["public","pending","secret","disabled"]}]}`, vendor.Id)
+			for _, invalid := range []string{`{`, `null`, `{"version":2,"vendors":[]}`, `{"version":1,"vendors":[{"vendor_id":0,"region":"domestic","groups":[]}]}`, strings.Replace(valid, "domestic", "unknown", 1), strings.Replace(valid, "pending", "missing", 1), strings.Replace(valid, `"public","pending"`, `"public","public"`, 1), strings.Replace(valid, fmt.Sprintf(`"vendor_id":%d`, vendor.Id), `"vendor_id":999999`, 1), strings.Replace(valid, `}]}`, fmt.Sprintf(`},{"vendor_id":%d,"region":"domestic","groups":[]}]}`, vendor.Id), 1)} {
+				require.Error(t, model.UpdateOption("marketplace_setting.catalog", invalid), invalid)
+			}
+			require.Error(t, model.UpdateOption("MARKETPLACE_SETTING.CATALOG", valid))
+			require.Error(t, model.UpdateOptionsBulk(map[string]string{"MARKETPLACE_SETTING.CATALOG": valid}))
+			require.NoError(t, model.UpdateOption("marketplace_setting.catalog", valid))
+			var saved model.Option
+			require.NoError(t, db.Where(&model.Option{Key: "marketplace_setting.catalog"}).First(&saved).Error)
+			assert.Equal(t, valid, saved.Value)
+			require.Error(t, vendor.Delete(), "referenced vendor cannot be deleted")
+			previousGroups := setting.GetUserUsableGroupsCopy()
+			rawGroups, err := common.Marshal(previousGroups)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(string(rawGroups))) })
+			require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"public":"Public","pending":"Pending","secret":"Secret","disabled":"Disabled"}`))
+			require.NoError(t, db.Create(&[]model.GroupAccess{{Name: "public", Enabled: true}, {Name: "pending", Enabled: true}, {Name: "secret", Hidden: true, Enabled: true}, {Name: "disabled", Enabled: false}}).Error)
+			usable, err := service.GetUserUsableGroupsForUser(0, "")
+			require.NoError(t, err)
+			assert.NotContains(t, usable, "secret")
+			assert.NotContains(t, usable, "disabled")
+			require.NoError(t, db.Create(&model.UserGroupGrant{UserID: 9, GroupName: "secret", GrantedBy: 1}).Error)
+			granted, err := service.GetUserUsableGroupsForUser(9, "public")
+			require.NoError(t, err)
+			assert.Contains(t, granted, "secret")
+			assert.NotContains(t, granted, "disabled")
+			prices := filterPricingByUsableGroups([]model.Pricing{{VendorID: vendor.Id, ModelName: "active", EnableGroup: []string{"public", "secret", "disabled"}}}, usable)
+			rows, err := buildMarketplacePricingCatalog(prices, usable, ratio_setting.GetGroupRatioCopy())
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			require.Len(t, rows[0].Groups, 2)
+			assert.Equal(t, 1, rows[0].Groups[0].ModelCount)
+			assert.Equal(t, 0, rows[0].Groups[1].ModelCount)
+			vendor.Name = "Renamed marketplace vendor"
+			require.NoError(t, vendor.Update())
+			rows, err = buildMarketplacePricingCatalog(prices, usable, map[string]float64{"public": 0.5, "pending": 1})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			assert.Equal(t, vendor.Name, rows[0].Name)
+			assert.Equal(t, 0.5, rows[0].Groups[0].Ratio)
+
+			previousAuto := setting.AutoGroups2JsonString()
+			t.Cleanup(func() { require.NoError(t, setting.UpdateAutoGroupsByJsonString(previousAuto)) })
+			require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["public","secret","disabled","pending"]`))
+			channel := model.Channel{Name: "Marketplace actual availability", Type: 1, Status: common.ChannelStatusEnabled, Models: "marketplace-active", Group: "public,secret,disabled"}
+			require.NoError(t, db.Create(&channel).Error)
+			require.NoError(t, channel.UpdateAbilities(db))
+			metadata := model.Model{ModelName: "marketplace-active", VendorID: vendor.Id, Status: 1, NameRule: model.NameRuleExact}
+			require.NoError(t, metadata.Insert())
+			model.RefreshPricing()
+			cacheBefore, err := common.Marshal(model.GetPricing())
+			require.NoError(t, err)
+			var response struct {
+				Success    bool
+				Data       []model.Pricing
+				Catalog    []marketplacePricingVendor
+				GroupRatio map[string]float64 `json:"group_ratio"`
+				Usable     map[string]string  `json:"usable_group"`
+				Auto       []string           `json:"auto_groups"`
+			}
+			modelManagementRequest(t, GetPricing, http.MethodGet, "/api/pricing", nil, &response)
+			require.True(t, response.Success)
+			require.Len(t, response.Data, 1)
+			assert.Equal(t, []string{"public"}, response.Data[0].EnableGroup)
+			assert.Equal(t, map[string]float64{"public": 1, "pending": 1}, response.GroupRatio)
+			assert.Equal(t, []string{"public", "pending"}, response.Auto)
+			require.Len(t, response.Catalog, 1)
+			require.Len(t, response.Catalog[0].Groups, 2)
+			assert.Equal(t, 0, response.Catalog[0].Groups[1].ModelCount)
+			cacheAfter, err := common.Marshal(model.GetPricing())
+			require.NoError(t, err)
+			assert.Equal(t, string(cacheBefore), string(cacheAfter))
+
+			user := model.User{Id: 9, Username: "marketplace-user", Group: "public", Status: common.UserStatusEnabled}
+			require.NoError(t, db.Create(&user).Error)
+			previousOverrides := ratio_setting.GroupGroupRatio2JSONString()
+			t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(previousOverrides)) })
+			require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"public":{"secret":0.7}}`))
+			modelManagementRequest(t, func(c *gin.Context) { c.Set("id", 9); GetPricing(c) }, http.MethodGet, "/api/pricing", nil, &response)
+			require.True(t, response.Success)
+			require.Len(t, response.Catalog, 1)
+			require.Len(t, response.Catalog[0].Groups, 3)
+			assert.Equal(t, 0.7, response.Catalog[0].Groups[2].Ratio)
+			assert.ElementsMatch(t, []string{"public", "secret"}, response.Data[0].EnableGroup)
+			assert.NotContains(t, response.Usable, "disabled")
+			assert.NotContains(t, response.GroupRatio, "disabled")
+
+			// Startup seeds metadata for every ratio, but metadata must not grant
+			// public access absent from the legacy allowlist or override exclusions.
+			specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+			previousSpecial := specialGroups.ReadAll()
+			t.Cleanup(func() { specialGroups.Clear(); specialGroups.AddAll(previousSpecial) })
+			specialGroups.Set("public", map[string]string{"-:excluded": ""})
+			require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"public":1,"pending":1,"secret":2,"disabled":3,"excluded":4,"unlisted":5}`))
+			require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"public":"Public","pending":"Pending","secret":"Secret","disabled":"Disabled","excluded":"Excluded"}`))
+			require.NoError(t, model.SeedGroupAccessMetadata())
+			restricted, err := service.GetUserUsableGroupsForUser(9, "public")
+			require.NoError(t, err)
+			assert.Equal(t, map[string]string{"public": "Public", "pending": "Pending", "secret": "Secret"}, restricted)
+			channel.Group = "public,secret,disabled,excluded,unlisted"
+			require.NoError(t, db.Save(&channel).Error)
+			require.NoError(t, channel.UpdateAbilities(db))
+			model.RefreshPricing()
+			require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["public","secret","disabled","excluded","unlisted"]`))
+			extendedCatalog := strings.Replace(valid, `"disabled"`, `"disabled","excluded","unlisted"`, 1)
+			require.NoError(t, model.UpdateOption(model.MarketplaceCatalogOption, extendedCatalog))
+			response.GroupRatio = nil
+			response.Usable = nil
+			modelManagementRequest(t, func(c *gin.Context) { c.Set("id", 9); GetPricing(c) }, http.MethodGet, "/api/pricing", nil, &response)
+			require.True(t, response.Success)
+			assert.ElementsMatch(t, []string{"public", "secret"}, response.Data[0].EnableGroup)
+			assert.Equal(t, map[string]float64{"public": 1, "pending": 1, "secret": 0.7}, response.GroupRatio)
+			assert.ElementsMatch(t, []string{"public", "secret"}, response.Auto)
+			require.Len(t, response.Catalog, 1)
+			require.Len(t, response.Catalog[0].Groups, 3)
+			require.NoError(t, model.UpdateOptionsBulk(map[string]string{model.MarketplaceCatalogOption: valid, "Notice": "catalog transaction"}))
+			require.NoError(t, db.AutoMigrate(&model.Option{}))
+			require.NoError(t, db.AutoMigrate(&model.Option{}))
+			target := model.Vendor{Name: "Merge target"}
+			require.NoError(t, target.Insert())
+			preview, err := model.PreviewVendorOperation(model.VendorOperation{Action: "merge", VendorIDs: []int{vendor.Id}, TargetVendorID: target.Id})
+			require.NoError(t, err)
+			_, err = model.ApplyVendorOperation(model.VendorOperation{Action: "merge", VendorIDs: []int{vendor.Id}, TargetVendorID: target.Id, ExpectedVersion: preview.Version})
+			require.ErrorContains(t, err, "marketplace catalog")
+			// Reload options from persistence; malformed storage stays visible as an error.
+			common.OptionMap[model.MarketplaceCatalogOption] = saved.Value
+			loaded, err := model.GetMarketplaceCatalog()
+			require.NoError(t, err)
+			assert.Equal(t, vendor.Id, loaded.Vendors[0].VendorID)
+			for _, malformed := range []string{"{", ""} {
+				common.OptionMap[model.MarketplaceCatalogOption] = malformed
+				_, err = model.GetMarketplaceCatalog()
+				require.Error(t, err)
+			}
+			common.OptionMap[model.MarketplaceCatalogOption] = saved.Value
+			require.NoError(t, db.Delete(&vendor).Error)
+			rows, err = buildMarketplacePricingCatalog(prices, usable, ratio_setting.GetGroupRatioCopy())
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+
+		})
+	}
+}
+
+func TestMarketplacePricingPrunesGroupsWithoutMutatingCache(t *testing.T) {
+	source := []model.Pricing{{ModelName: "shared", EnableGroup: []string{"public", "secret"}}, {ModelName: "universal", EnableGroup: []string{"all"}}, {ModelName: "hidden", EnableGroup: []string{"secret"}}}
+	before, err := common.Marshal(source)
+	require.NoError(t, err)
+	filtered := filterPricingByUsableGroups(source, map[string]string{"public": "Public"})
+	require.Len(t, filtered, 2)
+	for _, item := range filtered {
+		assert.Equal(t, []string{"public"}, item.EnableGroup)
+	}
+	after, err := common.Marshal(source)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
 }

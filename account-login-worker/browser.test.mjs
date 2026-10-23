@@ -539,3 +539,42 @@ test('login and probe authorize only the official Codex consent form after both 
     })
   }
 })
+
+test('real Excel OAuth login intercepts its HTTPS callback without a BPS request', async t => {
+  const wrappedState = `bps.${state}.PC`
+  const callback = 'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback'
+  const authorize = new URL('https://auth.openai.com/api/accounts/authorize')
+  for (const [key, value] of Object.entries({ client_id: 'app_fnr0pYvVwwFDocDumLG3H2Bp', redirect_uri: callback,
+    response_type: 'code', state: wrappedState, code_challenge: 'a'.repeat(43), code_challenge_method: 'S256' })) authorize.searchParams.set(key, value)
+  const fetched = []
+  const browser = await chromium.launch({ headless: true, chromiumSandbox: true,
+    ...(existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome') ? { channel: 'chrome' } : {}) })
+  t.after(() => browser.close())
+  let context
+  const result = await browserLogin({ authorization_url: authorize.href, state: wrappedState,
+    email: 'fixture@example.com', password: 'fixture-password' }, AbortSignal.timeout(15000), {
+    onDiagnostic: () => {},
+    launch: async () => ({
+      close: async () => { await context?.close() },
+      newContext: async options => {
+        context = await browser.newContext(options)
+        const register = context.route.bind(context)
+        context.route = (pattern, handler) => register(pattern, route => handler({
+          request: () => route.request(),
+          fetch: async options => {
+            fetched.push(options.url)
+            assert.equal(new URL(options.url).origin, 'https://auth.openai.com')
+            return {
+              status: () => 302,
+              headers: () => ({ location: `${callback}?code=fixture-excel&state=${wrappedState}` }),
+            }
+          },
+          fulfill: options => route.fulfill(options), abort: () => route.abort(),
+        }))
+        return context
+      },
+    }),
+  })
+  assert.deepEqual(result, { status: 'success', code: 'fixture-excel', state: wrappedState })
+  assert.deepEqual(fetched, [authorize.href])
+})

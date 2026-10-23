@@ -796,3 +796,66 @@ test('login and probe can approve the exact Codex consent form after password an
       { status: 'needs_attention', error_code: 'login_timeout' })
   }
 })
+
+const excelCallback = 'https://bps.openai.com/basispoints/extension/360590d7-f8f9-4d88-bf75-0edfe0a4b9f3/auth/callback'
+function excelRequest() {
+  const input = request({ state: `bps.${state}.PC` })
+  const url = new URL(input.authorization_url)
+  url.pathname = '/api/accounts/authorize'
+  url.searchParams.set('client_id', 'app_fnr0pYvVwwFDocDumLG3H2Bp')
+  url.searchParams.set('redirect_uri', excelCallback)
+  url.searchParams.set('state', input.state)
+  return { ...input, authorization_url: url.href }
+}
+test('Excel accepts only its complete matched OAuth profile with S256 and wrapped state', () => {
+  const input = excelRequest()
+  assert.equal(validateLoginRequest(input).state, input.state)
+  for (const [key, value] of [['client_id', 'app_EMoamEEZ73f0CkXaXp7hrann'], ['redirect_uri', 'http://localhost:1455/auth/callback'], ['state', state], ['code_challenge_method', 'plain']]) {
+    const url = new URL(input.authorization_url)
+    url.searchParams.set(key, value)
+    assert.throws(() => validateLoginRequest({ ...input, authorization_url: url.href, ...(key === 'state' ? { state: value } : {}) }), /invalid_request/)
+  }
+  for (const path of ['/oauth/authorize', '/api/accounts/authorize/']) {
+    const url = new URL(input.authorization_url)
+    url.pathname = path
+    assert.throws(() => validateLoginRequest({ ...input, authorization_url: url.href }), /invalid_request/)
+  }
+  const duplicate = new URL(input.authorization_url)
+  duplicate.searchParams.append('redirect_uri', excelCallback)
+  assert.throws(() => validateLoginRequest({ ...input, authorization_url: duplicate.href }), /invalid_request/)
+  assert.equal(validateLoginRequest(request()).state, state)
+})
+test('Excel callback parsing binds exact callback and wrapped state without accepting Codex', () => {
+  const input = excelRequest()
+  assert.deepEqual(parseCallback(`${excelCallback}?code=excel-code&state=${input.state}`, input.state, excelCallback), { status: 'success', code: 'excel-code', state: input.state })
+  assert.equal(parseCallback(`${excelCallback}?code=excel-code&state=${input.state}`, input.state), null)
+  for (const query of [`code=excel-code&state=${state}`, `code=excel-code&state=${input.state}&state=${input.state}`, `code=one&code=two&state=${input.state}`, `error=denied&state=${input.state}`]) {
+    assert.deepEqual(parseCallback(`${excelCallback}?${query}`, input.state, excelCallback), { status: 'failed', error_code: 'invalid_callback' })
+  }
+})
+test('Excel callback navigation and redirect hops are intercepted without contacting BPS', async () => {
+  const input = excelRequest()
+  const callback = `${excelCallback}?code=excel-code&state=${input.state}`
+  for (const direct of [true, false]) {
+    const fixture = routedRequest(direct ? callback : 'https://auth.openai.com/continue', 302, callback)
+    Object.assign(fixture.context, { state: input.state, callbackURL: excelCallback })
+    await handleLoginRequest(fixture.route, fixture.context)
+    assert.equal(fixture.effects.fetched.length, direct ? 0 : 1)
+    assert.deepEqual(fixture.effects.callback, { status: 'success', code: 'excel-code', state: input.state })
+    assert.deepEqual(fixture.effects.navigated, [])
+    assert.equal(fixture.effects.aborted, false)
+  }
+  for (const url of ['https://bps.openai.com/other', `${excelCallback}/other`, 'http://localhost:1455/auth/callback?code=wrong&state=' + input.state]) {
+    const fixture = routedRequest(url, 200)
+    Object.assign(fixture.context, { state: input.state, callbackURL: excelCallback })
+    await handleLoginRequest(fixture.route, fixture.context)
+    assert.equal(fixture.effects.fetched.length, 0)
+    assert.equal(fixture.effects.aborted, true)
+  }
+})
+test('Excel automatic credentials flow completes only at its matching callback', async () => {
+  const input = excelRequest()
+  const page = loginPage([{kind:'email'}, {kind:'password'}, {kind:'totp'}, {kind:'callback', url:`${excelCallback}?code=excel-code&state=${input.state}`}])
+  assert.deepEqual(await completeLoginPage(page, input, new AbortController().signal, { now: () => 59000, wait: page.next }), { status: 'success', code: 'excel-code', state: input.state })
+  assert.deepEqual(page.filled, [['email', input.email], ['password', input.password], ['totp', '287082']])
+})
