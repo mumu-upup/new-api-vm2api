@@ -27,6 +27,20 @@ func TestMergeClaudeUsageCacheCreationReplacesWholeObject(t *testing.T) {
 	assert.Equal(t, 0, merged.CacheCreation.Ephemeral1hInputTokens)
 }
 
+func TestMergeUsageNonZeroPreservesQwenCacheCreationInputTokens(t *testing.T) {
+	t.Parallel()
+
+	merged := MergeUsageNonZero(
+		&Usage{InputTokensDetails: &InputTokenDetails{CacheCreationInputTokens: 7000}},
+		&Usage{InputTokensDetails: &InputTokenDetails{CacheCreationInputTokens: 0}},
+	)
+	require.NotNil(t, merged.InputTokensDetails)
+	assert.Equal(t, 7000, merged.InputTokensDetails.CacheCreationInputTokens)
+
+	merged = MergeUsageNonZero(merged, &Usage{InputTokensDetails: &InputTokenDetails{CacheCreationInputTokens: 9000}})
+	assert.Equal(t, 9000, merged.InputTokensDetails.CacheCreationInputTokens)
+}
+
 func TestMergeGeminiUsageMetadataCandidatesAndThoughtsReplacedAsPair(t *testing.T) {
 	t.Parallel()
 

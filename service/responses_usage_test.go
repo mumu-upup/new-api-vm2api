@@ -178,11 +178,12 @@ func TestApplyResponsesUsageCopiesTokenDetails(t *testing.T) {
 		OutputTokens: 7,
 		TotalTokens:  18,
 		InputTokensDetails: &dto.InputTokenDetails{
-			CachedTokens:         3,
-			CachedCreationTokens: 2,
-			TextTokens:           6,
-			AudioTokens:          4,
-			ImageTokens:          5,
+			CachedTokens:             3,
+			CachedCreationTokens:     2,
+			CacheCreationInputTokens: 8,
+			TextTokens:               6,
+			AudioTokens:              4,
+			ImageTokens:              5,
 		},
 		OutputTokensDetails: &dto.OutputTokenDetails{
 			TextTokens:      1,
