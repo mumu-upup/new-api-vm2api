@@ -78,7 +78,7 @@ func TestResponsesUsageAccumulatorObservesTopLevelEventModel(t *testing.T) {
 		ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "mapped"},
 	}
 	accumulator := NewResponsesUsageAccumulator(info)
-	accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.created", Model: "returned"})
+	accumulator.Observe(&dto.ResponsesStreamResponse{Type: "response.created", Model: "returned"}, nil)
 
 	require.NotNil(t, info.ResponseModel)
 	assert.Equal(t, "returned", info.ResponseModel.ReturnedModel)
@@ -178,11 +178,12 @@ func TestApplyResponsesUsageCopiesTokenDetails(t *testing.T) {
 		OutputTokens: 7,
 		TotalTokens:  18,
 		InputTokensDetails: &dto.InputTokenDetails{
-			CachedTokens:         3,
-			CachedCreationTokens: 2,
-			TextTokens:           6,
-			AudioTokens:          4,
-			ImageTokens:          5,
+			CachedTokens:             3,
+			CachedCreationTokens:     2,
+			CacheCreationInputTokens: 8,
+			TextTokens:               6,
+			AudioTokens:              4,
+			ImageTokens:              5,
 		},
 		OutputTokensDetails: &dto.OutputTokenDetails{
 			TextTokens:      1,

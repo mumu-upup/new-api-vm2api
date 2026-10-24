@@ -264,6 +264,9 @@ type InputTokenDetails struct {
 	CachedTokens         int                 `json:"cached_tokens"`
 	CachedTokensDetails  *CachedTokenDetails `json:"cached_tokens_details,omitempty"`
 	CachedCreationTokens int                 `json:"cached_creation_tokens,omitempty"`
+	// CacheCreationInputTokens is Qwen's Responses-compatible cache-write
+	// counter, reported as input_tokens_details.cache_creation_input_tokens.
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	// CacheWriteTokens is OpenAI's native cache-write count, reported as
 	// prompt_tokens_details.cache_write_tokens (Chat Completions) or
 	// input_tokens_details.cache_write_tokens (Responses). It is billed at the
@@ -332,7 +335,7 @@ func (d InputTokenDetails) Clone() InputTokenDetails {
 // value wins so the same tokens are never double-counted. Negative upstream
 // values are clamped to zero so they can never lower a charge.
 func (d InputTokenDetails) CacheCreationTokensTotal() int {
-	total := max(d.CacheWriteTokens, d.CachedCreationTokens)
+	total := max(d.CacheWriteTokens, d.CachedCreationTokens, d.CacheCreationInputTokens)
 	if total < 0 {
 		return 0
 	}

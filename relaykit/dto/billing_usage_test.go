@@ -107,6 +107,20 @@ func TestCacheWriteTTLDetailsSurviveUsageSnapshots(t *testing.T) {
 	assert.Zero(t, InputTokenDetails{CacheWriteTokens: 7000, CacheWriteTokensDetails: &CacheWriteTokenDetails{TTL12hTokens: -1}}.CacheWrite12hTokens())
 }
 
+func TestQwenCacheCreationInputTokensAreDecodedAndBilled(t *testing.T) {
+	var usage Usage
+	require.NoError(t, kitutil.Unmarshal([]byte(`{"input_tokens":12000,"input_tokens_details":{"cached_tokens":4000,"cache_creation_input_tokens":7000}}`), &usage))
+
+	assert.Equal(t, 7000, usage.InputTokensDetails.CacheCreationInputTokens)
+	assert.Equal(t, 7000, usage.InputTokensDetails.CacheCreationTokensTotal())
+
+	billing := NewOpenAIResponsesBillingUsage(&usage)
+	require.NotNil(t, billing)
+	canonical, ok := billing.CanonicalUsage()
+	require.True(t, ok)
+	assert.Equal(t, 7000, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+}
+
 func TestNewEstimatedGeminiChatBillingUsage(t *testing.T) {
 	billingUsage := NewEstimatedGeminiChatBillingUsage(&Usage{
 		PromptTokens:     11,
