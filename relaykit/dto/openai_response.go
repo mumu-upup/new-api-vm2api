@@ -3,6 +3,7 @@ package dto
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
@@ -235,12 +236,13 @@ type Usage struct {
 	UsageSource          string        `json:"usage_source,omitempty"`
 	BillingUsage         *BillingUsage `json:"billing_usage,omitempty"`
 
-	PromptTokensDetails    InputTokenDetails   `json:"prompt_tokens_details"`
-	CompletionTokenDetails OutputTokenDetails  `json:"completion_tokens_details"`
-	InputTokens            int                 `json:"input_tokens"`
-	OutputTokens           int                 `json:"output_tokens"`
-	InputTokensDetails     *InputTokenDetails  `json:"input_tokens_details"`
-	OutputTokensDetails    *OutputTokenDetails `json:"output_tokens_details,omitempty"`
+	PromptTokensDetails    InputTokenDetails      `json:"prompt_tokens_details"`
+	CompletionTokenDetails OutputTokenDetails     `json:"completion_tokens_details"`
+	InputTokens            int                    `json:"input_tokens"`
+	OutputTokens           int                    `json:"output_tokens"`
+	InputTokensDetails     *InputTokenDetails     `json:"input_tokens_details"`
+	OutputTokensDetails    *OutputTokenDetails    `json:"output_tokens_details,omitempty"`
+	XDetails               []ResponsesUsageDetail `json:"x_details,omitempty"`
 
 	// claude cache 1h
 	ClaudeCacheCreation5mTokens int `json:"claude_cache_creation_5_m_tokens"`
@@ -248,6 +250,28 @@ type Usage struct {
 
 	// OpenRouter Params
 	Cost any `json:"cost,omitempty"`
+}
+
+// ResponsesUsageDetail retains Qwen's per-response cache-write billing facts.
+// Other breakdown categories are not used to replace the aggregate usage.
+type ResponsesUsageDetail struct {
+	InputTokensDetails struct {
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	} `json:"input_tokens_details"`
+}
+
+// CacheCreationTokensFromBreakdown sums one cumulative Qwen usage snapshot.
+// Negative values cannot offset writes; saturation prevents integer overflow.
+func (u *Usage) CacheCreationTokensFromBreakdown() int {
+	if u == nil {
+		return 0
+	}
+	total := 0
+	for _, detail := range u.XDetails {
+		tokens := max(detail.InputTokensDetails.CacheCreationInputTokens, 0)
+		total += min(tokens, math.MaxInt-total)
+	}
+	return total
 }
 
 type OpenAIVideoResponse struct {
@@ -264,8 +288,8 @@ type InputTokenDetails struct {
 	CachedTokens         int                 `json:"cached_tokens"`
 	CachedTokensDetails  *CachedTokenDetails `json:"cached_tokens_details,omitempty"`
 	CachedCreationTokens int                 `json:"cached_creation_tokens,omitempty"`
-	// CacheCreationInputTokens is Qwen's Responses-compatible cache-write
-	// counter, reported as input_tokens_details.cache_creation_input_tokens.
+	// CacheCreationInputTokens is Qwen's cache-write counter. Responses can
+	// report it in x_details; normalization copies its aggregate here.
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
 	// CacheWriteTokens is OpenAI's native cache-write count, reported as
 	// prompt_tokens_details.cache_write_tokens (Chat Completions) or

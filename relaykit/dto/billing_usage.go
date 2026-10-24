@@ -1,6 +1,9 @@
 package dto
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 const (
 	BillingUsageSourceClaudeMessages = "claude_messages"
@@ -78,7 +81,8 @@ func HasOpenAIUsageTokens(usage *Usage) bool {
 	if usage == nil {
 		return false
 	}
-	if usage.PromptTokens != 0 ||
+	if usage.CacheCreationTokensFromBreakdown() > 0 ||
+		usage.PromptTokens != 0 ||
 		usage.CompletionTokens != 0 ||
 		usage.TotalTokens != 0 ||
 		usage.InputTokens != 0 ||
@@ -277,6 +281,7 @@ func (usage *BillingUsage) canonicalOpenAIUsage() *Usage {
 		mergeInputTokenDetails(&filled, canonical.PromptTokensDetails)
 		canonical.PromptTokensDetails = filled
 	}
+	canonical.PromptTokensDetails.CacheCreationInputTokens = max(canonical.PromptTokensDetails.CacheCreationInputTokens, canonical.CacheCreationTokensFromBreakdown())
 	if canonical.PromptTokensDetails.CachedTokens == 0 && canonical.PromptCacheHitTokens > 0 {
 		canonical.PromptTokensDetails.CachedTokens = canonical.PromptCacheHitTokens
 	}
@@ -391,6 +396,7 @@ func cloneOpenAIUsage(usage *Usage) *Usage {
 	}
 	clone := *usage
 	clone.BillingUsage = nil
+	clone.XDetails = slices.Clone(usage.XDetails)
 	clone.PromptTokensDetails = usage.PromptTokensDetails.Clone()
 	if usage.InputTokensDetails != nil {
 		inputTokensDetails := usage.InputTokensDetails.Clone()

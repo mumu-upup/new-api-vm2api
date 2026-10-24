@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"fmt"
+	"math"
 	"testing"
 
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
@@ -119,6 +121,60 @@ func TestQwenCacheCreationInputTokensAreDecodedAndBilled(t *testing.T) {
 	canonical, ok := billing.CanonicalUsage()
 	require.True(t, ok)
 	assert.Equal(t, 7000, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+}
+
+func TestQwenResponsesBillingDetailsPreserveCacheWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    int
+	}{
+		{"breakdown only", `{"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":3000}},{"input_tokens_details":{"cache_creation_input_tokens":4000}}]}`, 7000},
+		{"top level duplicates breakdown", `{"input_tokens_details":{"cache_creation_input_tokens":7000},"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":7000}}]}`, 7000},
+		{"alias counters never add", `{"input_tokens_details":{"cached_creation_tokens":5000,"cache_write_tokens":7000,"cache_creation_input_tokens":6000},"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":6000}}]}`, 7000},
+		{"negative entries never offset writes", `{"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":-100}},{"input_tokens_details":{"cache_creation_input_tokens":7000}}]}`, 7000},
+		{"sum cannot overflow", fmt.Sprintf(`{"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":%d}},{"input_tokens_details":{"cache_creation_input_tokens":1}}]}`, math.MaxInt), math.MaxInt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var src Usage
+			require.NoError(t, kitutil.Unmarshal([]byte(tc.payload), &src))
+			billing := NewOpenAIResponsesBillingUsage(&src)
+			require.NotNil(t, billing)
+			canonical, ok := billing.CanonicalUsage()
+			require.True(t, ok)
+			assert.Equal(t, tc.want, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+
+			// Repeated cumulative snapshots and a later empty snapshot keep one charge.
+			merged := MergeBillingUsageNonZero(billing, billing)
+			merged = MergeBillingUsageNonZero(merged, NewOpenAIResponsesBillingUsage(&Usage{OutputTokens: 1}))
+			canonical, ok = merged.CanonicalUsage()
+			require.True(t, ok)
+			assert.Equal(t, tc.want, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+		})
+	}
+
+	var original Usage
+	require.NoError(t, kitutil.Unmarshal([]byte(`{"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":7000}}]}`), &original))
+	snapshot := NewOpenAIResponsesBillingUsage(&original)
+	original.XDetails[0].InputTokensDetails.CacheCreationInputTokens = 1
+	canonical, ok := snapshot.CanonicalUsage()
+	require.True(t, ok)
+	assert.Equal(t, 7000, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+	canonical.XDetails[0].InputTokensDetails.CacheCreationInputTokens = 2
+	assert.Equal(t, 7000, snapshot.OpenAIUsage.XDetails[0].InputTokensDetails.CacheCreationInputTokens)
+
+	// Later positive snapshots replace earlier counts, including corrections down.
+	for _, payload := range []string{
+		`{"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":6000}}]}`,
+		`{"input_tokens_details":{"cache_creation_input_tokens":5000}}`,
+	} {
+		var incoming Usage
+		require.NoError(t, kitutil.Unmarshal([]byte(payload), &incoming))
+		snapshot = MergeBillingUsageNonZero(snapshot, NewOpenAIResponsesBillingUsage(&incoming))
+	}
+	canonical, ok = snapshot.CanonicalUsage()
+	require.True(t, ok)
+	assert.Equal(t, 5000, canonical.PromptTokensDetails.CacheCreationTokensTotal())
 }
 
 func TestNewEstimatedGeminiChatBillingUsage(t *testing.T) {

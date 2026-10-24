@@ -864,6 +864,27 @@ func TestCalculateTextQuotaSummaryBillsOpenAICacheWriteTokens(t *testing.T) {
 	})
 }
 
+func TestCalculateTextQuotaSummaryBillsQwenResponsesBreakdown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	info := &relaycommon.RelayInfo{
+		RelayFormat: types.RelayFormatOpenAIResponses, OriginModelName: "qwen-plus", StartTime: time.Now(),
+		PriceData: hosttypes.PriceData{ModelRatio: 1, CompletionRatio: 2, CacheRatio: 0.1, CacheCreationRatio: 1.25, GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1}},
+	}
+	var source dto.Usage
+	require.NoError(t, common.Unmarshal([]byte(`{"input_tokens":12000,"output_tokens":100,"input_tokens_details":{"cached_tokens":4000},"x_details":[{"input_tokens_details":{"cache_creation_input_tokens":3000}},{"input_tokens_details":{"cache_creation_input_tokens":4000}}]}`), &source))
+	usage := &dto.Usage{}
+	ApplyResponsesUsage(usage, &source)
+	ApplyResponsesUsage(usage, &dto.Usage{OutputTokens: 100})
+	summary := calculateTextQuotaSummary(ctx, info, usage)
+	assert.Equal(t, 7000, summary.CacheCreationTokens)
+	// 1000 ordinary + 4000*0.1 cached + 7000*1.25 written + 100*2 output.
+	assert.Equal(t, 10350, summary.Quota)
+	params := BuildTieredTokenParams(usage, false, map[string]bool{"cr": true, "cc": true})
+	assert.Equal(t, float64(1000), params.P)
+	assert.Equal(t, float64(7000), params.CC)
+}
+
 // OpenAI 12h cache writes bill at twice the write price and keep their own
 // count in the consume log, with ratio and expression pricing alike.
 func TestPostTextConsumeQuotaBillsOpenAI12hCacheWrites(t *testing.T) {

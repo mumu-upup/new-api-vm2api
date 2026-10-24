@@ -2,6 +2,7 @@ package dto
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -43,6 +44,16 @@ func MergeUsageNonZero(current *Usage, incoming *Usage) *Usage {
 	}
 
 	mergeInputTokenDetails(&current.PromptTokensDetails, incoming.PromptTokensDetails)
+	cacheWrites := max(incoming.PromptTokensDetails.CacheCreationInputTokens, incoming.CacheCreationTokensFromBreakdown())
+	if incoming.InputTokensDetails != nil {
+		cacheWrites = max(cacheWrites, incoming.InputTokensDetails.CacheCreationInputTokens)
+	}
+	if cacheWrites > 0 {
+		// These are alternative views of the same cumulative counter. Replace
+		// its old breakdown too, so a later correction cannot resurrect it.
+		current.XDetails = slices.Clone(incoming.XDetails)
+		current.PromptTokensDetails.CacheCreationInputTokens = cacheWrites
+	}
 	if incoming.InputTokensDetails != nil {
 		details := *incoming.InputTokensDetails
 		if details.CachedTokens > 0 ||

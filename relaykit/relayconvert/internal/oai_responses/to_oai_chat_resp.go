@@ -220,6 +220,7 @@ func usageFromResponsesUsage(src *dto.Usage, createBillingSnapshot bool) *dto.Us
 	if src.InputTokensDetails != nil {
 		usage.PromptTokensDetails = src.InputTokensDetails.Clone()
 	}
+	usage.PromptTokensDetails.CacheCreationInputTokens = max(usage.PromptTokensDetails.CacheCreationInputTokens, src.CacheCreationTokensFromBreakdown())
 	if src.CompletionTokenDetails.ReasoningTokens != 0 ||
 		src.CompletionTokenDetails.TextTokens != 0 ||
 		src.CompletionTokenDetails.AudioTokens != 0 ||

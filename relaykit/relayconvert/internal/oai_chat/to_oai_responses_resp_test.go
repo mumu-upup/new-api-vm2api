@@ -43,6 +43,12 @@ func TestChatCompletionsResponseToResponsesPreservesTextToolCallsAndUsage(t *tes
 	assert.Equal(t, `"{\"q\":\"x\"}"`, string(resp.Output[1].Arguments))
 }
 
+func TestUsageFromChatUsagePreservesQwenCacheWriteOnlyDetails(t *testing.T) {
+	usage := UsageFromChatUsage(&dto.Usage{PromptTokens: 7000, PromptTokensDetails: dto.InputTokenDetails{CacheCreationInputTokens: 7000}})
+	require.NotNil(t, usage.InputTokensDetails)
+	assert.Equal(t, 7000, usage.InputTokensDetails.CacheCreationTokensTotal())
+}
+
 func TestChatCompletionsResponseToResponsesDropsEmptyNameToolCalls(t *testing.T) {
 	usage := dto.Usage{PromptTokens: 20, CompletionTokens: 5, TotalTokens: 25}
 	usage.PromptTokensDetails.CachedTokens = 7
